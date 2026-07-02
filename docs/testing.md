@@ -1,6 +1,6 @@
 # MiniMQ Testing Guide / MiniMQ 测试文档
 
-> This document records how to run tests, how coverage is measured, what the current baseline is, and where to find reports.  
+> This document records how to run tests, how coverage is measured, what the current baseline is, and where to find reports.
 > 本文记录测试运行方式、覆盖率统计方式、当前质量基线以及报告位置。
 
 ## 1. Test Philosophy / 测试理念
@@ -25,7 +25,7 @@ MiniMQ 的测试按风险组织。协议和存储属于低层核心模块，小 
 Run all tests / 运行全部测试：
 
 ```powershell
-mvn test -gs .mvn/settings.xml -s .mvn/settings.xml
+mvn verify -gs .mvn/settings.xml -s .mvn/settings.xml
 ```
 
 Run tests quietly / 静默运行测试：
@@ -58,14 +58,14 @@ Latest result / 最近结果：
 
 | Metric / 指标 | Value / 数值 |
 | --- | ---: |
-| Tests run / 测试总数 | 51 |
+| Tests run / 测试总数 | 61 |
 | Failures / 失败数 | 0 |
 | Errors / 错误数 | 0 |
 | Skipped / 跳过数 | 0 |
-| Overall line coverage / 总体行覆盖率 | 90.42% |
-| Overall instruction coverage / 总体指令覆盖率 | 91.49% |
-| Overall branch coverage / 总体分支覆盖率 | 74.35% |
-| Overall method coverage / 总体方法覆盖率 | 93.85% |
+| Overall line coverage / 总体行覆盖率 | 90.84% |
+| Overall instruction coverage / 总体指令覆盖率 | 92.03% |
+| Overall branch coverage / 总体分支覆盖率 | 75.63% |
+| Overall method coverage / 总体方法覆盖率 | 93.98% |
 | Overall class coverage / 总体类覆盖率 | 100.00% |
 
 ## 5. Coverage By Module / 模块覆盖率
@@ -92,7 +92,7 @@ xychart-beta
     title "Overall Coverage / 总体覆盖率"
     x-axis ["Instruction/指令", "Branch/分支", "Line/行", "Method/方法", "Class/类"]
     y-axis "Coverage % / 覆盖率 %" 0 --> 100
-    bar [91.49, 74.35, 90.42, 93.85, 100.00]
+    bar [92.03, 75.63, 90.84, 93.98, 100.00]
 ```
 
 ## 6. Test Suite Map / 测试套件地图
@@ -103,14 +103,16 @@ xychart-beta
 | `mq-common` | `RangeAssignorTest` | Unit / 单元测试 | Range assignment and assignment serialization boundaries. / Range 分配与 assignment 序列化边界。 |
 | `mq-common` | `CommonModelTest` | Unit / 单元测试 | Records and error code mapping. / Record 模型与错误码映射。 |
 | `mq-storage` | `FilePartitionLogTest` | Unit / 单元测试 | Append/read/reopen recovery and `LogManager` caching. / 追加、读取、重开恢复与 `LogManager` 缓存。 |
-| `mq-protocol` | `ProtocolSerdesTest` | Unit / 单元测试 | Request/response round trips, malformed input, frame limits, encoder. / 请求/响应往返、畸形输入、帧限制和编码器。 |
+| `mq-protocol` | `ProtocolSerdesTest` | Unit / 单元测试 | Request/response round trips, malformed collection counts, frame limits, encoder. / 请求/响应往返、畸形集合 count、帧限制和编码器。 |
 | `mq-broker` | `BrokerConfigTest` | Unit / 单元测试 | Broker argument parsing and validation. / Broker 参数解析与校验。 |
 | `mq-broker` | `ClusterControllerTest` | Unit / 单元测试 | Topic creation, metadata, snapshot isolation. / Topic 创建、元数据、快照隔离。 |
 | `mq-broker` | `GroupCoordinatorTest` | Unit / 单元测试 | Join/sync assignment, heartbeat, offset commit/fetch. / 加组、同步分配、心跳、offset 提交/拉取。 |
 | `mq-broker` | `EmbeddedBrokerChannelTest` | Component / 组件测试 | Handler behavior through Netty `EmbeddedChannel`. / 通过 Netty `EmbeddedChannel` 验证 handler 行为。 |
 | `mq-broker` | `ProduceFetchIntegrationTest` | Integration / 集成测试 | Real broker produce/fetch and not-leader behavior. / 真实 Broker 生产、拉取与非 leader 行为。 |
-| `mq-broker` | `TcpSmokeTest` | Smoke / 冒烟测试 | Basic TCP request/response. / 基础 TCP 请求/响应。 |
+| `mq-broker` | `TcpSmokeTest` | Smoke / 冒烟测试 | Basic TCP request/response without noisy stdout. / 无冗余 stdout 的基础 TCP 请求/响应。 |
+| `mq-broker` | `BrokerShutdownTest` | Integration / 集成测试 | Broker stop/start resource cleanup on the same port. / Broker 在同一端口停止、重启与资源释放。 |
 | `mq-client` | `ClientValidationTest` | Unit / 单元测试 | Bootstrap validation and unconnected close. / bootstrap 校验与未连接关闭。 |
+| `mq-client` | `NetworkClientRetryTest` | Unit / 单元测试 | Connect retry attempt budget and fixed backoff validation. / 连接重试次数预算与固定退避参数校验。 |
 | `mq-client` | `ProducerIntegrationTest` | Integration / 集成测试 | Producer offsets increase across sends. / Producer 多次发送后 offset 递增。 |
 | `mq-client` | `ConsumerIntegrationTest` | Integration / 集成测试 | Consumer poll and commit behavior. / Consumer poll 与提交行为。 |
 | `mq-demo` | `DemoCliTest` | Component/Integration / 组件/集成测试 | CLI validation and create/produce/consume path. / CLI 校验与创建/生产/消费链路。 |
@@ -147,12 +149,12 @@ The current agreed gate is:
 当前约定门槛：
 
 ```text
-Overall line coverage >= 90%
+Per-module line coverage >= 90% for modules covered by JaCoCo check / 接入 JaCoCo check 的模块行覆盖率均 >= 90%
 ```
 
-The project currently satisfies this gate at 90.42%. Future changes should preserve or improve this number. If a change lowers coverage, add focused tests near the changed behavior rather than adding broad tests only for numbers.
+The project currently satisfies this gate at 90.84% overall line coverage, with JaCoCo `check` bound to Maven `verify`. `BrokerMain` is excluded from the gate because it is a blocking process entrypoint whose behavior is covered indirectly through CLI and broker integration tests.
 
-项目当前总体行覆盖率为 90.42%，已经满足门槛。后续改动应保持或提高该数值。如果覆盖率下降，应围绕改动行为补充聚焦测试，而不是只为了数字添加宽泛测试。
+项目当前总体行覆盖率为 90.84%，并且 JaCoCo `check` 已绑定到 Maven `verify`。`BrokerMain` 是阻塞式进程入口，行为通过 CLI 与 Broker 集成测试间接覆盖，因此从门禁统计中排除。
 
 ## 9. Slow Tests / 慢测试说明
 

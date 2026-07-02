@@ -21,16 +21,50 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public class NetworkClient implements AutoCloseable {
     private final String clientId;
+    private final RetryPolicy retryPolicy;
     private final AtomicInteger correlationId = new AtomicInteger(1);
     private final EventLoopGroup group = new NioEventLoopGroup(1);
     private final Map<Integer, ArrayBlockingQueue<ByteBuf>> pending = new ConcurrentHashMap<>();
+    private final AtomicInteger connectionAttempts = new AtomicInteger();
     private Channel channel;
 
     public NetworkClient(String clientId) {
+        this(clientId, RetryPolicy.fixedBackoff(1, 0));
+    }
+
+    public NetworkClient(String clientId, RetryPolicy retryPolicy) {
         this.clientId = clientId;
+        this.retryPolicy = retryPolicy;
     }
 
     public void connect(String host, int port) throws InterruptedException {
+        Throwable lastFailure = null;
+        for (int attempt = 1; attempt <= retryPolicy.maxAttempts(); attempt++) {
+            connectionAttempts.incrementAndGet();
+            ChannelFuture connectFuture = createBootstrap().connect(host, port);
+            connectFuture.await();
+            if (connectFuture.isSuccess()) {
+                channel = connectFuture.channel();
+                return;
+            }
+
+            lastFailure = connectFuture.cause();
+            if (connectFuture.channel() != null) {
+                connectFuture.channel().close();
+            }
+            if (attempt < retryPolicy.maxAttempts()) {
+                Thread.sleep(retryPolicy.backoffMillis());
+            }
+        }
+        throw new IllegalStateException("Failed to connect to " + host + ":" + port
+                + " after " + retryPolicy.maxAttempts() + " attempts", lastFailure);
+    }
+
+    public int connectionAttempts() {
+        return connectionAttempts.get();
+    }
+
+    private Bootstrap createBootstrap() {
         Bootstrap bootstrap = new Bootstrap()
                 .group(group)
                 .channel(NioSocketChannel.class)
@@ -52,7 +86,7 @@ public class NetworkClient implements AutoCloseable {
                         }, new MqEncoder());
                     }
                 });
-        channel = bootstrap.connect(host, port).sync().channel();
+        return bootstrap;
     }
 
     public MqDecoder.DecodedResponse send(short apiKey, Object body) throws InterruptedException {
@@ -89,5 +123,20 @@ public class NetworkClient implements AutoCloseable {
             channel.close().sync();
         }
         group.shutdownGracefully().sync();
+    }
+
+    public record RetryPolicy(int maxAttempts, long backoffMillis) {
+        public RetryPolicy {
+            if (maxAttempts < 1) {
+                throw new IllegalArgumentException("maxAttempts must be positive");
+            }
+            if (backoffMillis < 0) {
+                throw new IllegalArgumentException("backoffMillis must be non-negative");
+            }
+        }
+
+        public static RetryPolicy fixedBackoff(int maxAttempts, long backoffMillis) {
+            return new RetryPolicy(maxAttempts, backoffMillis);
+        }
     }
 }

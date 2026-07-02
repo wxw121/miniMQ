@@ -1,6 +1,6 @@
 # MiniMQ Architecture / MiniMQ 项目架构文档
 
-> Goal: help a new reader understand what runs where, how modules depend on one another, and how records move through the system.  
+> Goal: help a new reader understand what runs where, how modules depend on one another, and how records move through the system.
 > 目标：让新读者快速理解系统由哪些模块组成、运行时拓扑如何形成、消息如何在客户端、Broker、存储之间流动。
 
 ## 1. Executive Summary / 架构总览
@@ -201,7 +201,7 @@ MiniMQ 可以通过 `mq-demo` 打出的 fat jar 启动。第一个 Broker 通常
 2. There is no controller election. If the controller exits, the cluster does not elect a replacement. / 目前没有 Controller 选举。如果 Controller 退出，集群不会自动选出替代节点。
 3. Metadata is persisted as one JSON document. This is easy to inspect but not a scalable metadata log. / 元数据以单个 JSON 文档持久化，易读但不是可扩展的元数据日志。
 4. Consumer group rebalancing is simplified. There is no full Kafka-style rebalance protocol, session management, or cooperative assignment. / 消费组再均衡经过简化，还没有完整 Kafka 风格的 rebalance 协议、会话管理或协作式分配。
-5. The client SDK keeps simple broker connections and does not yet implement reconnect/backoff policies. / 客户端 SDK 只维护简单 Broker 连接，还没有重连和退避策略。
+5. The client SDK now supports fixed-backoff connection retry, but it still does not implement full stale-metadata refresh or `NOT_LEADER` retry. / 客户端 SDK 现在支持固定退避连接重试，但仍未实现完整的过期元数据刷新或 `NOT_LEADER` 重试。
 6. The append-only log has no retention, compaction, or segment rolling. / 追加写日志还没有保留策略、压缩或分段滚动。
 
 ## 9. Architecture Glossary / 架构名词表

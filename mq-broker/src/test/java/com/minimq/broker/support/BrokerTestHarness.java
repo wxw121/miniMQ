@@ -18,13 +18,17 @@ public final class BrokerTestHarness implements AutoCloseable {
     }
 
     public static BrokerTestHarness startController(Path dataDir) throws Exception {
-        int port = freePort();
-        BrokerConfig config = new BrokerConfig(
-                0, "127.0.0.1", port, dataDir, true, "127.0.0.1", port);
+        BrokerConfig config = controllerConfig(0, dataDir);
         BrokerServer server = new BrokerServer(config);
         server.start();
         Thread.sleep(300);
         return new BrokerTestHarness(server, config);
+    }
+
+    public static BrokerConfig controllerConfig(int brokerId, Path dataDir) throws IOException {
+        int port = freePort();
+        return new BrokerConfig(
+                brokerId, "127.0.0.1", port, dataDir, true, "127.0.0.1", port);
     }
 
     public static BrokerTestHarness startFollower(

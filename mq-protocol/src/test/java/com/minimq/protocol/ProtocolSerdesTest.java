@@ -16,6 +16,7 @@ import io.netty.handler.codec.DecoderException;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -168,6 +169,66 @@ class ProtocolSerdesTest {
     }
 
     @Test
+    void rejectsMalformedProduceRecordCounts() {
+        assertMalformedRequestCount(ApiKeys.PRODUCE, payload -> {
+            writeString(payload, "orders");
+            payload.writeInt(0);
+        });
+    }
+
+    @Test
+    void rejectsMalformedMetadataBrokerCounts() {
+        assertMalformedResponseCount(ApiKeys.METADATA, payload -> {
+        });
+    }
+
+    @Test
+    void rejectsMalformedMetadataTopicCounts() {
+        assertMalformedResponseCount(ApiKeys.METADATA, payload -> {
+            payload.writeInt(0);
+        });
+    }
+
+    @Test
+    void rejectsMalformedMetadataPartitionCounts() {
+        assertMalformedResponseCount(ApiKeys.METADATA, payload -> {
+            payload.writeInt(0);
+            payload.writeInt(1);
+            writeString(payload, "orders");
+        });
+    }
+
+    @Test
+    void rejectsMalformedFetchRecordCounts() {
+        assertMalformedResponseCount(ApiKeys.FETCH, payload -> {
+            writeString(payload, "orders");
+            payload.writeInt(0);
+            payload.writeLong(0L);
+        });
+    }
+
+    @Test
+    void rejectsMalformedJoinGroupMemberCounts() {
+        assertMalformedResponseCount(ApiKeys.JOIN_GROUP, payload -> {
+            payload.writeInt(1);
+            writeString(payload, "member-1");
+            writeString(payload, "member-1");
+        });
+    }
+
+    @Test
+    void rejectsOversizedProduceRecordListOnEncode() {
+        List<ProduceRecord> records = new ArrayList<>();
+        for (int i = 0; i < 10_001; i++) {
+            records.add(new ProduceRecord(bytes("k"), bytes("v")));
+        }
+
+        assertThrows(IllegalArgumentException.class, () -> ProtocolSerdes.encodeRequest(
+                new MqRequestHeader(ApiKeys.PRODUCE, 1, "client"),
+                new ProduceRequest("orders", 0, records)));
+    }
+
+    @Test
     void encoderWritesByteBufOutbound() {
         EmbeddedChannel channel = new EmbeddedChannel(new MqEncoder());
         var message = Unpooled.wrappedBuffer(bytes("hello"));
@@ -194,6 +255,64 @@ class ProtocolSerdesTest {
 
     private static byte[] bytes(String value) {
         return value.getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static void assertMalformedRequestCount(short apiKey, PayloadPrefixWriter prefixWriter) {
+        assertMalformedRequestCount(apiKey, prefixWriter, -1);
+        assertMalformedRequestCount(apiKey, prefixWriter, 10_001);
+    }
+
+    private static void assertMalformedRequestCount(
+            short apiKey, PayloadPrefixWriter prefixWriter, int count) {
+        var payload = requestPayload(apiKey);
+        try {
+            prefixWriter.write(payload);
+            payload.writeInt(count);
+            MqRequestHeader decoded = ProtocolSerdes.decodeRequestHeader(payload);
+            assertThrows(IllegalArgumentException.class,
+                    () -> ProtocolSerdes.decodeRequestBody(decoded.apiKey(), payload));
+        } finally {
+            payload.release();
+        }
+    }
+
+    private static void assertMalformedResponseCount(short apiKey, PayloadPrefixWriter prefixWriter) {
+        assertMalformedResponseCount(apiKey, prefixWriter, -1);
+        assertMalformedResponseCount(apiKey, prefixWriter, 10_001);
+    }
+
+    private static void assertMalformedResponseCount(
+            short apiKey, PayloadPrefixWriter prefixWriter, int count) {
+        var payload = responsePayload();
+        try {
+            prefixWriter.write(payload);
+            payload.writeInt(count);
+            assertThrows(IllegalArgumentException.class,
+                    () -> MqDecoder.decodeResponse(payload, apiKey));
+        } finally {
+            payload.release();
+        }
+    }
+
+    private static ByteBuf requestPayload(short apiKey) {
+        var payload = Unpooled.buffer();
+        payload.writeShort(apiKey);
+        payload.writeInt(1);
+        writeString(payload, "client");
+        return payload;
+    }
+
+    private static ByteBuf responsePayload() {
+        var payload = Unpooled.buffer();
+        payload.writeInt(1);
+        payload.writeShort(ErrorCode.NONE.code);
+        return payload;
+    }
+
+    private static void writeString(ByteBuf payload, String value) {
+        byte[] bytes = bytes(value);
+        payload.writeShort(bytes.length);
+        payload.writeBytes(bytes);
     }
 
     private static void assertBodyEquals(Object expected, Object actual) {
@@ -236,5 +355,10 @@ class ProtocolSerdesTest {
     }
 
     private record ResponseCase(short apiKey, Object body) {
+    }
+
+    @FunctionalInterface
+    private interface PayloadPrefixWriter {
+        void write(ByteBuf payload);
     }
 }

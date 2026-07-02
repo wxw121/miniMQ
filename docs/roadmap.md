@@ -1,13 +1,13 @@
 # MiniMQ TODO And Roadmap / MiniMQ 代办与后续版本功能文档
 
-> This roadmap explains known limitations, recommended next tasks, and larger V2 features.  
+> This roadmap explains known limitations, recommended next tasks, and larger V2 features.
 > 本路线图说明当前已知限制、推荐下一步任务，以及后续 V2 功能方向。
 
 ## 1. Current State / 当前状态
 
-MiniMQ currently has a readable, tested baseline. The core flows work: create topic, register brokers, fetch metadata, produce records, fetch records, join consumer group, sync assignment, heartbeat, commit offset, fetch offset, and run a CLI demo. Overall line coverage is above 90%.
+MiniMQ currently has a readable, tested V1.1 baseline. The core flows work: create topic, register brokers, fetch metadata, produce records, fetch records, join consumer group, sync assignment, heartbeat, commit offset, fetch offset, run a CLI demo, enforce per-module JaCoCo line coverage in `mvn verify`, reject malformed protocol collection counts, retry failed client connects with fixed backoff, and verify broker restart cleanup. Overall line coverage is above 90%.
 
-MiniMQ 当前已经有一个可读、可测、可演示的基线版本。核心流程可用：创建 Topic、Broker 注册、拉取元数据、生产消息、拉取消息、加入消费组、同步分配、心跳、提交 offset、拉取 offset、CLI 演示。总体行覆盖率已超过 90%。
+MiniMQ 当前已经有一个可读、可测、可演示的 V1.1 基线版本。核心流程可用：创建 Topic、Broker 注册、拉取元数据、生产消息、拉取消息、加入消费组、同步分配、心跳、提交 offset、拉取 offset、CLI 演示，并且已在 `mvn verify` 中加入逐模块 JaCoCo 行覆盖率门禁，补充畸形协议集合 count 测试，支持客户端连接失败后的固定退避重试，并验证 Broker 重启资源释放。总体行覆盖率已超过 90%。
 
 The most important limitation is that the system is still single-replica and controller-static. This keeps the design compact, but it means broker failures can lose availability and data for affected partitions.
 
@@ -17,11 +17,12 @@ The most important limitation is that the system is still single-replica and con
 
 | Priority / 优先级 | Task / 任务 | Why it matters / 重要性 | Suggested tests / 建议测试 |
 | --- | --- | --- | --- |
-| P0 | Add coverage enforcement in Maven build. / 在 Maven 构建中加入覆盖率门禁。 | Coverage is now above 90%, but the build does not yet fail automatically if it drops. / 当前覆盖率已超过 90%，但下降时构建还不会自动失败。 | Maven build should fail when line coverage < 90%. / 当行覆盖率低于 90% 时 Maven 构建应失败。 |
-| P0 | Remove `System.out` from `TcpSmokeTest`. / 移除 `TcpSmokeTest` 中的 `System.out`。 | Test output still has two noisy lines. / 测试输出仍有两行噪音。 | Existing tests should pass with clean output. / 现有测试应通过且输出干净。 |
-| P1 | Add negative protocol tests for all malformed collection counts. / 为所有畸形集合 count 补充协议反向测试。 | Protocol is network-facing; malformed input must stay safe. / 协议暴露在网络边界，畸形输入必须安全处理。 | `ProtocolSerdesTest` malformed count cases. / `ProtocolSerdesTest` 中的畸形 count 用例。 |
-| P1 | Add client reconnect/backoff behavior. / 增加客户端重连和退避行为。 | Current clients assume stable connections. / 当前客户端假设连接稳定。 | Simulated broker restart or failed connection tests. / 模拟 Broker 重启或连接失败测试。 |
-| P1 | Add broker shutdown/resource leak tests. / 增加 Broker 关闭和资源泄漏测试。 | Netty event loops and file channels should close predictably. / Netty event loop 和文件 channel 应可预测关闭。 | Start/stop broker repeatedly on free ports. / 在空闲端口反复启动和停止 Broker。 |
+| P0 | Completed: Coverage enforcement in Maven build. / 已完成：Maven 构建覆盖率门禁。 | `mvn verify` now runs JaCoCo `check` with a 90% line threshold. / `mvn verify` 现在运行 JaCoCo `check`，行覆盖率门槛为 90%。 | Verified by `mvn verify`. / 已通过 `mvn verify` 验证。 |
+| P0 | Completed: Clean `TcpSmokeTest` output. / 已完成：清理 `TcpSmokeTest` 输出。 | Smoke test output is now assertion-driven and quiet. / 冒烟测试现在由断言验证且输出干净。 | Verified by searching broker/client/protocol tests for `System.out`. / 已通过搜索 broker/client/protocol 测试中的 `System.out` 验证。 |
+| P1 | Completed: Malformed collection count regression tests. / 已完成：畸形集合 count 回归测试。 | Protocol collection counts now have negative and over-limit regression cases. / 协议集合 count 现在有负数和超限回归用例。 | `ProtocolSerdesTest` now covers malformed request/response counts. / `ProtocolSerdesTest` 已覆盖畸形请求/响应 count。 |
+| P1 | Completed: Client fixed-backoff connection retry. / 已完成：客户端固定退避连接重试。 | `NetworkClient` supports fixed-backoff connection retries. / `NetworkClient` 支持固定退避连接重试。 | `NetworkClientRetryTest` verifies retry budget and invalid policies. / `NetworkClientRetryTest` 验证重试预算与非法策略。 |
+| P1 | Completed: Broker shutdown/resource cleanup tests. / 已完成：Broker 关闭和资源释放测试。 | Broker stop/start on the same port is covered. / 已覆盖 Broker 在同一端口停止后重启。 | `BrokerShutdownTest` verifies restart after stop. / `BrokerShutdownTest` 验证停止后重启。 |
+| P1 | Add client retry on stale metadata / `NOT_LEADER`. / 为过期元数据或 `NOT_LEADER` 增加客户端重试。 | V1.1 covers connection retry; metadata refresh retry is still open. / V1.1 已覆盖连接重试，元数据刷新重试仍待实现。 | Simulated leader mismatch tests. / 模拟 leader 不匹配测试。 |
 | P2 | Add metadata corruption handling. / 增加元数据损坏处理。 | JSON metadata file can be invalid or partially written. / JSON 元数据文件可能非法或只写入了一部分。 | Corrupt metadata file test. / 损坏元数据文件测试。 |
 | P2 | Add log corruption handling. / 增加日志损坏处理。 | Partial records after crash should not break all recovery. / 崩溃后的半条记录不应破坏全部恢复。 | Truncated log recovery test. / 截断日志恢复测试。 |
 
@@ -82,7 +83,7 @@ The current controller is static. V2 can introduce a simple election mechanism b
 
 当前 Controller 是静态的。V2 可以先引入简单选举机制，再考虑完整一致性协议。轻量第一步可以是：在线 Broker 中 id 最小者成为 Controller，并持久化 controller epoch。
 
-Professional term: **epoch** means a monotonically increasing generation number used to reject stale decisions.  
+Professional term: **epoch** means a monotonically increasing generation number used to reject stale decisions.
 专业名词：**epoch** 是单调递增的代数编号，用于拒绝旧 Controller 或旧 Leader 的过期决策。
 
 ### 3.3 Segmented Log / 分段日志
@@ -129,7 +130,7 @@ Retention 根据时间或大小删除旧数据。Compaction 保留每个 key 的
 
 ### 3.5 Client Improvements / 客户端增强
 
-Current clients are synchronous and simple. Useful next features:  
+Current clients are synchronous and simple. Useful next features:
 当前客户端是同步且简单的。可考虑的后续功能：
 
 1. Reconnect with exponential backoff. / 使用指数退避重连。
@@ -178,10 +179,10 @@ For a new agent session, the most productive next tasks are:
 
 对新 agent 会话，最建议继续做：
 
-1. Add JaCoCo coverage gate to the Maven build. / 在 Maven 构建中加入 JaCoCo 覆盖率门禁。
-2. Clean `TcpSmokeTest` output. / 清理 `TcpSmokeTest` 输出。
-3. Add truncated log recovery behavior. / 增加截断日志恢复行为。
-4. Add client retry on stale metadata / `NOT_LEADER`. / 为过期元数据或 `NOT_LEADER` 增加客户端重试。
+1. Add client retry on stale metadata / `NOT_LEADER`. / 为过期元数据或 `NOT_LEADER` 增加客户端重试。
+2. Add metadata corruption handling. / 增加元数据损坏处理。
+3. Add log corruption handling and truncated log recovery. / 增加日志损坏处理与截断日志恢复。
+4. Add protocol compatibility notes for future V2 fields. / 为后续 V2 字段增加协议兼容性说明。
 5. Start V2 metadata model for replicas without implementing full replication yet. / 先启动副本相关 V2 元数据模型，不急于实现完整副本机制。
 
 ## 6. Risk Register / 风险登记表

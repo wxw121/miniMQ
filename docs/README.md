@@ -1,7 +1,7 @@
-﻿# MiniMQ Project Context Index / 项目上下文索引
+# MiniMQ Project Context Index / 项目上下文索引
 
-> Last updated / 最后更新：2026-07-02  
-> Audience / 适用对象（英文）：new agents, new contributors, reviewers, interview readers  
+> Last updated / 最后更新：2026-07-02
+> Audience / 适用对象（英文）：new agents, new contributors, reviewers, interview readers
 > 适用对象：新 agent 会话、新贡献者、代码审查者、面试/作品集读者
 
 ## 1. What This Project Is / 项目是什么
@@ -38,8 +38,8 @@ The current implementation focuses on a single-leader partition model. Broker 0 
 | Storage / 存储 | Local append-only log file per topic-partition / 每个 Topic-Partition 一个本地追加写日志文件 |
 | Tests / 测试 | JUnit 5 + Surefire |
 | Coverage / 覆盖率 | JaCoCo |
-| Latest overall line coverage / 最新总体行覆盖率 | 90.42% |
-| Latest total tests / 最新测试总数 | 51, all passing / 51 个，全部通过 |
+| Latest overall line coverage / 最新总体行覆盖率 | 90.84% |
+| Latest total tests / 最新测试总数 | 61, all passing / 61 个，全部通过 |
 
 ## 4. Module Map / 模块地图
 
@@ -69,13 +69,13 @@ Build and test / 构建并运行测试：
 
 ```powershell
 mvn clean install -gs .mvn/settings.xml -s .mvn/settings.xml
-mvn test -gs .mvn/settings.xml -s .mvn/settings.xml
+mvn verify -gs .mvn/settings.xml -s .mvn/settings.xml
 ```
 
 Generate coverage / 生成覆盖率：
 
 ```powershell
-mvn test -gs .mvn/settings.xml -s .mvn/settings.xml
+mvn verify -gs .mvn/settings.xml -s .mvn/settings.xml
 ```
 
 JaCoCo HTML reports are generated under / JaCoCo HTML 报告生成在以下位置：
@@ -125,7 +125,7 @@ java -jar mq-demo/target/mq-demo-1.0.0-SNAPSHOT.jar consume --brokers localhost:
 1. Read this index first. / 先阅读本索引。
 2. Read `architecture.md` for module boundaries and runtime topology. / 阅读 `architecture.md`，理解模块边界和运行时拓扑。
 3. Read `design.md` before changing protocol, storage, metadata, or consumer group logic. / 修改协议、存储、元数据或消费组逻辑前先阅读 `design.md`。
-4. Run `mvn test -gs .mvn/settings.xml -s .mvn/settings.xml` before and after changes. / 修改前后都运行完整 Maven 测试命令。
+4. Run `mvn verify -gs .mvn/settings.xml -s .mvn/settings.xml` before and after changes. / 修改前后都运行完整 Maven 测试命令。
 5. Check `docs/test-report-2026-07-02.md` for current coverage baseline. / 查看 `docs/test-report-2026-07-02.md` 了解当前覆盖率基线。
 6. Do not treat target files as source of truth; source lives under `src/main/java` and `src/test/java`. / 不要把 `target` 目录当作事实来源，源码位于 `src/main/java` 和 `src/test/java`。
 7. Keep JaCoCo overall line coverage at or above 90%. / 保持 JaCoCo 总体行覆盖率不低于 90%。
