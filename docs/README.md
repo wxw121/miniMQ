@@ -1,4 +1,4 @@
-# MiniMQ Project Context Index / 项目上下文索引
+﻿# MiniMQ Project Context Index / 项目上下文索引
 
 > Last updated / 最后更新：2026-07-02  
 > Audience / 适用对象（英文）：new agents, new contributors, reviewers, interview readers  
@@ -24,6 +24,7 @@ The current implementation focuses on a single-leader partition model. Broker 0 
 | 4 | [Roadmap](roadmap.md) / [代办与路线图](roadmap.md) | Understand known limitations, TODOs, V2 features, and recommended next tasks. / 理解已知限制、待办事项、V2 功能与推荐下一步任务。 |
 | 5 | [Code Review Fix Log](code-review-2026-07-02.md) / [代码审查修复记录](code-review-2026-07-02.md) | See recently fixed bugs and why they mattered. / 查看近期修复的问题以及它们的重要性。 |
 | 6 | [Test Report](test-report-2026-07-02.md) / [测试报告](test-report-2026-07-02.md) | See latest test and coverage numbers. / 查看最新测试结果与覆盖率数据。 |
+| 7 | [Troubleshooting Guide](troubleshooting.md) / [故障排查指南](troubleshooting.md) | Resolve common Maven, port, Windows, test report, and GitHub/SSH issues. / 排查 Maven、端口、Windows、测试报告、GitHub/SSH 常见问题。 |
 
 ## 3. Current Snapshot / 当前快照
 

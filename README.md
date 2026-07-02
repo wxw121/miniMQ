@@ -2,6 +2,19 @@
 
 Kafka 风格的 Java 分布式消息队列（作品集 / 面试向）。
 
+## 文档入口
+
+更完整的项目上下文请从 [docs/README.md](docs/README.md) 开始阅读。该索引会继续链接到架构、系统设计、测试、路线图、故障排查、测试报告和代码审查修复记录，适合新读者和新 agent 快速接手。
+
+| 文档 | 用途 |
+|------|------|
+| [项目上下文索引](docs/README.md) | 推荐阅读顺序、模块地图、常用命令、术语表。 |
+| [架构文档](docs/architecture.md) | 模块边界、运行拓扑、请求流、数据面/控制面、部署形态。 |
+| [系统设计文档](docs/design.md) | 协议格式、序列化、存储、元数据、消费组、错误模型。 |
+| [测试文档](docs/testing.md) | 测试策略、覆盖率、命令、报告位置、质量门槛。 |
+| [故障排查文档](docs/troubleshooting.md) | Maven、端口、Windows、测试、GitHub/SSH 常见问题。 |
+| [路线图](docs/roadmap.md) | 当前限制、近期代办、V2/V3 功能规划、风险登记。 |
+
 ## 架构
 
 - **Netty** 自研二进制协议
@@ -63,14 +76,14 @@ java -jar mq-demo/target/mq-demo-1.0.0-SNAPSHOT.jar consume --brokers localhost:
 
 ## 协议 API
 
-| ApiKey | 名称 |
-|--------|------|
-| 0 | CREATE_TOPIC |
-| 1 | METADATA |
-| 2 | PRODUCE |
-| 3 | FETCH |
-| 4-8 | Consumer Group / Offset |
-| 9 | REGISTER_BROKER |
+| ApiKey | 名称 / Name | 中文说明 |
+|--------|-------------|----------|
+| 0 | `CREATE_TOPIC` / 创建 Topic | 创建包含指定分区数的 Topic。 |
+| 1 | `METADATA` / 元数据 | 拉取 Broker 列表和 Topic-Partition leader 元数据。 |
+| 2 | `PRODUCE` / 生产消息 | 向指定 Topic-Partition 追加写入消息。 |
+| 3 | `FETCH` / 拉取消息 | 从指定 offset 开始读取分区消息。 |
+| 4-8 | Consumer Group / Offset / 消费组与位点 | 加入消费组、同步分区分配、心跳、提交 offset、拉取 offset。 |
+| 9 | `REGISTER_BROKER` / 注册 Broker | Broker 向 Controller 注册自身地址与状态。 |
 
 ## V2 规划
 

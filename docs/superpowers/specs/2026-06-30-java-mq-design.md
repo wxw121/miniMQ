@@ -1,4 +1,6 @@
-﻿# Java MQ（Kafka 风格）设计规格
+# Java MQ（Kafka 风格）设计规格
+
+> **Archive notice / 历史归档说明：** This file is a historical approved design spec from 2026-06-30. Use `docs/design.md` for the current system design and `docs/architecture.md` for the current architecture. / 本文件是 2026-06-30 的历史已批准设计规格。当前系统设计请以 `docs/design.md` 为准，当前架构请以 `docs/architecture.md` 为准。
 
 **日期：** 2026-06-30  
 **状态：** 已批准  

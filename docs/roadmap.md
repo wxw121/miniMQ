@@ -168,7 +168,7 @@ xychart-beta
 
 1. Keep API table in `design.md` synchronized with `ApiKeys`. / 保持 `design.md` 中的 API 表与 `ApiKeys` 同步。
 2. Keep coverage table in `testing.md` synchronized after major test changes. / 大规模测试变更后同步 `testing.md` 覆盖率表。
-3. Add a troubleshooting guide for common Maven, port, and Windows issues. / 为常见 Maven、端口、Windows 问题增加故障排查指南。
+3. Keep `docs/troubleshooting.md` synchronized when build, test, port, Windows, or GitHub/SSH workflows change. / 当构建、测试、端口、Windows 或 GitHub/SSH 流程变化时，同步维护 `docs/troubleshooting.md`。
 4. Add examples for writing a custom producer/consumer application. / 增加自定义 producer/consumer 应用示例。
 5. Add a protocol compatibility section when V2 fields are introduced. / 引入 V2 字段时增加协议兼容性章节。
 
