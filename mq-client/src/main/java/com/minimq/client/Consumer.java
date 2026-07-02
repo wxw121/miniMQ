@@ -16,6 +16,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+/**
+ * 同步消费者客户端，负责加入消费组、拉取分配分区、维护本地 offset 并提交消费进度。
+ */
 public class Consumer implements AutoCloseable {
     private final NetworkClient controllerClient;
     private final String groupId;
@@ -46,6 +49,7 @@ public class Consumer implements AutoCloseable {
         startHeartbeat();
     }
 
+    // 加入消费组后只有 leader 成员负责计算完整分配，其余成员等待同步结果。
     private void joinGroup() throws InterruptedException {
         MqDecoder.DecodedResponse joinResponse = controllerClient.send(
                 ApiKeys.JOIN_GROUP, new JoinGroupRequest(groupId, memberId, topic));
@@ -86,6 +90,7 @@ public class Consumer implements AutoCloseable {
                 members, topicMetadata.partitions().size()));
     }
 
+    // poll 会根据当前分配逐分区拉取，并在本地推进下一次读取 offset。
     public List<ConsumerRecord> poll(Duration timeout) throws InterruptedException {
         List<ConsumerRecord> result = new ArrayList<>();
         MqDecoder.DecodedResponse metadataResponse = controllerClient.send(
@@ -145,6 +150,7 @@ public class Consumer implements AutoCloseable {
         });
     }
 
+    // 简化版心跳只维持成员活跃状态，后续版本可在这里承载 rebalance 触发逻辑。
     private void startHeartbeat() {
         heartbeatExecutor = Executors.newSingleThreadScheduledExecutor();
         heartbeatExecutor.scheduleAtFixedRate(() -> {

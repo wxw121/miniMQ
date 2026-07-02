@@ -14,7 +14,11 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 
+/**
+ * 演示用命令行客户端，串联 create-topic、produce、consume 等常见操作。
+ */
 public final class DemoCli {
+    // main 只负责命令分发，具体操作拆到私有方法，便于 CLI 测试覆盖单个流程。
     public static void main(String[] args) throws Exception {
         if (args.length == 0) {
             printUsage();

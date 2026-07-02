@@ -3,6 +3,9 @@ package com.minimq.demo;
 import com.minimq.broker.BrokerConfig;
 import com.minimq.broker.BrokerServer;
 
+/**
+ * Broker 命令行启动入口，解析参数后组装 BrokerConfig 并启动服务。
+ */
 public final class BrokerMain {
     public static void main(String[] args) throws Exception {
         BrokerConfig config = parseConfig(args);

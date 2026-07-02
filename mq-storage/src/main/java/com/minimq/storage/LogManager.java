@@ -5,6 +5,9 @@ import java.nio.file.Path;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * 日志管理器，按 TopicPartition 创建和缓存 FilePartitionLog。
+ */
 public class LogManager {
     private final Path dataDir;
     private final Map<String, PartitionLog> logs = new ConcurrentHashMap<>();

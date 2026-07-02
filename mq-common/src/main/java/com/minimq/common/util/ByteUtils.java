@@ -1,5 +1,8 @@
 package com.minimq.common.util;
 
+/**
+ * 字节数组辅助工具，封装整型与字符串的固定编码读写逻辑。
+ */
 public final class ByteUtils {
 
     private ByteUtils() {

@@ -22,6 +22,9 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
+/**
+ * 消费组协调器，负责成员加入、分区分配同步、心跳和 offset 提交查询。
+ */
 public class GroupCoordinator {
     private static final long HEARTBEAT_TIMEOUT_MS = 10_000;
 
@@ -31,6 +34,7 @@ public class GroupCoordinator {
         this.clusterController = clusterController;
     }
 
+    // 成员为空表示首次加入，协调器会生成稳定 memberId 并开启新一代分配。
     public synchronized JoinGroupResponse joinGroup(JoinGroupRequest request) {
         return clusterController.updateMetadata(metadata -> {
             ConsumerGroupEntry group = metadata.consumerGroups.computeIfAbsent(request.groupId(), id -> {
@@ -62,6 +66,7 @@ public class GroupCoordinator {
         });
     }
 
+    // leader 提交完整分配后，所有成员按自己的 memberId 取回对应分区列表。
     public synchronized SyncGroupResponse syncGroup(SyncGroupRequest request) {
         return clusterController.updateMetadata(metadata -> {
             ConsumerGroupEntry group = metadata.consumerGroups.get(request.groupId());
@@ -84,6 +89,7 @@ public class GroupCoordinator {
         });
     }
 
+    // 心跳只更新成员最后活跃时间；成员超时清理可作为后续版本能力补充。
     public synchronized ErrorCode heartbeat(HeartbeatRequest request) {
         return clusterController.updateMetadata(metadata -> {
             ConsumerGroupEntry group = metadata.consumerGroups.get(request.groupId());

@@ -10,6 +10,9 @@ import com.minimq.protocol.message.ProtocolMessages.PartitionMetadata;
 import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
 import com.minimq.protocol.message.ProtocolMessages.TopicMetadata;
 
+/**
+ * Broker 本地元数据缓存，接收 Controller 快照并提供线程安全读取入口。
+ */
 public final class MetadataSync {
     private MetadataSync() {
     }

@@ -6,10 +6,14 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * Range 分区分配器，按成员顺序把连续分区范围平均分给消费组成员。
+ */
 public final class RangeAssignor {
     private RangeAssignor() {
     }
 
+    // Range 策略按成员顺序切连续区间，成员数量变化时分配结果也会随之重算。
     public static Map<String, List<Integer>> assign(List<String> members, int partitionCount) {
         List<String> sortedMembers = new ArrayList<>(members);
         Collections.sort(sortedMembers);

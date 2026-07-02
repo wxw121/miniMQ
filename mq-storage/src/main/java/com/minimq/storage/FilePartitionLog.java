@@ -11,6 +11,9 @@ import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * 文件型分区日志实现，使用追加写文件保存 record，并在启动时扫描恢复 nextOffset。
+ */
 public class FilePartitionLog implements PartitionLog {
     private static final int NULL_LENGTH = -1;
 
@@ -26,6 +29,7 @@ public class FilePartitionLog implements PartitionLog {
         recoverOffsets();
     }
 
+    // 启动恢复通过顺序扫描日志计算 nextOffset，不依赖额外索引文件。
     private void recoverOffsets() throws IOException {
         nextOffset = 0;
         channel.position(0);
@@ -40,6 +44,7 @@ public class FilePartitionLog implements PartitionLog {
     }
 
     @Override
+    // append 串行写入 offset、key、value，并 force 到磁盘以降低测试场景中的数据丢失风险。
     public synchronized long append(byte[] key, byte[] value) {
         try {
             long offset = nextOffset++;
@@ -55,6 +60,7 @@ public class FilePartitionLog implements PartitionLog {
     }
 
     @Override
+    // read 从文件头开始扫描，跳过小于 fromOffset 的记录，并用 maxBytes 控制单次响应大小。
     public synchronized List<Record> read(long fromOffset, int maxBytes) {
         try {
             List<Record> records = new ArrayList<>();

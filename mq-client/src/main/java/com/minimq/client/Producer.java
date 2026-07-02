@@ -12,6 +12,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * 同步生产者客户端，负责获取元数据、选择目标分区并把消息发送到 leader Broker。
+ */
 public class Producer implements AutoCloseable {
     private final NetworkClient client;
     private final String bootstrapHost;
@@ -29,6 +32,7 @@ public class Producer implements AutoCloseable {
         client.connect(bootstrapHost, bootstrapPort);
     }
 
+    // 每次发送前读取最新元数据，当前版本优先保证 leader 路由正确而不是缓存极致性能。
     public ProduceResult send(ProducerRecord record) throws InterruptedException {
         MqDecoder.DecodedResponse metadataResponse = client.send(
                 ApiKeys.METADATA, new MetadataRequest(record.topic()));
@@ -45,6 +49,7 @@ public class Producer implements AutoCloseable {
             throw new IllegalArgumentException("Partition id must be non-negative");
         }
 
+        // 指定 partition 时直接使用；否则有 key 按 Murmur2 稳定分区，无 key 默认写入 0 号分区。
         int partitionId = record.partitionId() != null
                 ? record.partitionId()
                 : (record.key() != null

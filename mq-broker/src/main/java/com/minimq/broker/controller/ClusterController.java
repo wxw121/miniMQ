@@ -20,6 +20,9 @@ import java.util.List;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+/**
+ * 集群控制器，维护 Broker、Topic、分区 leader 和消费组元数据的一致视图。
+ */
 public class ClusterController {
     private final MetadataStore metadataStore;
     private ClusterMetadata metadata;
@@ -29,6 +32,7 @@ public class ClusterController {
         this.metadata = metadataStore.load();
     }
 
+    // 控制器的公开方法统一加 synchronized，保证内存态元数据和落盘顺序一致。
     public synchronized ErrorCode registerBroker(RegisterBrokerRequest request) {
         BrokerEntry entry = metadata.brokers.computeIfAbsent(request.brokerId(), id -> new BrokerEntry());
         entry.brokerId = request.brokerId();
@@ -39,6 +43,7 @@ public class ClusterController {
         return ErrorCode.NONE;
     }
 
+    // 当前版本采用简单轮询选择 leader，为后续副本和 ISR 元数据扩展保留入口。
     public synchronized ErrorCode createTopic(CreateTopicRequest request) {
         if (request.topicName() == null || request.topicName().isBlank() || request.numPartitions() <= 0) {
             return ErrorCode.INVALID_REQUEST;
@@ -118,6 +123,7 @@ public class ClusterController {
         return result;
     }
 
+    // 返回快照时做深拷贝，避免调用方直接修改控制器内部状态。
     private static ClusterMetadata copyMetadata(ClusterMetadata source) {
         ClusterMetadata copy = new ClusterMetadata();
         source.brokers.forEach((id, broker) -> copy.brokers.put(id, copyBroker(broker)));

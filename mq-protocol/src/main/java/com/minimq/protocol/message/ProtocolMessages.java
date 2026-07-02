@@ -2,6 +2,9 @@ package com.minimq.protocol.message;
 
 import java.util.List;
 
+/**
+ * 协议消息集合，集中定义各 API 的请求、响应和元数据 record。
+ */
 public final class ProtocolMessages {
     private ProtocolMessages() {
     }

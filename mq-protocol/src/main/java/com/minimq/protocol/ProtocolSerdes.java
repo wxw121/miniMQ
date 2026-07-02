@@ -12,6 +12,9 @@ import io.netty.buffer.Unpooled;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * MiniMQ 协议序列化入口，负责请求/响应 body 与完整网络帧之间的双向转换。
+ */
 public final class ProtocolSerdes {
     private static final int MAX_COLLECTION_ITEMS = 10_000;
     private static final int MAX_SHORT_BYTES = 0xFFFF;
@@ -19,6 +22,7 @@ public final class ProtocolSerdes {
     private ProtocolSerdes() {
     }
 
+    // 请求编码先写业务 payload，再统一包裹 magic、version 和 length 组成完整网络帧。
     public static ByteBuf encodeRequest(MqRequestHeader header, Object body) {
         ByteBuf payload = Unpooled.buffer();
         payload.writeShort(header.apiKey());
@@ -44,6 +48,7 @@ public final class ProtocolSerdes {
         return new MqRequestHeader(apiKey, correlationId, clientId);
     }
 
+    // apiKey 决定 body 的结构，新增 API 时必须同步维护这里的解码分支。
     public static Object decodeRequestBody(short apiKey, ByteBuf payload) {
         return switch (apiKey) {
             case ApiKeys.CREATE_TOPIC -> new CreateTopicRequest(
@@ -339,6 +344,7 @@ public final class ProtocolSerdes {
         return bytes;
     }
 
+    // 集合长度先做上下界校验，避免畸形帧触发超大内存分配或越界读取。
     private static int readItemCount(ByteBuf buf, String fieldName) {
         requireReadable(buf, Integer.BYTES, fieldName + " count");
         int count = buf.readInt();

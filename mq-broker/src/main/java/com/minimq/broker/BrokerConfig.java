@@ -2,6 +2,9 @@ package com.minimq.broker;
 
 import java.nio.file.Path;
 
+/**
+ * Broker 启动配置，集中保存 brokerId、监听地址、数据目录和 Controller 模式。
+ */
 public record BrokerConfig(
         int brokerId,
         String host,

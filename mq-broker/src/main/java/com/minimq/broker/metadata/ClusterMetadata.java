@@ -5,6 +5,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * 可持久化的集群元数据模型，描述 Broker、Topic、分区和消费组状态。
+ */
 public class ClusterMetadata {
     public final Map<Integer, BrokerEntry> brokers = new HashMap<>();
     public final Map<String, TopicEntry> topics = new HashMap<>();

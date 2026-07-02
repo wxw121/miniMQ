@@ -7,6 +7,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * 消费组分配结果的二进制编解码工具，用于在 leader 和成员之间传递分区归属。
+ */
 public final class AssignmentSerde {
     private static final int MAX_ASSIGNMENT_BYTES = 0xFFFF;
     private static final int MAX_ASSIGNMENT_ITEMS = 10_000;
@@ -43,6 +46,7 @@ public final class AssignmentSerde {
         return partitions;
     }
 
+    // 完整分配按 memberId 写入，SyncGroup 时各成员再取出自己的分区列表。
     public static byte[] encodeFullAssignment(Map<String, List<Integer>> assignment) {
         var entries = assignment.entrySet().stream()
                 .sorted(Map.Entry.comparingByKey())

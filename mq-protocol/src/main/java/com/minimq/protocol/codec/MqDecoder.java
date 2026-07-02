@@ -10,8 +10,12 @@ import io.netty.handler.codec.ByteToMessageDecoder;
 
 import java.util.List;
 
+/**
+ * Netty 入站解码器，校验帧头并把完整二进制帧还原成 payload。
+ */
 public class MqDecoder extends ByteToMessageDecoder {
     @Override
+    // 解码器在数据不足时保留 readerIndex，等待后续 TCP 分片补齐完整帧。
     protected void decode(ChannelHandlerContext ctx, ByteBuf in, List<Object> out) {
         if (in.readableBytes() < 7) {
             return;

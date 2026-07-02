@@ -23,6 +23,9 @@ import io.netty.channel.SimpleChannelInboundHandler;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * Broker 请求处理器，将网络帧解码成业务请求，并按 API 类型路由到存储或控制器。
+ */
 public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     private static final Logger log = LoggerFactory.getLogger(MqRequestHandler.class);
     private final BrokerConfig config;
@@ -42,6 +45,7 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     }
 
     @Override
+    // 单个请求的异常会被转换为协议错误响应，避免异常直接打断 Netty channel。
     protected void channelRead0(ChannelHandlerContext ctx, ByteBuf payload) {
         MqRequestHeader header = null;
         Object responseBody = null;
@@ -130,6 +134,7 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         ctx.close();
     }
 
+    // 写入前校验当前 Broker 是否仍为 leader，防止过期元数据把消息写到错误节点。
     private ProduceResponse handleProduce(ProduceRequest request) {
         PartitionLog log = partitionManager.getOrCreate(request.topicName(), request.partitionId());
         long baseOffset = -1;
@@ -139,6 +144,7 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         return new ProduceResponse(request.topicName(), request.partitionId(), baseOffset);
     }
 
+    // 拉取请求只读取本地 leader 分区日志，并按 maxBytes 限制单次返回体大小。
     private FetchResponse handleFetch(FetchRequest request) {
         PartitionLog log = partitionManager.getOrCreate(request.topicName(), request.partitionId());
         List<Record> records = log.read(request.fetchOffset(), request.maxBytes());

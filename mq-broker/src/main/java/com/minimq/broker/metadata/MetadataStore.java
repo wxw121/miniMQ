@@ -6,6 +6,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+/**
+ * 元数据文件存储器，负责把 ClusterMetadata 序列化到本地 JSON 文件并在启动时加载。
+ */
 public class MetadataStore {
     private final Path metadataFile;
     private final ObjectMapper mapper = new ObjectMapper();

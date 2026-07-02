@@ -19,6 +19,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+/**
+ * MiniMQ 网络客户端，维护单条 Netty 连接、请求相关性映射和固定退避连接重试。
+ */
 public class NetworkClient implements AutoCloseable {
     private final String clientId;
     private final RetryPolicy retryPolicy;
@@ -37,6 +40,7 @@ public class NetworkClient implements AutoCloseable {
         this.retryPolicy = retryPolicy;
     }
 
+    // 连接失败时按固定退避策略重试，避免 Broker 尚未启动时客户端立即失败。
     public void connect(String host, int port) throws InterruptedException {
         Throwable lastFailure = null;
         for (int attempt = 1; attempt <= retryPolicy.maxAttempts(); attempt++) {
@@ -64,6 +68,7 @@ public class NetworkClient implements AutoCloseable {
         return connectionAttempts.get();
     }
 
+    // Netty pipeline 顺序保持为解码 -> 响应分发 -> 编码，保证业务层只处理完整 payload。
     private Bootstrap createBootstrap() {
         Bootstrap bootstrap = new Bootstrap()
                 .group(group)
@@ -89,6 +94,7 @@ public class NetworkClient implements AutoCloseable {
         return bootstrap;
     }
 
+    // correlationId 与阻塞队列一一对应，用来把异步响应重新匹配回同步 send 调用。
     public MqDecoder.DecodedResponse send(short apiKey, Object body) throws InterruptedException {
         int corr = correlationId.getAndIncrement();
         ArrayBlockingQueue<ByteBuf> queue = new ArrayBlockingQueue<>(1);

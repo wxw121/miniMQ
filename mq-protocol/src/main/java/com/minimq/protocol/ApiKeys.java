@@ -1,5 +1,8 @@
 package com.minimq.protocol;
 
+/**
+ * MiniMQ 协议 API 编号表，客户端和 Broker 必须保持完全一致。
+ */
 public final class ApiKeys {
     public static final short CREATE_TOPIC = 0;
     public static final short METADATA = 1;

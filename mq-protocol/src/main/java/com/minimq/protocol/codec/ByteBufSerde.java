@@ -5,6 +5,9 @@ import io.netty.buffer.ByteBuf;
 
 import java.nio.charset.StandardCharsets;
 
+/**
+ * 基于 Netty ByteBuf 的基础字段编解码工具，处理字符串和字节数组的长度前缀格式。
+ */
 public final class ByteBufSerde {
     private static final int MAX_STRING_BYTES = 0xFFFF;
     private static final int MAX_BYTE_ARRAY_BYTES = MqFrame.MAX_FRAME_BYTES;
@@ -12,6 +15,7 @@ public final class ByteBufSerde {
     private ByteBufSerde() {
     }
 
+    // 字符串统一使用 int32 长度前缀，-1 表示 null，0 表示空字符串。
     public static void writeString(ByteBuf buf, String value) {
         byte[] bytes = value == null ? new byte[0] : value.getBytes(StandardCharsets.UTF_8);
         if (bytes.length > MAX_STRING_BYTES) {

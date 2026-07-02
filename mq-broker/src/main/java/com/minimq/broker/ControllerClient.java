@@ -21,6 +21,9 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+/**
+ * Broker 侧 Controller 客户端，用于向 Controller 注册自身并同步最新集群元数据。
+ */
 public class ControllerClient implements AutoCloseable {
     private static final AtomicInteger CORR = new AtomicInteger(1);
     private final EventLoopGroup group = new NioEventLoopGroup(1);

@@ -1,5 +1,8 @@
 package com.minimq.common.error;
 
+/**
+ * 协议级错误码枚举，统一表示 Broker 处理请求后的成功或失败原因。
+ */
 public enum ErrorCode {
     NONE(0),
     UNKNOWN_TOPIC(1),
