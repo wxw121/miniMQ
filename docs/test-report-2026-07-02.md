@@ -51,6 +51,33 @@
 | `mq-demo` | `DemoCliTest` | 7 | 0 | 0 | 0 | see Surefire / 见 Surefire |
 | `mq-demo` | `MiniMqE2ETest` | 1 | 0 | 0 | 0 | see Surefire / 见 Surefire |
 
+
+## Key Flow Screenshots / 关键流程测试截图
+
+These screenshots summarize the key test flows from the latest successful verification run. They are stored in `docs/assets/test-results` and should be regenerated when test counts, coverage, or major test flows change.
+
+这些截图汇总最近一次成功验证中的关键测试流程。图片存放在 `docs/assets/test-results`，当测试数量、覆盖率或主要测试流程发生变化时需要重新生成。
+
+### Full Maven Verify / 完整 Maven 验证
+
+![Full Maven Verify / 完整 Maven 验证](assets/test-results/full-maven-verify.png)
+
+### Protocol And Storage Unit Tests / 协议与存储单元测试
+
+![Protocol And Storage Unit Tests / 协议与存储单元测试](assets/test-results/protocol-storage-unit.png)
+
+### Broker And Client Integration Tests / Broker 与客户端集成测试
+
+![Broker And Client Integration Tests / Broker 与客户端集成测试](assets/test-results/broker-client-integration.png)
+
+### CLI And End-To-End Tests / CLI 与端到端测试
+
+![CLI And End-To-End Tests / CLI 与端到端测试](assets/test-results/demo-e2e.png)
+
+### Coverage Summary / 覆盖率汇总
+
+![Coverage Summary / 覆盖率汇总](assets/test-results/coverage-summary.png)
+
 ## Generated Artifacts / 生成产物
 
 Surefire reports are available under each module's `target/surefire-reports` directory.

@@ -95,7 +95,34 @@ xychart-beta
     bar [92.03, 75.63, 90.84, 93.98, 100.00]
 ```
 
-## 6. Test Suite Map / 测试套件地图
+
+## 6. Key Flow Test Evidence / 关键流程测试结果截图
+
+The following screenshots are generated from the latest verified Surefire and JaCoCo results. They make the core quality evidence visible in the Markdown document itself, so a new reader can inspect the main flows without opening every `target` report directory.
+
+以下截图基于最近一次通过验证的 Surefire 与 JaCoCo 结果生成。它们把核心质量证据直接嵌入 Markdown 文档中，新读者无需逐个打开 `target` 报告目录，也能快速看到关键流程的测试结论。
+
+### 6.1 Full Build Verification / 完整构建验证
+
+![Full Maven Verify / 完整 Maven 验证](assets/test-results/full-maven-verify.png)
+
+### 6.2 Protocol And Storage / 协议与存储
+
+![Protocol And Storage Unit Tests / 协议与存储单元测试](assets/test-results/protocol-storage-unit.png)
+
+### 6.3 Broker And Client Integration / Broker 与客户端集成
+
+![Broker And Client Integration Tests / Broker 与客户端集成测试](assets/test-results/broker-client-integration.png)
+
+### 6.4 CLI And End-To-End Flow / CLI 与端到端流程
+
+![CLI And End-To-End Tests / CLI 与端到端测试](assets/test-results/demo-e2e.png)
+
+### 6.5 Coverage Summary / 覆盖率汇总
+
+![Coverage Summary / 覆盖率汇总](assets/test-results/coverage-summary.png)
+
+## 7. Test Suite Map / 测试套件地图
 
 | Module / 模块 | Test class / 测试类 | Type / 类型 | Focus / 关注点 |
 | --- | --- | --- | --- |
@@ -118,7 +145,7 @@ xychart-beta
 | `mq-demo` | `DemoCliTest` | Component/Integration / 组件/集成测试 | CLI validation and create/produce/consume path. / CLI 校验与创建/生产/消费链路。 |
 | `mq-demo` | `MiniMqE2ETest` | E2E / 端到端测试 | Three-broker cluster with two consumers. / 三节点 Broker 集群与两个 Consumer。 |
 
-## 7. Test Data And Report Locations / 测试数据与报告位置
+## 8. Test Data And Report Locations / 测试数据与报告位置
 
 Surefire text and XML reports / Surefire 文本和 XML 报告：
 
@@ -142,7 +169,7 @@ mq-client/target/site/jacoco
 mq-demo/target/site/jacoco
 ```
 
-## 8. Coverage Gate / 覆盖率门槛
+## 9. Coverage Gate / 覆盖率门槛
 
 The current agreed gate is:
 
@@ -156,7 +183,7 @@ The project currently satisfies this gate at 90.84% overall line coverage, with 
 
 项目当前总体行覆盖率为 90.84%，并且 JaCoCo `check` 已绑定到 Maven `verify`。`BrokerMain` 是阻塞式进程入口，行为通过 CLI 与 Broker 集成测试间接覆盖，因此从门禁统计中排除。
 
-## 9. Slow Tests / 慢测试说明
+## 10. Slow Tests / 慢测试说明
 
 The slowest tests are integration and E2E tests that start brokers, open Netty channels, and wait for consumer poll windows. They are valuable because they catch wiring issues that pure unit tests cannot.
 
@@ -169,7 +196,7 @@ The slowest tests are integration and E2E tests that start brokers, open Netty c
 | `ConsumerIntegrationTest` | Includes subscribe, heartbeat scheduling, poll, and commit. / 包含订阅、心跳调度、poll 和提交。 |
 | `DemoCliTest` | Runs CLI create/produce/consume against a real test broker. / 通过真实测试 Broker 运行 CLI 创建、生产、消费流程。 |
 
-## 10. Terms / 测试名词解释
+## 11. Terms / 测试名词解释
 
 | Term / 术语 | 中文解释 | English explanation / 英文解释 |
 | --- | --- | --- |
