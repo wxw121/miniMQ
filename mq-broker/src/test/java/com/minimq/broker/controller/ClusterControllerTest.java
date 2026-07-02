@@ -1,0 +1,60 @@
+package com.minimq.broker.controller;
+
+import com.minimq.broker.metadata.MetadataStore;
+import com.minimq.common.error.ErrorCode;
+import com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest;
+import com.minimq.protocol.message.ProtocolMessages.MetadataRequest;
+import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.nio.file.Path;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class ClusterControllerTest {
+
+    @TempDir
+    Path tempDir;
+
+    @Test
+    void createTopicRoundRobin() {
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
+        controller.registerBroker(new RegisterBrokerRequest(2, "localhost", 9094));
+
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("orders", 3)));
+
+        var metadata = controller.metadata(new MetadataRequest("orders"));
+        assertEquals(3, metadata.topics().get(0).partitions().size());
+        assertEquals(0, metadata.topics().get(0).partitions().get(0).leaderBrokerId());
+        assertEquals(1, metadata.topics().get(0).partitions().get(1).leaderBrokerId());
+        assertEquals(2, metadata.topics().get(0).partitions().get(2).leaderBrokerId());
+        assertTrue(metadata.brokers().size() >= 3);
+    }
+
+    @Test
+    void rejectsTopicWithoutPositivePartitions() {
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+
+        assertEquals(ErrorCode.INVALID_REQUEST, controller.createTopic(new CreateTopicRequest("empty", 0)));
+        assertTrue(controller.metadata(new MetadataRequest("empty")).topics().isEmpty());
+    }
+
+    @Test
+    void snapshotDoesNotExposeMutableMetadata() {
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.createTopic(new CreateTopicRequest("orders", 1));
+
+        var snapshot = controller.snapshot();
+        snapshot.topics.clear();
+        snapshot.brokers.clear();
+
+        assertEquals(1, controller.metadata(new MetadataRequest("orders")).topics().size());
+        assertEquals(1, controller.metadata(new MetadataRequest("orders")).brokers().size());
+    }
+}
