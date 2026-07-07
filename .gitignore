@@ -22,3 +22,7 @@ Thumbs.db
 
 # Local agent workspace
 .agents/
+.run/
+.codex-skill-install-*/
+.npm-cache/
+.playwright-cli/

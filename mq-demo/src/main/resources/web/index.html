@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MiniMQ FRONT PANEL</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="page-grid">
+    <section class="hero-block">
+      <p class="eyebrow">RAW / BROKER / TEST</p>
+      <h1>MiniMQ FRONT PANEL</h1>
+      <p>用一个高对比、零圆角、强边框的前端直接测试 MiniMQ 主流程：创建 Topic、生产消息、消费消息。</p>
+    </section>
+
+    <section class="control-block" aria-labelledby="flow-title">
+      <div class="block-title" id="flow-title">MAIN FLOW</div>
+      <label>Mode / 模式
+        <select id="mode" data-testid="mode">
+          <option value="auto">AUTO: real then mock fallback</option>
+          <option value="real">REAL: MiniMQ broker required</option>
+          <option value="mock">MOCK: frontend-safe demo</option>
+        </select>
+      </label>
+      <label>Bootstrap Servers
+        <input id="bootstrapServers" data-testid="bootstrap" value="127.0.0.1:19092">
+      </label>
+      <label>Topic
+        <input id="topic" data-testid="topic" value="web-orders">
+      </label>
+      <label>Message
+        <input id="message" data-testid="message" value="hello-minimq">
+      </label>
+      <button id="runFlow" data-testid="run-flow" type="button">RUN CREATE / PRODUCE / CONSUME</button>
+    </section>
+
+    <section class="result-block" aria-live="polite">
+      <div class="block-title">RESULT</div>
+      <div class="status-grid">
+        <div><strong id="status">IDLE</strong><span>status / 状态</span></div>
+        <div><strong id="modeResult">-</strong><span>mode / 模式</span></div>
+        <div><strong id="offset">-</strong><span>offset / 位点</span></div>
+      </div>
+      <pre id="log" data-testid="log">等待运行主流程。</pre>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

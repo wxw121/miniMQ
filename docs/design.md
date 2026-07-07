@@ -233,6 +233,24 @@ Consumer group coordination is simplified but captures the essential flow:
 
 `Producer` 保留一个 bootstrap controller client，并懒加载 leader broker client。`Consumer` 保留一个 controller client，在 subscribe 时加入 group，启动 heartbeat，并轮询 assigned partitions。
 
+### 8.1 Web Runtime Reuse / Web Runtime 复用
+
+The Web demo backend is intentionally closer to a real application than to a one-shot CLI command. It keeps a small runtime cache keyed by `bootstrapServers + topic + groupId`. Each runtime owns one admin `NetworkClient`, one `Producer`, one `Consumer`, topic-readiness state, and consumer-subscription state. The cache uses an access-ordered LRU policy and currently keeps at most 4 active runtimes.
+
+Web 演示后端更接近真实应用，而不是一次性 CLI 命令。它按 `bootstrapServers + topic + groupId` 维护一个小型 runtime 缓存。每个 runtime 拥有一个管理用 `NetworkClient`、一个 `Producer`、一个 `Consumer`、Topic 就绪状态和 Consumer 订阅状态。缓存采用按访问顺序排列的 LRU 策略，当前最多保留 4 个活跃 runtime。
+
+Why this is needed / 为什么需要这样设计：
+
+| Concern / 关注点 | If Not Fixed / 不修复的问题 | Current Design / 当前修复方式 |
+| --- | --- | --- |
+| Concurrent produce/poll / 并发生产与消费 | Two HTTP requests sharing one Consumer could interleave `produce` and `poll`, so request A might consume request B's message. / 两个共享同一 Consumer 的 HTTP 请求可能交错执行 `produce` 和 `poll`，导致请求 A 消费到请求 B 的消息。 | `RealFlowRuntime.run` synchronizes the full create-topic, produce, poll, and commit sequence. / `RealFlowRuntime.run` 将建 Topic、生产、拉取和提交位点作为完整同步单元执行。 |
+| Stale runtime after failure / 异常后的旧 runtime | A closed or broken Netty channel could stay in cache and make every later real request fail or wait for request timeout. / 已关闭或损坏的 Netty 通道如果留在缓存里，后续真实请求可能持续失败或等待请求超时。 | Real mode evicts the failed runtime, closes it, rebuilds one replacement runtime, and retries once. / Real 模式会驱逐失败 runtime、关闭它、重建一个替代 runtime，并重试一次。 |
+| Unbounded runtime cache / 无上限 runtime 缓存 | Repeated topic/group experiments could leak sockets, event loops, and heartbeat threads. / 反复测试不同 topic/group 可能造成 socket、EventLoop 和心跳线程持续增长。 | Runtime cache is capped at 4 entries; LRU eviction removes the eldest runtime and closes it asynchronously. / runtime 缓存上限为 4；LRU 淘汰最久未访问 runtime，并异步关闭其资源。 |
+
+The eviction path removes the runtime from the cache before cleanup. Cleanup is delegated to a single daemon executor so that closing Netty channels and heartbeat schedulers does not block the user-facing HTTP response. Application shutdown still closes all currently cached runtimes synchronously before stopping the cleanup executor.
+
+淘汰路径会先把 runtime 从缓存移除，再做资源清理。清理动作交给单线程 daemon executor，避免关闭 Netty 通道和心跳调度器时阻塞用户可见的 HTTP 响应。应用关闭时仍会同步关闭当前缓存中的所有 runtime，然后停止清理 executor。
+
 ## 9. Error Model / 错误模型
 
 MiniMQ uses `ErrorCode` in response headers:

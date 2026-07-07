@@ -5,9 +5,9 @@
 
 ## 1. Current State / 当前状态
 
-MiniMQ currently has a readable, tested V1.1 baseline. The core flows work: create topic, register brokers, fetch metadata, produce records, fetch records, join consumer group, sync assignment, heartbeat, commit offset, fetch offset, run a CLI demo, enforce per-module JaCoCo line coverage in `mvn verify`, reject malformed protocol collection counts, retry failed client connects with fixed backoff, and verify broker restart cleanup. Overall line coverage is above 90%.
+MiniMQ currently has a readable, tested V1.2 snapshot baseline. The Maven version is `1.2.0-SNAPSHOT`. The core broker/client flows work: create topic, register brokers, fetch metadata, produce records, fetch records, join consumer group, sync assignment, heartbeat, commit offset, fetch offset, run a CLI demo, enforce per-module JaCoCo line coverage in `mvn verify`, reject malformed protocol collection counts, retry failed client connects with fixed backoff, and verify broker restart cleanup. V1.2 also adds a browser-based Web demo, a local one-process development launcher, real/auto/mock Web flow modes, and Web runtime reuse with concurrency isolation, failure rebuild, and bounded LRU cleanup. The V1.2 verification pass completed with 74 tests, 0 failures, 0 errors, and 91.70% overall line coverage.
 
-MiniMQ 当前已经有一个可读、可测、可演示的 V1.1 基线版本。核心流程可用：创建 Topic、Broker 注册、拉取元数据、生产消息、拉取消息、加入消费组、同步分配、心跳、提交 offset、拉取 offset、CLI 演示，并且已在 `mvn verify` 中加入逐模块 JaCoCo 行覆盖率门禁，补充畸形协议集合 count 测试，支持客户端连接失败后的固定退避重试，并验证 Broker 重启资源释放。总体行覆盖率已超过 90%。
+MiniMQ 当前已经有一个可读、可测、可演示的 V1.2 快照基线版本，Maven 版本为 `1.2.0-SNAPSHOT`。核心 Broker/Client 流程可用：创建 Topic、Broker 注册、拉取元数据、生产消息、拉取消息、加入消费组、同步分配、心跳、提交 offset、拉取 offset、CLI 演示，并且已在 `mvn verify` 中加入逐模块 JaCoCo 行覆盖率门禁，补充畸形协议集合 count 测试，支持客户端连接失败后的固定退避重试，并验证 Broker 重启资源释放。V1.2 还增加了浏览器 Web 演示、本地单进程开发启动器、真实/自动/mock Web 主流程模式，以及带并发隔离、异常重建和有界 LRU 清理的 Web runtime 复用能力。V1.2 验证已完成：74 个测试、0 失败、0 错误，总体行覆盖率 91.70%。
 
 The most important limitation is that the system is still single-replica and controller-static. This keeps the design compact, but it means broker failures can lose availability and data for affected partitions.
 
@@ -22,7 +22,10 @@ The most important limitation is that the system is still single-replica and con
 | P1 | Completed: Malformed collection count regression tests. / 已完成：畸形集合 count 回归测试。 | Protocol collection counts now have negative and over-limit regression cases. / 协议集合 count 现在有负数和超限回归用例。 | `ProtocolSerdesTest` now covers malformed request/response counts. / `ProtocolSerdesTest` 已覆盖畸形请求/响应 count。 |
 | P1 | Completed: Client fixed-backoff connection retry. / 已完成：客户端固定退避连接重试。 | `NetworkClient` supports fixed-backoff connection retries. / `NetworkClient` 支持固定退避连接重试。 | `NetworkClientRetryTest` verifies retry budget and invalid policies. / `NetworkClientRetryTest` 验证重试预算与非法策略。 |
 | P1 | Completed: Broker shutdown/resource cleanup tests. / 已完成：Broker 关闭和资源释放测试。 | Broker stop/start on the same port is covered. / 已覆盖 Broker 在同一端口停止后重启。 | `BrokerShutdownTest` verifies restart after stop. / `BrokerShutdownTest` 验证停止后重启。 |
-| P1 | Add client retry on stale metadata / `NOT_LEADER`. / 为过期元数据或 `NOT_LEADER` 增加客户端重试。 | V1.1 covers connection retry; metadata refresh retry is still open. / V1.1 已覆盖连接重试，元数据刷新重试仍待实现。 | Simulated leader mismatch tests. / 模拟 leader 不匹配测试。 |
+| P1 | Completed: Web demo and local launcher. / 已完成：Web 演示与本地启动器。 | Browser testing now covers the user-facing create/produce/consume path without manually running separate broker and Web processes. / 浏览器测试现在覆盖用户可见的创建、生产、消费路径，不需要手动分别管理 Broker 和 Web 进程。 | `MiniMqWebAppTest` and `MiniMqWebDevMainTest` cover static assets, API flow, fallback, and launcher defaults. / `MiniMqWebAppTest` 和 `MiniMqWebDevMainTest` 覆盖静态资源、API 流程、fallback 和启动器默认值。 |
+| P1 | Completed: Web runtime reuse and concurrency isolation. / 已完成：Web runtime 复用与并发隔离。 | Reusing admin, producer, and consumer connections removes repeated setup latency while preventing concurrent requests from consuming each other's messages. / 复用管理连接、Producer 和 Consumer 能降低重复初始化延迟，同时避免并发请求互相消费消息。 | `isolatesConcurrentRealFlowRequestsOnSharedRuntime` verifies same-runtime concurrent real requests receive their own messages. / `isolatesConcurrentRealFlowRequestsOnSharedRuntime` 验证同一 runtime 上的并发真实请求各自消费自己的消息。 |
+| P1 | Completed: Web runtime rebuild and bounded cleanup. / 已完成：Web runtime 重建与有界回收。 | Failed runtimes are evicted and rebuilt, and the cache is capped to avoid unbounded sockets, event loops, and heartbeat threads. / 失败 runtime 会被驱逐并重建，缓存有上限，避免 socket、EventLoop 和心跳线程无界增长。 | `rebuildsCachedRuntimeAfterRuntimeFailure` and `evictsRuntimeCacheWhenLimitIsExceeded` cover rebuild and LRU eviction. / `rebuildsCachedRuntimeAfterRuntimeFailure` 和 `evictsRuntimeCacheWhenLimitIsExceeded` 覆盖重建和 LRU 淘汰。 |
+| P1 | Add client retry on stale metadata / `NOT_LEADER`. / 为过期元数据或 `NOT_LEADER` 增加客户端重试。 | V1.2 covers connection retry and Web runtime rebuild; metadata refresh retry is still open. / V1.2 已覆盖连接重试和 Web runtime 重建，元数据刷新重试仍待实现。 | Simulated leader mismatch tests. / 模拟 leader 不匹配测试。 |
 | P2 | Add metadata corruption handling. / 增加元数据损坏处理。 | JSON metadata file can be invalid or partially written. / JSON 元数据文件可能非法或只写入了一部分。 | Corrupt metadata file test. / 损坏元数据文件测试。 |
 | P2 | Add log corruption handling. / 增加日志损坏处理。 | Partial records after crash should not break all recovery. / 崩溃后的半条记录不应破坏全部恢复。 | Truncated log recovery test. / 截断日志恢复测试。 |
 
@@ -39,6 +42,11 @@ timeline
                              : Cleaner test output / 更干净的测试输出
                              : Better malformed input tests / 更完整的畸形输入测试
                              : Client retry/backoff / 客户端重试与退避
+    V1.2 Web Runtime / V1.2 Web Runtime : Browser Web demo / 浏览器 Web 演示
+                                         : Local dev launcher / 本地开发启动器
+                                         : Runtime reuse / Runtime 复用
+                                         : Concurrency isolation / 并发隔离
+                                         : Failure rebuild and LRU cleanup / 异常重建与 LRU 回收
     V2 Replication / V2 副本 : Partition replicas / 分区副本
                              : ISR tracking / ISR 跟踪
                              : Leader failover / Leader 故障转移

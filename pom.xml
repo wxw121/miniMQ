@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="UTF-8"?>
+﻿<?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
@@ -6,7 +6,7 @@
 
     <groupId>com.minimq</groupId>
     <artifactId>minimq</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
+    <version>1.2.0-SNAPSHOT</version>
     <packaging>pom</packaging>
     <name>MiniMQ</name>
 
@@ -102,6 +102,13 @@
                         <goals>
                             <goal>report</goal>
                         </goals>
+                        <configuration>
+                            <excludes>
+                                <exclude>com/minimq/demo/BrokerMain*</exclude>
+                                <exclude>com/minimq/demo/web/MiniMqWebMain*</exclude>
+                                <exclude>com/minimq/demo/web/MiniMqWebDevMain*</exclude>
+                            </excludes>
+                        </configuration>
                     </execution>
                     <execution>
                         <id>check</id>
@@ -112,6 +119,8 @@
                         <configuration>
                             <excludes>
                                 <exclude>com/minimq/demo/BrokerMain*</exclude>
+                                <exclude>com/minimq/demo/web/MiniMqWebMain*</exclude>
+                                <exclude>com/minimq/demo/web/MiniMqWebDevMain*</exclude>
                             </excludes>
                             <rules>
                                 <rule>
@@ -132,3 +141,4 @@
         </plugins>
     </build>
 </project>
+

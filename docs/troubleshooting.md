@@ -37,20 +37,21 @@ Generated files such as `target/` and `mq-demo/dependency-reduced-pom.xml` are i
 ### 2.1 Full Test Command / 完整测试命令
 
 ```powershell
-mvn -q test -gs .mvn/settings.xml -s .mvn/settings.xml
+mvn -q -gs .mvn/settings.xml -s .mvn/settings.xml verify
 ```
 
 Expected baseline / 预期基线：
 
 | Metric / 指标 | Current baseline / 当前基线 |
 | --- | ---: |
-| Tests / 测试数 | 61 |
+| Tests / 测试数 | 74 |
 | Failures / 失败 | 0 |
 | Errors / 错误 | 0 |
-| Overall line coverage / 总体行覆盖率 | 90.84% |
+| Skipped / 跳过 | 0 |
+| Overall line coverage / 总体行覆盖率 | 91.70% |
 
-The detailed report is in [test-report-2026-07-02.md](test-report-2026-07-02.md).
-详细报告见 [test-report-2026-07-02.md](test-report-2026-07-02.md)。
+The detailed report is in [test-report-2026-07-07.md](test-report-2026-07-07.md).
+详细报告见 [test-report-2026-07-07.md](test-report-2026-07-07.md)。
 
 ### 2.2 Slow Integration Tests / 集成测试较慢
 
@@ -140,6 +141,6 @@ When changing protocol, storage, metadata, CLI, or test behavior, update the cor
 | --- | --- |
 | Protocol fields / 协议字段 | [design.md](design.md), [testing.md](testing.md) |
 | Topic or routing / Topic 或路由 | [architecture.md](architecture.md), [design.md](design.md) |
-| Test count or coverage / 测试数或覆盖率 | [testing.md](testing.md), [test-report-2026-07-02.md](test-report-2026-07-02.md) |
+| Test count or coverage / 测试数或覆盖率 | [testing.md](testing.md), [test-report-2026-07-07.md](test-report-2026-07-07.md) |
 | CLI behavior / CLI 行为 | Root [README.md](../README.md), [docs/README.md](README.md) |
 | Roadmap items / 路线图事项 | [roadmap.md](roadmap.md) |
