@@ -131,6 +131,83 @@ The implementation uses a `writeFully(ByteBuffer)` loop because `FileChannel.wri
 
 实现中使用 `writeFully(ByteBuffer)` 循环写满，因为 `FileChannel.write` 不保证一次写完整个 buffer。每次 append 后调用 `channel.force(false)` 刷盘。
 
+### 4.3 V2.0 WAL, Checkpoint, And Flush Policy / V2.0 WAL、Checkpoint 与刷盘策略
+
+V2.0 starts the storage recovery foundation. The main change is to separate durable write intent from the current single-file partition-log layout. The WAL is not a replacement for segmented logs; it is the ordered recovery source used before V2.1 introduces segments, indexes, retention, and compaction.
+
+V2.0 启动存储恢复基础。核心变化是把持久化写入意图与当前单文件分区日志布局拆开。WAL 不替代分段日志；它是在 V2.1 引入 segment、索引、保留和压缩前使用的有序恢复来源。
+
+#### WAL Contract / WAL 契约
+
+```text
+-----------+----------+-------------+-------------+-----------------+
+| magic(2) | ver(1)   | type(1)     | length(4)   | body(length)    |
++-----------+----------+-------------+-------------+-----------------+
+| crc32(4)                                                     |
++--------------------------------------------------------------+
+```
+
+For `DATA_APPEND`, the body is:
+
+`DATA_APPEND` 的 body 为：
+
+```text
++----------------+--------------+--------------+-----------+-----------+
+| topicLen(2)    | topic(bytes) | partition(4) | offset(8) | keyLen(4) |
++----------------+--------------+--------------+-----------+-----------+
+| key(bytes)     | valueLen(4)  | value(bytes) |
++----------------+--------------+--------------+
+```
+
+Rules / 规则：
+
+1. WAL records are appended before the corresponding partition-log append is considered durable. / 对应分区日志 append 被视为 durable 之前，必须先追加 WAL 记录。
+2. `DATA_APPEND` records are replayed idempotently by topic-partition and offset. / `DATA_APPEND` 按 topic-partition 和 offset 幂等重放。
+3. Duplicate offsets already present in a partition log are skipped if payloads match; mismatched duplicate payloads fail recovery. / 如果分区日志已有重复 offset 且 payload 一致，则跳过；payload 不一致则恢复失败。
+4. Offset gaps during replay fail fast because they imply missing durable intent. / 重放时出现 offset 空洞需要快速失败，因为它表示持久化意图缺失。
+5. Incomplete WAL tail records are truncated. Structural corruption or checksum mismatch fails clearly. / WAL 尾部半条记录可截断；结构性损坏或 checksum 不匹配必须清晰失败。
+
+#### Checkpoint Contract / Checkpoint 契约
+
+V2.0 stores checkpoints as JSON at:
+
+V2.0 checkpoint 以 JSON 存放在：
+
+```text
+{dataDir}/checkpoint/recovery-checkpoint.json
+```
+
+The checkpoint contains:
+
+checkpoint 包含：
+
+| Field / 字段 | Meaning / 含义 |
+| --- | --- |
+| `walPosition` | Byte position after the last WAL record included in the checkpoint. / checkpoint 已覆盖的最后一条 WAL 记录之后的字节位置。 |
+| `partitionHighWatermarks` | Map of `topic-partition -> nextOffset`. / `topic-partition -> nextOffset` 映射。 |
+| `createdAtEpochMs` | Creation timestamp for diagnostics. / 用于诊断的创建时间戳。 |
+
+Checkpoint writes use the same safe-write model as metadata: temp file, force, and atomic replace where supported. If the checkpoint is missing or corrupt, recovery replays from WAL position 0 and validates partition logs using V1.3 corruption-recovery rules.
+
+checkpoint 写入使用与元数据相同的安全写入模型：临时文件、刷盘，并在平台支持时原子替换。checkpoint 缺失或损坏时，恢复从 WAL position 0 开始重放，并使用 V1.3 损坏恢复规则校验分区日志。
+
+#### Flush Policy / 刷盘策略
+
+V2.0 introduces an explicit `FlushPolicy`:
+
+V2.0 引入显式 `FlushPolicy`：
+
+| Policy / 策略 | Behavior / 行为 | Use case / 使用场景 |
+| --- | --- | --- |
+| `ALWAYS` | Force WAL and partition log on every append. / 每次 append 都刷 WAL 与分区日志。 | Default safety baseline. / 默认安全基线。 |
+| `EVERY_N_APPENDS` | Force after N successful appends. / 每 N 次成功 append 后刷盘。 | Lower latency with bounded loss window. / 降低延迟，同时控制丢失窗口。 |
+| `INTERVAL_MS` | Background or append-triggered force after a time interval. / 到达时间间隔后由后台或 append 触发刷盘。 | Throughput-oriented local testing. / 偏吞吐的本地测试。 |
+| `MANUAL_ON_CLOSE` | Flush only on explicit flush or close. / 仅在显式 flush 或 close 时刷盘。 | Tests and demos where durability is not the focus. / 不以持久性为重点的测试和演示。 |
+
+The default remains `ALWAYS` until replication and stronger recovery tests exist. This preserves V1.3's conservative durability behavior while making future performance work explicit.
+
+默认策略保持 `ALWAYS`，直到副本机制和更强恢复测试完成。这保留 V1.3 的保守持久性行为，同时把后续性能优化显式化。
+
 ## 5. Metadata Design / 元数据设计
 
 Cluster metadata is persisted by `MetadataStore` as JSON in:

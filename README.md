@@ -45,33 +45,33 @@ mvn test -gs .mvn/settings.xml -s .mvn/settings.xml
 
 ```powershell
 # Terminal 1
-java -cp mq-demo/target/mq-demo-1.3.0.jar com.minimq.demo.BrokerMain --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller
+java -cp mq-demo/target/mq-demo-2.0.0-SNAPSHOT.jar com.minimq.demo.BrokerMain --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller
 
 # Terminal 2
-java -cp mq-demo/target/mq-demo-1.3.0.jar com.minimq.demo.BrokerMain --broker-id 1 --port 9093 --data-dir ./data/broker-1 --controller-addr localhost:9092
+java -cp mq-demo/target/mq-demo-2.0.0-SNAPSHOT.jar com.minimq.demo.BrokerMain --broker-id 1 --port 9093 --data-dir ./data/broker-1 --controller-addr localhost:9092
 
 # Terminal 3
-java -cp mq-demo/target/mq-demo-1.3.0.jar com.minimq.demo.BrokerMain --broker-id 2 --port 9094 --data-dir ./data/broker-2 --controller-addr localhost:9092
+java -cp mq-demo/target/mq-demo-2.0.0-SNAPSHOT.jar com.minimq.demo.BrokerMain --broker-id 2 --port 9094 --data-dir ./data/broker-2 --controller-addr localhost:9092
 ```
 
 或使用 fat jar：
 
 ```bash
 mvn -pl mq-demo package
-java -jar mq-demo/target/mq-demo-1.3.0.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller
+java -jar mq-demo/target/mq-demo-2.0.0-SNAPSHOT.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller
 ```
 
 ## Demo 流程
 
 ```bash
 # 1. 创建 Topic
-java -jar mq-demo/target/mq-demo-1.3.0.jar create-topic --brokers localhost:9092 --name orders --partitions 3
+java -jar mq-demo/target/mq-demo-2.0.0-SNAPSHOT.jar create-topic --brokers localhost:9092 --name orders --partitions 3
 
 # 2. 发送消息
-java -jar mq-demo/target/mq-demo-1.3.0.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
+java -jar mq-demo/target/mq-demo-2.0.0-SNAPSHOT.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
 
 # 3. 消费消息
-java -jar mq-demo/target/mq-demo-1.3.0.jar consume --brokers localhost:9092 --topic orders --group order-processors
+java -jar mq-demo/target/mq-demo-2.0.0-SNAPSHOT.jar consume --brokers localhost:9092 --topic orders --group order-processors
 ```
 
 
@@ -125,7 +125,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-web.ps1 
 也可以直接运行开发启动器：
 
 ```powershell
-java -Dminimq.web.port=18082 -Dminimq.broker.port=19092 -Dminimq.data.dir=.run/data-live -cp mq-demo/target/mq-demo-1.3.0.jar com.minimq.demo.web.MiniMqWebDevMain
+java -Dminimq.web.port=18082 -Dminimq.broker.port=19092 -Dminimq.data.dir=.run/data-live -cp mq-demo/target/mq-demo-2.0.0-SNAPSHOT.jar com.minimq.demo.web.MiniMqWebDevMain
 ```
 
 前端自动化测试覆盖：静态页面资源、真实 MiniMQ 主流程、Broker 不可用时的 mock fallback、HTTP 错误处理、表单默认值与模式归一化。
