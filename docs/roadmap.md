@@ -1,13 +1,13 @@
 # MiniMQ TODO And Roadmap / MiniMQ 代办与后续版本功能文档
 
-> This roadmap explains known limitations, recommended next tasks, and larger V2 features.
-> 本路线图说明当前已知限制、推荐下一步任务，以及后续 V2 功能方向。
+> This roadmap explains known limitations, recommended next tasks, and the production-grade version sequence from V1.3 through V4.
+> 本路线图说明当前已知限制、推荐下一步任务，以及从 V1.3 到 V4 的生产级能力演进顺序。
 
 ## 1. Current State / 当前状态
 
-MiniMQ currently has a readable, tested V1.2 snapshot baseline. The Maven version is `1.2.0-SNAPSHOT`. The core broker/client flows work: create topic, register brokers, fetch metadata, produce records, fetch records, join consumer group, sync assignment, heartbeat, commit offset, fetch offset, run a CLI demo, enforce per-module JaCoCo line coverage in `mvn verify`, reject malformed protocol collection counts, retry failed client connects with fixed backoff, and verify broker restart cleanup. V1.2 also adds a browser-based Web demo, a local one-process development launcher, real/auto/mock Web flow modes, and Web runtime reuse with concurrency isolation, failure rebuild, and bounded LRU cleanup. The V1.2 verification pass completed with 74 tests, 0 failures, 0 errors, and 91.70% overall line coverage.
+MiniMQ has completed the V1.3 closeout. The Maven version is `1.3.0`. The V1.3 baseline includes the V1.2 release-quality checkpoint plus configurable request timeout, typed client exceptions, topic-level metadata cache, stale metadata invalidation, a fixed data-plane retry budget of initial request plus one refresh retry after `NOT_LEADER`, user-facing error messages with API/topic/partition/attempt context, metadata corruption recovery, and partition-log corruption recovery. The next recommended track is V2.0 storage recovery foundation: independent WAL, checkpoint contract, and explicit flush policy.
 
-MiniMQ 当前已经有一个可读、可测、可演示的 V1.2 快照基线版本，Maven 版本为 `1.2.0-SNAPSHOT`。核心 Broker/Client 流程可用：创建 Topic、Broker 注册、拉取元数据、生产消息、拉取消息、加入消费组、同步分配、心跳、提交 offset、拉取 offset、CLI 演示，并且已在 `mvn verify` 中加入逐模块 JaCoCo 行覆盖率门禁，补充畸形协议集合 count 测试，支持客户端连接失败后的固定退避重试，并验证 Broker 重启资源释放。V1.2 还增加了浏览器 Web 演示、本地单进程开发启动器、真实/自动/mock Web 主流程模式，以及带并发隔离、异常重建和有界 LRU 清理的 Web runtime 复用能力。V1.2 验证已完成：74 个测试、0 失败、0 错误，总体行覆盖率 91.70%。
+MiniMQ 已完成 V1.3 收口，Maven 版本为 `1.3.0`。V1.3 基线包含 V1.2 发布质量检查点，并补齐同步请求可配置超时、类型化客户端异常、Topic 级元数据缓存、过期元数据失效、数据面固定重试预算（初始请求 + `NOT_LEADER` 后刷新元数据重试一次）、带 API/topic/partition/attempt 上下文的用户可见错误信息、元数据损坏恢复和分区日志损坏恢复。下一条推荐主线是 V2.0 存储恢复基础：独立 WAL、checkpoint 契约和显式刷盘策略。
 
 The most important limitation is that the system is still single-replica and controller-static. This keeps the design compact, but it means broker failures can lose availability and data for affected partitions.
 
@@ -25,11 +25,11 @@ The most important limitation is that the system is still single-replica and con
 | P1 | Completed: Web demo and local launcher. / 已完成：Web 演示与本地启动器。 | Browser testing now covers the user-facing create/produce/consume path without manually running separate broker and Web processes. / 浏览器测试现在覆盖用户可见的创建、生产、消费路径，不需要手动分别管理 Broker 和 Web 进程。 | `MiniMqWebAppTest` and `MiniMqWebDevMainTest` cover static assets, API flow, fallback, and launcher defaults. / `MiniMqWebAppTest` 和 `MiniMqWebDevMainTest` 覆盖静态资源、API 流程、fallback 和启动器默认值。 |
 | P1 | Completed: Web runtime reuse and concurrency isolation. / 已完成：Web runtime 复用与并发隔离。 | Reusing admin, producer, and consumer connections removes repeated setup latency while preventing concurrent requests from consuming each other's messages. / 复用管理连接、Producer 和 Consumer 能降低重复初始化延迟，同时避免并发请求互相消费消息。 | `isolatesConcurrentRealFlowRequestsOnSharedRuntime` verifies same-runtime concurrent real requests receive their own messages. / `isolatesConcurrentRealFlowRequestsOnSharedRuntime` 验证同一 runtime 上的并发真实请求各自消费自己的消息。 |
 | P1 | Completed: Web runtime rebuild and bounded cleanup. / 已完成：Web runtime 重建与有界回收。 | Failed runtimes are evicted and rebuilt, and the cache is capped to avoid unbounded sockets, event loops, and heartbeat threads. / 失败 runtime 会被驱逐并重建，缓存有上限，避免 socket、EventLoop 和心跳线程无界增长。 | `rebuildsCachedRuntimeAfterRuntimeFailure` and `evictsRuntimeCacheWhenLimitIsExceeded` cover rebuild and LRU eviction. / `rebuildsCachedRuntimeAfterRuntimeFailure` 和 `evictsRuntimeCacheWhenLimitIsExceeded` 覆盖重建和 LRU 淘汰。 |
-| P1 | Add client retry on stale metadata / `NOT_LEADER`. / 为过期元数据或 `NOT_LEADER` 增加客户端重试。 | V1.2 covers connection retry and Web runtime rebuild; metadata refresh retry is still open. / V1.2 已覆盖连接重试和 Web runtime 重建，元数据刷新重试仍待实现。 | Simulated leader mismatch tests. / 模拟 leader 不匹配测试。 |
-| P2 | Add metadata corruption handling. / 增加元数据损坏处理。 | JSON metadata file can be invalid or partially written. / JSON 元数据文件可能非法或只写入了一部分。 | Corrupt metadata file test. / 损坏元数据文件测试。 |
-| P2 | Add log corruption handling. / 增加日志损坏处理。 | Partial records after crash should not break all recovery. / 崩溃后的半条记录不应破坏全部恢复。 | Truncated log recovery test. / 截断日志恢复测试。 |
+| P1 | Completed: Client stale metadata / `NOT_LEADER` resilience. / 已完成：客户端过期元数据与 `NOT_LEADER` 韧性。 | V1.3 caches metadata per topic, invalidates stale metadata on `NOT_LEADER` or cache routing failure, refreshes once, and reports contextual errors when the retry budget is exhausted. / V1.3 按 Topic 缓存元数据，在 `NOT_LEADER` 或缓存路由失败时失效并刷新一次，重试预算耗尽后返回带上下文的错误。 | `ProducerNotLeaderRetryTest` and `ConsumerNotLeaderRetryTest` cover cache reuse, invalidation, retry budget, and error context. / `ProducerNotLeaderRetryTest` 与 `ConsumerNotLeaderRetryTest` 覆盖缓存复用、失效、重试预算和错误上下文。 |
+| P1 | Completed: Metadata corruption recovery. / 已完成：元数据损坏恢复。 | Startup now validates JSON metadata shape and semantic consistency, fails clearly by default, and quarantines corrupt metadata only when recovery is explicitly enabled. / 启动现在校验 JSON 元数据结构和语义一致性，默认清晰失败；仅在显式启用恢复时隔离损坏元数据。 | `MetadataStoreTest` covers corrupt JSON, empty files, schema-incompatible documents, key mismatches, safe write, and quarantine behavior. / `MetadataStoreTest` 覆盖损坏 JSON、空文件、结构不兼容文档、key 不匹配、安全写入与隔离行为。 |
+| P1 | Completed: Log corruption and truncated-record recovery. / 已完成：日志损坏与截断记录恢复。 | Partition-log startup keeps complete valid records, truncates only incomplete tail records, and rejects structural corruption with clear storage errors. / 分区日志启动时保留完整有效记录，只截断尾部半条记录，并对结构性损坏返回清晰存储错误。 | `FilePartitionLogTest` covers truncated header, truncated key/value payload, invalid negative length, impossible payload size, non-monotonic offset, and recovered `nextOffset`. / `FilePartitionLogTest` 覆盖截断 header、截断 key/value payload、非法负长度、异常 payload 大小、非单调 offset 与恢复后的 `nextOffset`。 |
 
-## 3. V2 Feature Roadmap / V2 功能路线图
+## 3. Version Roadmap / 版本路线图
 
 ```mermaid
 timeline
@@ -47,54 +47,85 @@ timeline
                                          : Runtime reuse / Runtime 复用
                                          : Concurrency isolation / 并发隔离
                                          : Failure rebuild and LRU cleanup / 异常重建与 LRU 回收
-    V2 Replication / V2 副本 : Partition replicas / 分区副本
-                             : ISR tracking / ISR 跟踪
-                             : Leader failover / Leader 故障转移
-                             : Replica fetch protocol / 副本拉取协议
-    V2 Storage / V2 存储 : Log segments / 日志分段
-                          : Sparse index / 稀疏索引
-                          : Retention / 保留策略
-                          : Compaction / 压缩
-    V3 Operations / V3 运维 : Controller election / Controller 选举
-                            : Metrics / 指标
-                            : Admin API / 管理 API
-                            : Docker compose cluster / Docker Compose 集群
+    V1.3 Client Resilience / V1.3 客户端韧性 : NOT_LEADER retry / NOT_LEADER 重试
+                                             : Metadata refresh / 元数据刷新
+                                             : Request timeout / 请求超时
+    V1.3 Recovery Hardening / V1.3 恢复加固 : Metadata corruption recovery / 元数据损坏恢复
+                                             : Truncated log tail recovery / 日志尾部截断恢复
+    V2.0 Storage Foundation / V2.0 存储基础 : Independent WAL / 独立 WAL
+                                             : Checkpoint recovery / Checkpoint 恢复
+                                             : Flush policy / 刷盘策略
+    V2.1 Segmented Log / V2.1 分段日志 : Log segments / 日志分段
+                                       : Sparse index / 稀疏索引
+                                       : Retention / 保留策略
+                                       : Compaction / 压缩
+    V2.2 Read Performance / V2.2 读取性能 : mmap or sendfile / mmap 或 sendfile
+                                           : Zero-copy experiment / 零拷贝实验
+    V2.3 Replication / V2.3 副本机制 : Partition replicas / 分区副本
+                                      : ISR tracking / ISR 跟踪
+                                      : Leader failover / Leader 故障转移
+                                      : Replica fetch protocol / 副本拉取协议
+    V3.0 Control Plane HA / V3.0 控制面高可用 : Zookeeper or etcd discovery / Zookeeper 或 etcd 服务发现
+                                                : Controller election / Controller 选举
+                                                : Epoch fencing / Epoch 防旧主写入
+    V3.1 Operations Resilience / V3.1 运行时韧性 : Metrics / 指标
+                                                  : Circuit breaker / 熔断
+                                                  : Degradation and throttling / 降级与限流
+    V3.2 Network Performance / V3.2 网络性能 : Netty Epoll transport / Netty Epoll 传输
+                                              : NIO fallback / NIO 回退
+    V4 Experimental Storage / V4 实验性存储 : Optional LSM state store / 可选 LSM 状态存储
 ```
 
-### 3.1 Replication / 副本机制
+### 3.1 V1.3 Client Resilience / V1.3 客户端韧性
 
-Replication means each partition has multiple copies across brokers. One broker is leader; others are followers. Followers fetch records from the leader. If the leader fails, a follower can become the new leader.
+V1.3 finished the client-side correctness work before changing storage or cluster architecture. The main goal is to make clients recover from stale metadata and leader mismatch without hiding real errors.
 
-副本机制指每个分区在多个 Broker 上保留多份数据。一个 Broker 是 Leader，其他 Broker 是 Follower。Follower 从 Leader 拉取日志。如果 Leader 故障，Follower 可以成为新的 Leader。
+V1.3 已先补齐客户端正确性，再进入存储或集群架构重构。核心目标是在元数据过期、Leader 不匹配时自动恢复，同时不掩盖真实错误。
 
-Key concepts / 关键概念：
+Implemented scope / 已实现范围：
 
-| Term / 术语 | 中文解释 | English explanation / 英文解释 |
-| --- | --- | --- |
-| Replica | 分区的一份数据副本。 | A copy of a partition's data. |
-| Leader replica | 负责客户端读写的副本。 | The replica serving client reads/writes. |
-| Follower replica | 从 leader 同步数据的副本。 | A replica that fetches from the leader. |
-| ISR | In-Sync Replicas，同步进度足够接近 leader 的副本集合。 | Replicas that are sufficiently caught up with the leader. |
-| Acknowledgement | 写入成功确认策略，例如只等 leader 或等 ISR。 | The write success policy, such as leader-only or ISR quorum. |
+1. Implemented: cache metadata per topic and invalidate stale cache entries on `NOT_LEADER` or cache routing failure. / 已实现：按 Topic 缓存元数据，并在 `NOT_LEADER` 或缓存路由失败时失效过期缓存。
+2. Implemented: cap data-plane stale-metadata recovery at initial request plus one metadata refresh retry. / 已实现：数据面过期元数据恢复预算固定为初始请求 + 一次元数据刷新重试。
+3. Implemented: add request timeout configuration for synchronous sends. / 已实现：为同步请求增加超时配置。
+4. Implemented: replace generic client failures with a clearer exception hierarchy and user-facing operation context. / 已实现：用更清晰的异常层次替代通用客户端异常，并补充用户可见操作上下文。
+5. Keep fixed-backoff connection retry as the default baseline. / 保留固定退避连接重试作为默认基线。
+
+### 3.2 V1.3 Metadata And Log Corruption Recovery / V1.3 元数据与日志损坏恢复
+
+This V1.3 follow-up track hardens current local persistence before the V2 storage redesign. It should not introduce the independent WAL yet. The goal is to make existing JSON metadata and single-file partition logs fail predictably, preserve valid data, and give operators a clear recovery path.
+
+这个 V1.3 后续阶段先加固当前本地持久化，不提前引入 V2 独立 WAL。目标是让现有 JSON 元数据和单文件分区日志在损坏时行为可预测：尽量保留有效数据，并给运维/开发者清晰的恢复路径。
+
+Suggested scope / 建议范围：
+
+1. Implemented: metadata load validation detects empty, malformed, partially written, or schema-incompatible `cluster-metadata.json`. / 已实现：元数据加载校验可识别空文件、畸形 JSON、半截写入或结构不兼容的 `cluster-metadata.json`。
+2. Implemented: metadata safe-write path writes to a temp file, forces it, then atomically replaces the live metadata file where supported. / 已实现：元数据安全写入先写临时文件并刷盘，再在支持的平台上原子替换正式元数据文件。
+3. Implemented: metadata quarantine moves unreadable metadata to a timestamped `.corrupt` file and starts with empty controller state only when explicitly allowed. / 已实现：元数据隔离会把无法读取的元数据移动到带时间戳的 `.corrupt` 文件，且只有显式允许时才以空 Controller 状态启动。
+4. Implemented: partition log tail recovery stops at the last complete valid record and truncates the damaged tail. / 已实现：分区日志尾部恢复会停在最后一条完整有效记录，并截断损坏尾部。
+5. Implemented: partition log structural validation rejects negative lengths, impossible payload sizes, and non-monotonic offsets with clear storage errors. / 已实现：分区日志结构校验会对负长度、异常 payload 大小和非单调 offset 返回清晰存储错误。
+6. Verified: targeted recovery tests pass with `mvn -o -Dmaven.repo.local=.m2\repository -pl mq-storage,mq-broker -am -Dtest=FilePartitionLogTest,MetadataStoreTest -DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false test`. / 已验证：目标恢复测试已通过上述 Maven 命令。
+
+Out of scope for this V1.3 track / 本阶段暂不包含：
+
+1. Independent WAL, checkpoints, and WAL replay. / 独立 WAL、checkpoint 与 WAL 重放。
+2. Segment files, sparse indexes, retention, and compaction. / Segment 文件、稀疏索引、保留策略与压缩。
+3. Replication-aware recovery, ISR, and leader failover. / 副本感知恢复、ISR 与 Leader 故障转移。
+
+### 3.3 V2.0 Storage Recovery Foundation / V2.0 存储恢复基础
+
+V2.0 should separate durable intent from log layout by introducing an independent WAL and checkpointed recovery. This gives later segmented logs, indexes, and replication a stable recovery contract.
+
+V2.0 应通过独立 WAL 与 checkpoint 恢复，把“持久化意图”和“日志文件布局”拆开。这样后续日志分段、索引、副本同步都能依赖稳定的恢复语义。
 
 Suggested implementation steps / 建议实现步骤：
 
-1. Extend metadata with replica list and ISR list per partition. / 为每个分区在元数据中增加 replica 列表和 ISR 列表。
-2. Add replica fetch API for follower brokers. / 为 Follower Broker 增加副本拉取 API。
-3. Add high watermark based on replicated offsets. / 基于副本同步 offset 计算 high watermark。
-4. Add leader election logic within static controller. / 在静态 Controller 中加入 leader 选举逻辑。
-5. Add tests for leader crash, follower promotion, and not-leader redirect behavior. / 增加 leader 崩溃、follower 提升、not-leader 重定向测试。
+1. Add a WAL record format with record type, partition id, offset, payload length, and checksum. / 增加 WAL 记录格式，包含记录类型、分区、offset、payload 长度与校验和。
+2. Replay WAL during broker startup before opening partition logs for reads. / Broker 启动时先重放 WAL，再开放分区日志读取。
+3. Add checkpoints so recovery does not scan from the beginning forever. / 增加 checkpoint，避免恢复永远从头扫描。
+4. Make flush policy explicit: per-append, periodic, or batch flush. / 显式化刷盘策略：每次追加、周期刷盘或批量刷盘。
+5. Add crash and truncated-WAL recovery tests. / 增加崩溃与 WAL 截断恢复测试。
 
-### 3.2 Controller Election / Controller 选举
-
-The current controller is static. V2 can introduce a simple election mechanism before moving to a full consensus system. A lightweight first step is to designate the lowest online broker id as controller and persist controller epoch.
-
-当前 Controller 是静态的。V2 可以先引入简单选举机制，再考虑完整一致性协议。轻量第一步可以是：在线 Broker 中 id 最小者成为 Controller，并持久化 controller epoch。
-
-Professional term: **epoch** means a monotonically increasing generation number used to reject stale decisions.
-专业名词：**epoch** 是单调递增的代数编号，用于拒绝旧 Controller 或旧 Leader 的过期决策。
-
-### 3.3 Segmented Log / 分段日志
+### 3.4 V2.1 Segmented Log, Index, Retention, And Compaction / V2.1 分段日志、索引、保留与压缩
 
 The current storage writes one file per partition. Segmented logs split a partition log into multiple files, often by size or time.
 
@@ -125,8 +156,6 @@ Benefits / 收益：
 - Index files can map offset to file position. / 索引文件可以把 offset 映射到文件位置。
 - Compaction can run segment by segment. / 压缩可以按 segment 分段执行。
 
-### 3.4 Retention And Compaction / 保留策略与压缩
-
 Retention deletes old data by time or size. Compaction keeps the latest value for each key. They solve different problems:
 
 Retention 根据时间或大小删除旧数据。Compaction 保留每个 key 的最新值。二者解决的问题不同：
@@ -136,20 +165,120 @@ Retention 根据时间或大小删除旧数据。Compaction 保留每个 key 的
 | Retention / 保留策略 | Bound disk usage. / 控制磁盘用量上界。 | Delete segments older than 7 days. / 删除超过 7 天的 segment。 |
 | Compaction / 压缩 | Preserve latest state by key. / 按 key 保留最新状态。 | Keep latest user profile update per user id. / 为每个用户 id 保留最新用户资料更新。 |
 
-### 3.5 Client Improvements / 客户端增强
+### 3.5 V2.2 Zero-Copy Read Performance / V2.2 零拷贝读取性能
+
+V2.2 should optimize reads only after segment and index formats are stable. Start with one path, measure it, and keep the existing heap-buffer path as a fallback.
+
+V2.2 应在 segment 与 index 格式稳定后再优化读取性能。建议先实现一种路径、可观测地验证收益，并保留现有堆内 buffer 路径作为回退。
+
+Suggested order / 建议顺序：
+
+1. Add benchmark or integration timing for large fetch responses. / 为大批量拉取增加基准或集成耗时测试。
+2. Choose either `mmap` for indexed local reads or `FileChannel.transferTo` / sendfile for socket writes. / 先在 `mmap` 索引本地读取与 `FileChannel.transferTo` / sendfile socket 写入中二选一。
+3. Keep OS and JDK compatibility fallback to the current ByteBuf path. / 保留对操作系统与 JDK 兼容的当前 ByteBuf 回退路径。
+4. Document when zero-copy is enabled and when it is bypassed. / 记录零拷贝启用和绕过条件。
+
+### 3.6 V2.3 Replication / V2.3 副本机制
+
+Replication means each partition has multiple copies across brokers. One broker is leader; others are followers. Followers fetch records from the leader. If the leader fails, a follower can become the new leader.
+
+副本机制指每个分区在多个 Broker 上保留多份数据。一个 Broker 是 Leader，其他 Broker 是 Follower。Follower 从 Leader 拉取日志。如果 Leader 故障，Follower 可以成为新的 Leader。
+
+Key concepts / 关键概念：
+
+| Term / 术语 | 中文解释 | English explanation / 英文解释 |
+| --- | --- | --- |
+| Replica | 分区的一份数据副本。 | A copy of a partition's data. |
+| Leader replica | 负责客户端读写的副本。 | The replica serving client reads/writes. |
+| Follower replica | 从 leader 同步数据的副本。 | A replica that fetches from the leader. |
+| ISR | In-Sync Replicas，同步进度足够接近 leader 的副本集合。 | Replicas that are sufficiently caught up with the leader. |
+| Acknowledgement | 写入成功确认策略，例如只等 leader 或等 ISR。 | The write success policy, such as leader-only or ISR quorum. |
+
+Suggested implementation steps / 建议实现步骤：
+
+1. Extend metadata with replica list and ISR list per partition. / 为每个分区在元数据中增加 replica 列表和 ISR 列表。
+2. Add replica fetch API for follower brokers. / 为 Follower Broker 增加副本拉取 API。
+3. Add high watermark based on replicated offsets. / 基于副本同步 offset 计算 high watermark。
+4. Add leader election logic within static controller. / 在静态 Controller 中加入 leader 选举逻辑。
+5. Add tests for leader crash, follower promotion, and not-leader redirect behavior. / 增加 leader 崩溃、follower 提升、not-leader 重定向测试。
+
+### 3.7 V3.0 Control Plane HA And Service Discovery / V3.0 控制面高可用与服务发现
+
+The current controller is static. V3.0 should introduce a production-style discovery and election layer after replicas and leader failover exist. Prefer one backend first, such as etcd or Zookeeper, instead of implementing both at the same time.
+
+当前 Controller 是静态的。V3.0 应在副本与 Leader 故障转移完成后，引入更接近生产系统的发现与选举层。建议先选择 etcd 或 Zookeeper 其中一个，不要两个同时实现。
+
+Professional term: **epoch** means a monotonically increasing generation number used to reject stale decisions.
+专业名词：**epoch** 是单调递增的代数编号，用于拒绝旧 Controller 或旧 Leader 的过期决策。
+
+Suggested scope / 建议范围：
+
+1. Store broker leases, controller identity, and controller epoch in the discovery backend. / 在服务发现后端保存 Broker lease、Controller 身份与 controller epoch。
+2. Watch membership changes and trigger metadata refresh or leader election. / 监听成员变化并触发元数据刷新或 Leader 选举。
+3. Add fencing so stale controllers or leaders cannot commit newer metadata. / 增加 fencing，避免旧 Controller 或旧 Leader 提交新元数据。
+4. Keep a local in-memory fallback only for single-process demos. / 仅为单进程 demo 保留本地内存回退路径。
+
+### 3.8 V3.1 Operational Resilience / V3.1 运行时韧性
+
+V3.1 should add production protection mechanisms around the existing protocol and runtime: metrics, circuit breaker, degradation, throttling, and fault-injection tests.
+
+V3.1 应围绕现有协议与运行时补充生产保护机制：指标、熔断、降级、限流和故障注入测试。
+
+Suggested scope / 建议范围：
+
+1. Expose runtime metrics for produce, fetch, append latency, fetch latency, lag, and metadata save failures. / 暴露生产、拉取、追加延迟、读取延迟、滞后与元数据保存失败等指标。
+2. Add circuit breakers for repeated broker connection failures and repeated controller failures. / 为 Broker 连接连续失败与 Controller 连续失败增加熔断。
+3. Add degradation behavior for read-only metadata or temporary produce rejection when storage is unhealthy. / 存储不健康时支持只读元数据或临时拒绝生产的降级行为。
+4. Add throttling to prevent one client or topic from exhausting broker resources. / 增加限流，避免单个客户端或 Topic 耗尽 Broker 资源。
+
+```mermaid
+xychart-beta
+    title "Example Future Metrics Dashboard / 未来指标示例"
+    x-axis ["produce/s/生产", "fetch/s/拉取", "append ms/追加", "fetch ms/读取", "lag/滞后"]
+    y-axis "Value / 数值" 0 --> 100
+    bar [80, 65, 8, 12, 25]
+```
+
+### 3.9 V3.2 Network Performance / V3.2 网络性能
+
+V3.2 should add Netty native transport only after correctness and operational resilience are in place. Epoll should be optional and Linux-only; the default NIO path must remain supported for Windows and macOS development.
+
+V3.2 应在正确性与运行时韧性完成后再加入 Netty native transport。Epoll 应作为 Linux-only 可选能力；默认 NIO 路径仍需支持 Windows 与 macOS 开发。
+
+Suggested scope / 建议范围：
+
+1. Detect Linux native transport availability at startup. / 启动时检测 Linux native transport 是否可用。
+2. Use EpollEventLoopGroup and EpollServerSocketChannel only when explicitly enabled or auto-detected safely. / 仅在显式启用或安全自动检测时使用 EpollEventLoopGroup 与 EpollServerSocketChannel。
+3. Preserve the existing NIO implementation as the fallback. / 保留现有 NIO 实现作为回退。
+4. Add smoke tests that prove both NIO and fallback selection work. / 增加冒烟测试证明 NIO 与回退选择可用。
+
+### 3.10 V4 Experimental LSM State Store / V4 实验性 LSM 状态存储
+
+LSM-Tree should not replace the main message log. MiniMQ's core storage is closer to Kafka-style append-only segmented logs. If LSM-Tree is needed for learning or interview coverage, add it as an optional state-store module for compacted-topic lookup or secondary index experiments.
+
+LSM-Tree 不建议替换主消息日志。MiniMQ 的核心存储更接近 Kafka 风格的 append-only segmented log。如果需要覆盖 LSM-Tree 学习或面试点，建议把它作为可选 state-store 模块，用于 compacted topic 查询或二级索引实验。
+
+Suggested scope / 建议范围：
+
+1. Add MemTable, SSTable, and manifest files in a separate experimental module. / 在独立实验模块中增加 MemTable、SSTable 与 manifest 文件。
+2. Use WAL from V2.0 only as a reusable durability primitive, not as a replacement for segmented logs. / 仅复用 V2.0 WAL 作为持久化基础，不替换分段日志。
+3. Use the state store for compacted key lookup or secondary index demos. / 用 state store 支持 compacted key 查询或二级索引 demo。
+4. Keep this outside the default broker write path until benchmarks justify it. / 在性能验证前，不把它放入默认 Broker 写入路径。
+
+### 3.11 Client Improvements / 客户端增强
 
 Current clients are synchronous and simple. Useful next features:
 当前客户端是同步且简单的。可考虑的后续功能：
 
 1. Reconnect with exponential backoff. / 使用指数退避重连。
-2. Metadata refresh on `NOT_LEADER`. / 遇到 `NOT_LEADER` 时刷新元数据。
+2. Completed in V1.3: metadata cache invalidation and one refresh retry on `NOT_LEADER`. / V1.3 已完成：遇到 `NOT_LEADER` 时失效元数据缓存并刷新重试一次。
 3. Producer batching. / Producer 批量发送。
 4. Producer send timeout configuration. / Producer 发送超时配置。
 5. Consumer pause/resume partitions. / Consumer 暂停/恢复分区消费。
 6. Consumer auto-commit option. / Consumer 自动提交选项。
 7. Better exception hierarchy instead of generic `IllegalStateException`. / 使用更清晰的异常层次替代通用 `IllegalStateException`。
 
-### 3.6 Observability / 可观测性
+### 3.12 Observability / 可观测性
 
 MiniMQ should expose runtime metrics. Suggested metrics:
 
@@ -165,14 +294,6 @@ MiniMQ 应该暴露运行时指标，建议包括：
 | consumer lag | High watermark minus committed offset. / 高水位减去已提交 offset。 |
 | metadata save failures | Controller metadata persistence failures. / Controller 元数据持久化失败次数。 |
 
-```mermaid
-xychart-beta
-    title "Example Future Metrics Dashboard / 未来指标示例"
-    x-axis ["produce/s/生产", "fetch/s/拉取", "append ms/追加", "fetch ms/读取", "lag/滞后"]
-    y-axis "Value / 数值" 0 --> 100
-    bar [80, 65, 8, 12, 25]
-```
-
 ## 4. Documentation TODOs / 文档代办
 
 1. Keep API table in `design.md` synchronized with `ApiKeys`. / 保持 `design.md` 中的 API 表与 `ApiKeys` 同步。
@@ -187,11 +308,10 @@ For a new agent session, the most productive next tasks are:
 
 对新 agent 会话，最建议继续做：
 
-1. Add client retry on stale metadata / `NOT_LEADER`. / 为过期元数据或 `NOT_LEADER` 增加客户端重试。
-2. Add metadata corruption handling. / 增加元数据损坏处理。
-3. Add log corruption handling and truncated log recovery. / 增加日志损坏处理与截断日志恢复。
-4. Add protocol compatibility notes for future V2 fields. / 为后续 V2 字段增加协议兼容性说明。
-5. Start V2 metadata model for replicas without implementing full replication yet. / 先启动副本相关 V2 元数据模型，不急于实现完整副本机制。
+1. Add protocol compatibility notes for future V2 fields. / 为后续 V2 字段增加协议兼容性说明。
+2. Start V2 metadata model for replicas without implementing full replication yet. / 先启动副本相关 V2 元数据模型，不急于实现完整副本机制。
+3. Start V2.0 storage recovery foundation: independent WAL format, checkpoint contract, and flush policy. / 启动 V2.0 存储恢复基础：独立 WAL 格式、checkpoint 契约和刷盘策略。
+4. Prepare V2.0 milestone tasks after the `v1.3.0` release tag. / 在 `v1.3.0` 发布 tag 后准备 V2.0 里程碑任务。
 
 ## 6. Risk Register / 风险登记表
 

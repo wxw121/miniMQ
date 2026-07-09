@@ -121,6 +121,10 @@ The log recovers `nextOffset` by scanning the file from the beginning and settin
 
 日志启动时通过从头扫描文件恢复 `nextOffset`，最终设置为 `lastOffset + 1`。这种方式简单但复杂度是 O(file size)。未来分段日志应引入 checkpoint 或稀疏索引。
 
+V1.3 corruption recovery keeps the current single-file layout but makes startup safer. During log scanning, the reader should accept complete valid records, stop at the first incomplete tail record, truncate that damaged tail, and recover `nextOffset` from the last valid offset. Structural corruption such as negative key/value lengths, impossible payload sizes, or non-monotonic offsets should produce a clear storage exception instead of continuing with ambiguous data.
+
+V1.3 损坏恢复阶段仍保留当前单文件布局，但要让启动更安全。日志扫描时应接受完整有效记录；遇到尾部半条记录时停止扫描、截断损坏尾部，并用最后一条有效 offset 恢复 `nextOffset`。如果出现负 key/value 长度、异常 payload 大小、offset 非单调等结构性损坏，应抛出清晰的存储异常，而不是继续加载含糊数据。
+
 ### 4.2 Write Safety / 写入安全
 
 The implementation uses a `writeFully(ByteBuffer)` loop because `FileChannel.write` does not guarantee that the whole buffer is written in one call. After each append, `channel.force(false)` flushes file contents to storage.
@@ -136,6 +140,10 @@ Cluster metadata is persisted by `MetadataStore` as JSON in:
 ```text
 {dataDir}/cluster-metadata.json
 ```
+
+V1.3 metadata corruption recovery should validate this file before applying it to controller state. Empty files, malformed JSON, partially written JSON, or schema-incompatible documents are treated as corrupt. The preferred write path is temp-file write, force, and atomic replace where the platform supports it. The preferred recovery path is to quarantine the unreadable file with a timestamped `.corrupt` suffix and either fail fast with a clear error or start from an empty metadata state only when corruption recovery is explicitly enabled.
+
+V1.3 元数据损坏恢复需要在应用到 Controller 状态前校验该文件。空文件、畸形 JSON、半截 JSON 或结构不兼容文档都视为损坏。推荐写入路径是先写临时文件、刷盘，再在平台支持时原子替换正式文件。推荐恢复路径是把不可读文件隔离为带时间戳的 `.corrupt` 文件，然后要么带清晰错误快速失败，要么仅在显式启用损坏恢复时从空元数据状态启动。
 
 The metadata object contains brokers, topics, partitions, consumer groups, group members, and committed offsets.
 
@@ -232,6 +240,10 @@ Consumer group coordination is simplified but captures the essential flow:
 `Producer` keeps one bootstrap controller client and lazily creates leader broker clients. `Consumer` keeps one controller client, joins the group during subscribe, starts heartbeat scheduling, and polls assigned partitions.
 
 `Producer` 保留一个 bootstrap controller client，并懒加载 leader broker client。`Consumer` 保留一个 controller client，在 subscribe 时加入 group，启动 heartbeat，并轮询 assigned partitions。
+
+V1.3 adds the client-resilience boundary for stale metadata. `NetworkClient` supports configurable synchronous request timeout and converts common failures into typed client exceptions. `Producer` and `Consumer` cache metadata per topic, invalidate the cache when a data-plane request receives `NOT_LEADER` or cached metadata can no longer route the topic/partition, refresh metadata once, and retry once. The retry budget is fixed at initial request plus one refresh retry. If the second attempt still fails, the surfaced `MiniMqServerException` includes operation context such as API, topic, partition, and attempt count.
+
+V1.3 补齐了过期元数据相关的客户端韧性边界。`NetworkClient` 支持同步请求超时配置，并把常见失败转换为类型化客户端异常。`Producer` 和 `Consumer` 按 Topic 缓存元数据；当数据面请求遇到 `NOT_LEADER`，或缓存元数据已经无法路由 topic/partition 时，会失效缓存、刷新元数据并重试一次。重试预算固定为初始请求 + 一次刷新重试；如果第二次仍失败，抛出的 `MiniMqServerException` 会包含 API、topic、partition、attempt 等用户可见上下文。
 
 ### 8.1 Web Runtime Reuse / Web Runtime 复用
 

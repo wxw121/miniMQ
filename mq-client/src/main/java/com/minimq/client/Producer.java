@@ -1,10 +1,13 @@
 package com.minimq.client;
 
+import com.minimq.client.exception.MiniMqMetadataException;
 import com.minimq.client.model.ProduceResult;
 import com.minimq.client.model.ProducerRecord;
+import com.minimq.common.error.ErrorCode;
 import com.minimq.common.util.Murmur2Partitioner;
 import com.minimq.protocol.ApiKeys;
 import com.minimq.protocol.codec.MqDecoder;
+import com.minimq.protocol.message.MqResponseHeader;
 import com.minimq.protocol.message.ProtocolMessages.*;
 import com.minimq.protocol.message.ProtocolMessages.PartitionMetadata;
 
@@ -20,6 +23,7 @@ public class Producer implements AutoCloseable {
     private final String bootstrapHost;
     private final int bootstrapPort;
     private final Map<Integer, NetworkClient> brokerClients = new HashMap<>();
+    private final Map<String, MetadataResponse> metadataCache = new HashMap<>();
 
     public Producer(String bootstrapServers, String clientId) {
         String[] parts = parseBootstrapServer(bootstrapServers);
@@ -32,18 +36,81 @@ public class Producer implements AutoCloseable {
         client.connect(bootstrapHost, bootstrapPort);
     }
 
-    // 每次发送前读取最新元数据，当前版本优先保证 leader 路由正确而不是缓存极致性能。
+    // 每次发送前读取最新元数据。若 leader 过期，V1.3 会刷新元数据并重试一次。
     public ProduceResult send(ProducerRecord record) throws InterruptedException {
+        MetadataResponse metadata = cachedMetadata(record.topic());
+        for (int attempt = 0; attempt < 2; attempt++) {
+            ProduceRoute route = routeWithRefresh(record, metadata, attempt);
+            ProduceRequest request = new ProduceRequest(
+                    record.topic(),
+                    route.partitionId(),
+                    List.of(new ProduceRecord(record.key(), record.value())));
+            MqDecoder.DecodedResponse response = sendProduce(route.leader(), request);
+            MqResponseHeader header = response.header();
+            if (header.errorCode() == ErrorCode.NOT_LEADER && attempt == 0) {
+                invalidateMetadata(record.topic());
+                invalidateBrokerClient(route.leader().brokerId());
+                metadata = refreshMetadata(record.topic());
+                continue;
+            }
+            client.ensureSuccess(response, "PRODUCE topic=" + record.topic()
+                    + " partition=" + route.partitionId() + " attempt=" + (attempt + 1) + "/2");
+            ProduceResponse produceResponse = (ProduceResponse) response.body();
+            return new ProduceResult(
+                    produceResponse.topicName(),
+                    produceResponse.partitionId(),
+                    produceResponse.baseOffset());
+        }
+        throw new IllegalStateException("unreachable");
+    }
+
+    private MetadataResponse cachedMetadata(String topicName) throws InterruptedException {
+        MetadataResponse cached = metadataCache.get(topicName);
+        if (cached != null) {
+            return cached;
+        }
+        return refreshMetadata(topicName);
+    }
+
+    private MetadataResponse refreshMetadata(String topicName) throws InterruptedException {
+        MetadataResponse metadata = fetchMetadata(topicName);
+        metadataCache.put(topicName, metadata);
+        return metadata;
+    }
+
+    private void invalidateMetadata(String topicName) {
+        metadataCache.remove(topicName);
+    }
+
+    protected MetadataResponse fetchMetadata(String topicName) throws InterruptedException {
         MqDecoder.DecodedResponse metadataResponse = client.send(
-                ApiKeys.METADATA, new MetadataRequest(record.topic()));
-        client.ensureSuccess(metadataResponse);
-        MetadataResponse metadata = (MetadataResponse) metadataResponse.body();
+                ApiKeys.METADATA, new MetadataRequest(topicName));
+        client.ensureSuccess(metadataResponse, "METADATA topic=" + topicName);
+        return (MetadataResponse) metadataResponse.body();
+    }
+
+    private ProduceRoute routeWithRefresh(
+            ProducerRecord record,
+            MetadataResponse metadata,
+            int attempt) throws InterruptedException {
+        try {
+            return route(record, metadata);
+        } catch (MiniMqMetadataException e) {
+            if (attempt == 0) {
+                invalidateMetadata(record.topic());
+                return route(record, refreshMetadata(record.topic()));
+            }
+            throw e;
+        }
+    }
+
+    private ProduceRoute route(ProducerRecord record, MetadataResponse metadata) {
         TopicMetadata topic = metadata.topics().stream()
                 .filter(t -> t.topicName().equals(record.topic()))
                 .findFirst()
-                .orElseThrow(() -> new IllegalStateException("Topic not found: " + record.topic()));
+                .orElseThrow(() -> new MiniMqMetadataException("Topic not found: " + record.topic()));
         if (topic.partitions().isEmpty()) {
-            throw new IllegalStateException("Topic has no partitions: " + record.topic());
+            throw new MiniMqMetadataException("Topic has no partitions: " + record.topic());
         }
         if (record.partitionId() != null && record.partitionId() < 0) {
             throw new IllegalArgumentException("Partition id must be non-negative");
@@ -59,24 +126,22 @@ public class Producer implements AutoCloseable {
         PartitionMetadata partition = topic.partitions().stream()
                 .filter(p -> p.partitionId() == partitionId)
                 .findFirst()
-                .orElseThrow(() -> new IllegalArgumentException(
+                .orElseThrow(() -> new MiniMqMetadataException(
                         "Partition " + partitionId + " not found for topic " + record.topic()));
 
         BrokerMetadata leader = metadata.brokers().stream()
                 .filter(b -> b.brokerId() == partition.leaderBrokerId())
                 .findFirst()
-                .orElseThrow(() -> new IllegalStateException(
+                .orElseThrow(() -> new MiniMqMetadataException(
                         "Leader broker " + partition.leaderBrokerId() + " not found"));
 
-        NetworkClient leaderClient = brokerClient(leader);
-        ProduceRequest request = new ProduceRequest(
-                record.topic(),
-                partitionId,
-                List.of(new ProduceRecord(record.key(), record.value())));
-        MqDecoder.DecodedResponse response = leaderClient.send(ApiKeys.PRODUCE, request);
-        leaderClient.ensureSuccess(response);
-        ProduceResponse produceResponse = (ProduceResponse) response.body();
-        return new ProduceResult(produceResponse.topicName(), produceResponse.partitionId(), produceResponse.baseOffset());
+        return new ProduceRoute(partitionId, leader);
+    }
+
+    protected MqDecoder.DecodedResponse sendProduce(
+            BrokerMetadata leader,
+            ProduceRequest request) throws InterruptedException {
+        return brokerClient(leader).send(ApiKeys.PRODUCE, request);
     }
 
     private NetworkClient brokerClient(BrokerMetadata leader) throws InterruptedException {
@@ -90,6 +155,13 @@ public class Producer implements AutoCloseable {
                 throw new IllegalStateException(e);
             }
         });
+    }
+
+    protected void invalidateBrokerClient(int brokerId) throws InterruptedException {
+        NetworkClient staleClient = brokerClients.remove(brokerId);
+        if (staleClient != null) {
+            staleClient.close();
+        }
     }
 
     private static String[] parseBootstrapServer(String bootstrapServers) {
@@ -106,5 +178,8 @@ public class Producer implements AutoCloseable {
         for (NetworkClient c : brokerClients.values()) {
             c.close();
         }
+    }
+
+    private record ProduceRoute(int partitionId, BrokerMetadata leader) {
     }
 }

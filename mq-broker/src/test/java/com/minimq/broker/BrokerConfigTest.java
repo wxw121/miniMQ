@@ -18,6 +18,7 @@ class BrokerConfigTest {
                 "--port", "9094",
                 "--data-dir", "./data/broker-2",
                 "--controller",
+                "--recover-corrupt-metadata",
                 "--controller-addr", "localhost:9092"
         });
 
@@ -26,6 +27,7 @@ class BrokerConfigTest {
         assertEquals(9094, config.port());
         assertEquals(Path.of("./data/broker-2"), config.dataDir());
         assertTrue(config.controller());
+        assertTrue(config.recoverCorruptMetadata());
         assertEquals("localhost", config.controllerHost());
         assertEquals(9092, config.controllerPort());
     }

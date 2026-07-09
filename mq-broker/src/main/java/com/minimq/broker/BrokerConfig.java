@@ -12,7 +12,8 @@ public record BrokerConfig(
         Path dataDir,
         boolean controller,
         String controllerHost,
-        int controllerPort) {
+        int controllerPort,
+        boolean recoverCorruptMetadata) {
 
     public static BrokerConfig parse(String[] args) {
         int brokerId = 0;
@@ -22,6 +23,7 @@ public record BrokerConfig(
         boolean controller = false;
         String controllerHost = "localhost";
         int controllerPort = 9092;
+        boolean recoverCorruptMetadata = false;
 
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
@@ -30,6 +32,7 @@ public record BrokerConfig(
                 case "--port" -> port = Integer.parseInt(value(args, ++i, "--port"));
                 case "--data-dir" -> dataDir = Path.of(value(args, ++i, "--data-dir"));
                 case "--controller" -> controller = true;
+                case "--recover-corrupt-metadata" -> recoverCorruptMetadata = true;
                 case "--controller-addr" -> {
                     String[] parts = value(args, ++i, "--controller-addr").split(":", 2);
                     if (parts.length != 2 || parts[0].isBlank() || parts[1].isBlank()) {
@@ -41,7 +44,15 @@ public record BrokerConfig(
                 default -> throw new IllegalArgumentException("Unknown argument: " + args[i]);
             }
         }
-        return new BrokerConfig(brokerId, host, port, dataDir, controller, controllerHost, controllerPort);
+        return new BrokerConfig(
+                brokerId,
+                host,
+                port,
+                dataDir,
+                controller,
+                controllerHost,
+                controllerPort,
+                recoverCorruptMetadata);
     }
 
     private static String value(String[] args, int index, String name) {

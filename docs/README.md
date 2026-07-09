@@ -1,6 +1,6 @@
 ﻿# MiniMQ Project Context Index / 项目上下文索引
 
-> Last updated / 最后更新：2026-07-07
+> Last updated / 最后更新：2026-07-09
 > Audience / 适用对象（英文）：new agents, new contributors, reviewers, interview readers
 > 适用对象：新 agent 会话、新贡献者、代码审查者、面试/作品集读者
 
@@ -23,7 +23,7 @@ The current implementation focuses on a single-leader partition model. Broker 0 
 | 3 | [Testing Guide](testing.md) / [测试文档](testing.md) | Understand tests, coverage, commands, report locations, and quality gates. / 理解测试、覆盖率、命令、报告位置与质量门槛。 |
 | 4 | [Roadmap](roadmap.md) / [代办与路线图](roadmap.md) | Understand known limitations, TODOs, V2 features, and recommended next tasks. / 理解已知限制、待办事项、V2 功能与推荐下一步任务。 |
 | 5 | [Code Review Fix Log](code-review-2026-07-02.md) / [代码审查修复记录](code-review-2026-07-02.md) | See recently fixed bugs and why they mattered. / 查看近期修复的问题以及它们的重要性。 |
-| 6 | [Test Report](test-report-2026-07-07.md) / [测试报告](test-report-2026-07-07.md) | See latest test and coverage numbers. / 查看最新测试结果与覆盖率数据。 |
+| 6 | [Test Report](test-report-2026-07-09.md) / [测试报告](test-report-2026-07-09.md) | See latest V1.3 closeout test results. / 查看最新 V1.3 收口测试结果。 |
 | 7 | [Troubleshooting Guide](troubleshooting.md) / [故障排查指南](troubleshooting.md) | Resolve common Maven, port, Windows, test report, and GitHub/SSH issues. / 排查 Maven、端口、Windows、测试报告、GitHub/SSH 常见问题。 |
 
 ## 3. Current Snapshot / 当前快照
@@ -31,7 +31,7 @@ The current implementation focuses on a single-leader partition model. Broker 0 
 | Item / 项目 | Value / 值 |
 | --- | --- |
 | Language / 语言 | Java 17 |
-| Project version / 项目版本 | 1.2.0-SNAPSHOT |
+| Project version / 项目版本 | 1.3.0 |
 | Build tool / 构建工具 | Maven multi-module project / Maven 多模块项目 |
 | Network framework / 网络框架 | Netty 4.1 |
 | Serialization / 序列化 | Custom binary protocol over Netty `ByteBuf` / 基于 Netty `ByteBuf` 的自定义二进制协议 |
@@ -39,8 +39,7 @@ The current implementation focuses on a single-leader partition model. Broker 0 
 | Storage / 存储 | Local append-only log file per topic-partition / 每个 Topic-Partition 一个本地追加写日志文件 |
 | Tests / 测试 | JUnit 5 + Surefire |
 | Coverage / 覆盖率 | JaCoCo |
-| Latest overall line coverage / 最新总体行覆盖率 | 91.70% |
-| Latest total tests / 最新测试总数 | 74, all passing / 74 个，全部通过 |
+| Latest V1.3 closeout tests / 最新 V1.3 收口测试 | 16 targeted recovery tests, all passing / 16 个恢复目标测试，全部通过 |
 
 ## 4. Module Map / 模块地图
 
@@ -93,17 +92,17 @@ mq-demo/target/site/jacoco/index.html
 Start a three-broker demo cluster / 启动三节点 Broker 演示集群：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-1.2.0-SNAPSHOT.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller
-java -jar mq-demo/target/mq-demo-1.2.0-SNAPSHOT.jar broker --broker-id 1 --port 9093 --data-dir ./data/broker-1 --controller-addr localhost:9092
-java -jar mq-demo/target/mq-demo-1.2.0-SNAPSHOT.jar broker --broker-id 2 --port 9094 --data-dir ./data/broker-2 --controller-addr localhost:9092
+java -jar mq-demo/target/mq-demo-1.3.0.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller
+java -jar mq-demo/target/mq-demo-1.3.0.jar broker --broker-id 1 --port 9093 --data-dir ./data/broker-1 --controller-addr localhost:9092
+java -jar mq-demo/target/mq-demo-1.3.0.jar broker --broker-id 2 --port 9094 --data-dir ./data/broker-2 --controller-addr localhost:9092
 ```
 
 Create, produce, and consume / 创建 Topic、生产消息、消费消息：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-1.2.0-SNAPSHOT.jar create-topic --brokers localhost:9092 --name orders --partitions 3
-java -jar mq-demo/target/mq-demo-1.2.0-SNAPSHOT.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
-java -jar mq-demo/target/mq-demo-1.2.0-SNAPSHOT.jar consume --brokers localhost:9092 --topic orders --group order-processors
+java -jar mq-demo/target/mq-demo-1.3.0.jar create-topic --brokers localhost:9092 --name orders --partitions 3
+java -jar mq-demo/target/mq-demo-1.3.0.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
+java -jar mq-demo/target/mq-demo-1.3.0.jar consume --brokers localhost:9092 --topic orders --group order-processors
 ```
 
 ## 6. Glossary / 专业名词解释
@@ -127,7 +126,7 @@ java -jar mq-demo/target/mq-demo-1.2.0-SNAPSHOT.jar consume --brokers localhost:
 2. Read `architecture.md` for module boundaries and runtime topology. / 阅读 `architecture.md`，理解模块边界和运行时拓扑。
 3. Read `design.md` before changing protocol, storage, metadata, or consumer group logic. / 修改协议、存储、元数据或消费组逻辑前先阅读 `design.md`。
 4. Run `mvn verify -gs .mvn/settings.xml -s .mvn/settings.xml` before and after changes. / 修改前后都运行完整 Maven 测试命令。
-5. Check `docs/test-report-2026-07-07.md` for current coverage baseline. / 查看 `docs/test-report-2026-07-07.md` 了解当前覆盖率基线。
+5. Check `docs/test-report-2026-07-09.md` for the V1.3 closeout baseline. / 查看 `docs/test-report-2026-07-09.md` 了解 V1.3 收口基线。
 6. Do not treat target files as source of truth; source lives under `src/main/java` and `src/test/java`. / 不要把 `target` 目录当作事实来源，源码位于 `src/main/java` 和 `src/test/java`。
 7. Keep JaCoCo overall line coverage at or above 90%. / 保持 JaCoCo 总体行覆盖率不低于 90%。
 8. If changing protocol fields, update both `ProtocolSerdesTest` and the design document. / 如果修改协议字段，同时更新 `ProtocolSerdesTest` 和设计文档。

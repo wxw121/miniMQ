@@ -34,7 +34,7 @@ public class BrokerServer {
     }
 
     public void start() throws InterruptedException {
-        MetadataStore metadataStore = new MetadataStore(config.dataDir());
+        MetadataStore metadataStore = new MetadataStore(config.dataDir(), config.recoverCorruptMetadata());
         ClusterController clusterController = new ClusterController(metadataStore);
         GroupCoordinator groupCoordinator = new GroupCoordinator(clusterController);
         LogManager logManager = new LogManager(config.dataDir());

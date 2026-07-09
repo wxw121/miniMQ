@@ -165,9 +165,9 @@ Each topic-partition has one local log file named:
 {dataDir}/{topic}-{partitionId}.log
 ```
 
-The broker does not keep segment files yet. It writes all records for one partition into a single append-only file. This is simple and good for understanding offset recovery, but V2 should introduce segmented logs to support deletion, compaction, and faster recovery.
+The broker does not keep segment files yet. It writes all records for one partition into a single append-only file. This is simple and good for understanding offset recovery. V1.3 recovery hardening now detects corrupt metadata files, validates metadata shape before applying it, quarantines corrupt metadata only when explicitly enabled, and truncates incomplete partition-log tails while rejecting structural log corruption. V2 should then introduce WAL/checkpoints and segmented logs to support deletion, compaction, and faster recovery.
 
-当前还没有 Segment 文件，一个分区的所有消息都写入同一个 append-only 文件。这有利于理解 offset 恢复，但后续版本需要引入日志分段，以支持删除、压缩和更快恢复。
+当前还没有 Segment 文件，一个分区的所有消息都写入同一个 append-only 文件。这有利于理解 offset 恢复。V1.3 恢复加固现在已支持识别损坏元数据文件、应用前校验元数据结构、仅在显式启用时隔离损坏元数据，以及截断分区日志尾部半条记录并拒绝结构性日志损坏。随后 V2 再引入 WAL/checkpoint 和日志分段，以支持删除、压缩和更快恢复。
 
 ```mermaid
 flowchart LR
@@ -199,10 +199,10 @@ MiniMQ 可以通过 `mq-demo` 打出的 fat jar 启动。第一个 Broker 通常
 
 1. There is no replication yet. If a broker loses its data directory, records on its partitions are lost. / 目前还没有副本机制。如果 Broker 丢失数据目录，该节点负责分区上的消息会丢失。
 2. There is no controller election. If the controller exits, the cluster does not elect a replacement. / 目前没有 Controller 选举。如果 Controller 退出，集群不会自动选出替代节点。
-3. Metadata is persisted as one JSON document. This is easy to inspect but not a scalable metadata log. / 元数据以单个 JSON 文档持久化，易读但不是可扩展的元数据日志。
+3. Metadata is persisted as one JSON document. This is easy to inspect but not a scalable metadata log; V1.3 adds corrupt-file validation, safe write, and quarantine behavior before V2 introduces a stronger metadata log. / 元数据以单个 JSON 文档持久化，易读但不是可扩展的元数据日志；V1.3 已增加损坏文件校验、安全写入和隔离行为，V2 再引入更强的元数据日志。
 4. Consumer group rebalancing is simplified. There is no full Kafka-style rebalance protocol, session management, or cooperative assignment. / 消费组再均衡经过简化，还没有完整 Kafka 风格的 rebalance 协议、会话管理或协作式分配。
-5. The client SDK now supports fixed-backoff connection retry, but it still does not implement full stale-metadata refresh or `NOT_LEADER` retry. / 客户端 SDK 现在支持固定退避连接重试，但仍未实现完整的过期元数据刷新或 `NOT_LEADER` 重试。
-6. The append-only log has no retention, compaction, or segment rolling. / 追加写日志还没有保留策略、压缩或分段滚动。
+5. The client SDK now supports fixed-backoff connection retry, configurable request timeout, typed client exceptions, topic-level metadata cache invalidation, and a fixed retry budget of one metadata refresh retry for Producer/Consumer data-plane requests after `NOT_LEADER`. Full replication-aware failover and controller HA are still future work. / 客户端 SDK 现在支持固定退避连接重试、可配置请求超时、类型化客户端异常、Topic 级元数据缓存失效，以及 Producer/Consumer 数据面请求遇到 `NOT_LEADER` 后刷新元数据重试一次的固定预算。完整的副本感知故障转移和 Controller 高可用仍是后续工作。
+6. The append-only log has no retention, compaction, or segment rolling. V1.3 recovers from truncated tail records in the current file format; V2 should add WAL/checkpoints and segments. / 追加写日志还没有保留策略、压缩或分段滚动。V1.3 已能在当前文件格式下恢复尾部截断记录；V2 再增加 WAL/checkpoint 与分段。
 
 ## 9. Architecture Glossary / 架构名词表
 

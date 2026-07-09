@@ -1,10 +1,13 @@
 package com.minimq.client;
 
+import com.minimq.client.exception.MiniMqMetadataException;
 import com.minimq.client.model.ConsumerRecord;
 import com.minimq.common.assignor.AssignmentSerde;
 import com.minimq.common.assignor.RangeAssignor;
+import com.minimq.common.error.ErrorCode;
 import com.minimq.protocol.ApiKeys;
 import com.minimq.protocol.codec.MqDecoder;
+import com.minimq.protocol.message.MqResponseHeader;
 import com.minimq.protocol.message.ProtocolMessages.*;
 
 import java.time.Duration;
@@ -23,6 +26,7 @@ public class Consumer implements AutoCloseable {
     private final NetworkClient controllerClient;
     private final String groupId;
     private final Map<Integer, NetworkClient> brokerClients = new HashMap<>();
+    private final Map<String, MetadataResponse> metadataCache = new HashMap<>();
     private String topic;
     private String memberId = "";
     private int generationId;
@@ -78,14 +82,11 @@ public class Consumer implements AutoCloseable {
     }
 
     private byte[] encodeAssignment(List<String> members) throws InterruptedException {
-        MqDecoder.DecodedResponse metadataResponse = controllerClient.send(
-                ApiKeys.METADATA, new MetadataRequest(topic));
-        controllerClient.ensureSuccess(metadataResponse);
-        MetadataResponse metadata = (MetadataResponse) metadataResponse.body();
+        MetadataResponse metadata = cachedMetadata(topic);
         TopicMetadata topicMetadata = metadata.topics().stream()
                 .filter(t -> t.topicName().equals(topic))
                 .findFirst()
-                .orElseThrow(() -> new IllegalStateException("Topic not found: " + topic));
+                .orElseThrow(() -> new MiniMqMetadataException("Topic not found: " + topic));
         return AssignmentSerde.encodeFullAssignment(RangeAssignor.assign(
                 members, topicMetadata.partitions().size()));
     }
@@ -93,36 +94,10 @@ public class Consumer implements AutoCloseable {
     // poll 会根据当前分配逐分区拉取，并在本地推进下一次读取 offset。
     public List<ConsumerRecord> poll(Duration timeout) throws InterruptedException {
         List<ConsumerRecord> result = new ArrayList<>();
-        MqDecoder.DecodedResponse metadataResponse = controllerClient.send(
-                ApiKeys.METADATA, new MetadataRequest(topic));
-        controllerClient.ensureSuccess(metadataResponse);
-        MetadataResponse metadata = (MetadataResponse) metadataResponse.body();
-        TopicMetadata topicMetadata = metadata.topics().stream()
-                .filter(t -> t.topicName().equals(topic))
-                .findFirst()
-                .orElseThrow(() -> new IllegalStateException("Topic not found: " + topic));
+        MetadataResponse metadata = cachedMetadata(topic);
 
         for (int partition : assignedPartitions) {
-            PartitionMetadata partitionMetadata = topicMetadata.partitions().stream()
-                    .filter(p -> p.partitionId() == partition)
-                    .findFirst()
-                    .orElseThrow(() -> new IllegalStateException(
-                            "Partition " + partition + " not found for topic " + topic));
-            BrokerMetadata leader = metadata.brokers().stream()
-                    .filter(b -> b.brokerId() == partitionMetadata.leaderBrokerId())
-                    .findFirst()
-                    .orElseThrow(() -> new IllegalStateException(
-                            "Leader broker " + partitionMetadata.leaderBrokerId() + " not found"));
-            NetworkClient leaderClient = brokerClient(leader);
-            long offset = offsets.getOrDefault(partition, 0L);
-            MqDecoder.DecodedResponse fetchResponse = leaderClient.send(
-                    ApiKeys.FETCH, new FetchRequest(topic, partition, offset, 1024 * 1024));
-            leaderClient.ensureSuccess(fetchResponse);
-            FetchResponse fetch = (FetchResponse) fetchResponse.body();
-            for (FetchedRecord record : fetch.records()) {
-                result.add(new ConsumerRecord(topic, partition, record.offset(), record.key(), record.value()));
-                offsets.put(partition, record.offset() + 1);
-            }
+            metadata = fetchPartition(partition, metadata, result);
         }
         if (result.isEmpty()) {
             Thread.sleep(timeout.toMillis());
@@ -130,10 +105,99 @@ public class Consumer implements AutoCloseable {
         return result;
     }
 
+    private MetadataResponse cachedMetadata(String topicName) throws InterruptedException {
+        MetadataResponse cached = metadataCache.get(topicName);
+        if (cached != null) {
+            return cached;
+        }
+        return refreshMetadata(topicName);
+    }
+
+    private MetadataResponse refreshMetadata(String topicName) throws InterruptedException {
+        MetadataResponse metadata = fetchMetadata(topicName);
+        metadataCache.put(topicName, metadata);
+        return metadata;
+    }
+
+    private void invalidateMetadata(String topicName) {
+        metadataCache.remove(topicName);
+    }
+
+    protected MetadataResponse fetchMetadata(String topicName) throws InterruptedException {
+        MqDecoder.DecodedResponse metadataResponse = controllerClient.send(
+                ApiKeys.METADATA, new MetadataRequest(topicName));
+        controllerClient.ensureSuccess(metadataResponse, "METADATA topic=" + topicName);
+        return (MetadataResponse) metadataResponse.body();
+    }
+
+    private MetadataResponse fetchPartition(
+            int partition,
+            MetadataResponse initialMetadata,
+            List<ConsumerRecord> result) throws InterruptedException {
+        MetadataResponse metadata = initialMetadata;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            PartitionRoute route = routeWithRefresh(partition, metadata, attempt);
+            long offset = offsets.getOrDefault(partition, 0L);
+            MqDecoder.DecodedResponse fetchResponse = sendFetch(
+                    route.leader(),
+                    new FetchRequest(topic, partition, offset, 1024 * 1024));
+            MqResponseHeader header = fetchResponse.header();
+            if (header.errorCode() == ErrorCode.NOT_LEADER && attempt == 0) {
+                invalidateMetadata(topic);
+                invalidateBrokerClient(route.leader().brokerId());
+                metadata = refreshMetadata(topic);
+                continue;
+            }
+            controllerClient.ensureSuccess(fetchResponse, "FETCH topic=" + topic
+                    + " partition=" + partition + " attempt=" + (attempt + 1) + "/2");
+            FetchResponse fetch = (FetchResponse) fetchResponse.body();
+            for (FetchedRecord record : fetch.records()) {
+                result.add(new ConsumerRecord(topic, partition, record.offset(), record.key(), record.value()));
+                offsets.put(partition, record.offset() + 1);
+            }
+            return metadata;
+        }
+        return metadata;
+    }
+
+    private PartitionRoute routeWithRefresh(
+            int partition,
+            MetadataResponse metadata,
+            int attempt) throws InterruptedException {
+        try {
+            return route(partition, metadata);
+        } catch (MiniMqMetadataException e) {
+            if (attempt == 0) {
+                invalidateMetadata(topic);
+                return route(partition, refreshMetadata(topic));
+            }
+            throw e;
+        }
+    }
+
+    private PartitionRoute route(int partition, MetadataResponse metadata) {
+        TopicMetadata topicMetadata = metadata.topics().stream()
+                .filter(t -> t.topicName().equals(topic))
+                .findFirst()
+                .orElseThrow(() -> new MiniMqMetadataException("Topic not found: " + topic));
+        PartitionMetadata partitionMetadata = topicMetadata.partitions().stream()
+                .filter(p -> p.partitionId() == partition)
+                .findFirst()
+                .orElseThrow(() -> new MiniMqMetadataException(
+                        "Partition " + partition + " not found for topic " + topic));
+        BrokerMetadata leader = metadata.brokers().stream()
+                .filter(b -> b.brokerId() == partitionMetadata.leaderBrokerId())
+                .findFirst()
+                .orElseThrow(() -> new MiniMqMetadataException(
+                        "Leader broker " + partitionMetadata.leaderBrokerId() + " not found"));
+        return new PartitionRoute(leader);
+    }
+
     public void commitSync(String topic, int partition, long offset) throws InterruptedException {
         MqDecoder.DecodedResponse response = controllerClient.send(
                 ApiKeys.OFFSET_COMMIT, new OffsetCommitRequest(groupId, topic, partition, offset));
-        controllerClient.ensureSuccess(response);
+        controllerClient.ensureSuccess(response, "OFFSET_COMMIT topic=" + topic
+                + " partition=" + partition);
         offsets.put(partition, offset);
     }
 
@@ -148,6 +212,19 @@ public class Consumer implements AutoCloseable {
                 throw new IllegalStateException(e);
             }
         });
+    }
+
+    protected MqDecoder.DecodedResponse sendFetch(
+            BrokerMetadata leader,
+            FetchRequest request) throws InterruptedException {
+        return brokerClient(leader).send(ApiKeys.FETCH, request);
+    }
+
+    protected void invalidateBrokerClient(int brokerId) throws InterruptedException {
+        NetworkClient staleClient = brokerClients.remove(brokerId);
+        if (staleClient != null) {
+            staleClient.close();
+        }
     }
 
     // 简化版心跳只维持成员活跃状态，后续版本可在这里承载 rebalance 触发逻辑。
@@ -179,5 +256,8 @@ public class Consumer implements AutoCloseable {
             throw new IllegalArgumentException("bootstrapServers must contain host:port");
         }
         return parts;
+    }
+
+    private record PartitionRoute(BrokerMetadata leader) {
     }
 }

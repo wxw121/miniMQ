@@ -44,7 +44,8 @@ public final class MiniMqWebDevMain implements AutoCloseable {
                 config.dataDir(),
                 true,
                 config.host(),
-                brokerPort);
+                brokerPort,
+                false);
         BrokerServer broker = new BrokerServer(brokerConfig);
         broker.start();
         MiniMqWebApp web = MiniMqWebApp.start(config.webPort(), config.host() + ":" + brokerPort);

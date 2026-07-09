@@ -50,8 +50,8 @@ Expected baseline / 预期基线：
 | Skipped / 跳过 | 0 |
 | Overall line coverage / 总体行覆盖率 | 91.70% |
 
-The detailed report is in [test-report-2026-07-07.md](test-report-2026-07-07.md).
-详细报告见 [test-report-2026-07-07.md](test-report-2026-07-07.md)。
+The latest V1.3 closeout report is in [test-report-2026-07-09.md](test-report-2026-07-09.md).
+最新 V1.3 收口报告见 [test-report-2026-07-09.md](test-report-2026-07-09.md)。
 
 ### 2.2 Slow Integration Tests / 集成测试较慢
 
@@ -141,6 +141,6 @@ When changing protocol, storage, metadata, CLI, or test behavior, update the cor
 | --- | --- |
 | Protocol fields / 协议字段 | [design.md](design.md), [testing.md](testing.md) |
 | Topic or routing / Topic 或路由 | [architecture.md](architecture.md), [design.md](design.md) |
-| Test count or coverage / 测试数或覆盖率 | [testing.md](testing.md), [test-report-2026-07-07.md](test-report-2026-07-07.md) |
+| Test count or coverage / 测试数或覆盖率 | [testing.md](testing.md), [test-report-2026-07-09.md](test-report-2026-07-09.md) |
 | CLI behavior / CLI 行为 | Root [README.md](../README.md), [docs/README.md](README.md) |
 | Roadmap items / 路线图事项 | [roadmap.md](roadmap.md) |

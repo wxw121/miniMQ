@@ -25,8 +25,8 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 class EmbeddedBrokerChannelTest {
 
@@ -40,7 +40,7 @@ class EmbeddedBrokerChannelTest {
         GroupCoordinator groupCoordinator = new GroupCoordinator(clusterController);
         LogManager logManager = new LogManager(tempDir);
         PartitionManager partitionManager = new PartitionManager(logManager);
-        BrokerConfig config = new BrokerConfig(0, "127.0.0.1", 9092, tempDir, true, "127.0.0.1", 9092);
+        BrokerConfig config = new BrokerConfig(0, "127.0.0.1", 9092, tempDir, true, "127.0.0.1", 9092, false);
 
         EmbeddedChannel channel = new EmbeddedChannel(
                 new MqDecoder(),
@@ -64,7 +64,7 @@ class EmbeddedBrokerChannelTest {
         GroupCoordinator groupCoordinator = new GroupCoordinator(clusterController);
         LogManager logManager = new LogManager(tempDir);
         PartitionManager partitionManager = new PartitionManager(logManager);
-        BrokerConfig config = new BrokerConfig(0, "127.0.0.1", 9092, tempDir, true, "127.0.0.1", 9092);
+        BrokerConfig config = new BrokerConfig(0, "127.0.0.1", 9092, tempDir, true, "127.0.0.1", 9092, false);
 
         EmbeddedChannel channel = new EmbeddedChannel(
                 new MqDecoder(),
@@ -149,7 +149,7 @@ class EmbeddedBrokerChannelTest {
         LogManager logManager = new LogManager(tempDir);
         PartitionManager partitionManager = new PartitionManager(logManager);
         BrokerConfig config = new BrokerConfig(
-                0, "127.0.0.1", 9092, tempDir, controller, "127.0.0.1", 9092);
+                0, "127.0.0.1", 9092, tempDir, controller, "127.0.0.1", 9092, false);
         return new EmbeddedChannel(
                 new MqDecoder(),
                 new MqRequestHandler(config, clusterController, groupCoordinator, partitionManager),

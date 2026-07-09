@@ -26,3 +26,4 @@ Thumbs.db
 .codex-skill-install-*/
 .npm-cache/
 .playwright-cli/
+.m2/

@@ -129,9 +129,10 @@ The following screenshots are generated from the latest verified Surefire and Ja
 | `mq-common` | `Murmur2PartitionerTest` | Unit / 单元测试 | Stable partitioning and invalid partition count. / 稳定分区与非法分区数校验。 |
 | `mq-common` | `RangeAssignorTest` | Unit / 单元测试 | Range assignment and assignment serialization boundaries. / Range 分配与 assignment 序列化边界。 |
 | `mq-common` | `CommonModelTest` | Unit / 单元测试 | Records and error code mapping. / Record 模型与错误码映射。 |
-| `mq-storage` | `FilePartitionLogTest` | Unit / 单元测试 | Append/read/reopen recovery and `LogManager` caching. / 追加、读取、重开恢复与 `LogManager` 缓存。 |
+| `mq-storage` | `FilePartitionLogTest` | Unit / 单元测试 | Append/read/reopen recovery, truncated-tail recovery, structural corruption rejection, and `LogManager` caching. / 追加、读取、重开恢复、尾部截断恢复、结构性损坏拒绝与 `LogManager` 缓存。 |
 | `mq-protocol` | `ProtocolSerdesTest` | Unit / 单元测试 | Request/response round trips, malformed collection counts, frame limits, encoder. / 请求/响应往返、畸形集合 count、帧限制和编码器。 |
 | `mq-broker` | `BrokerConfigTest` | Unit / 单元测试 | Broker argument parsing and validation. / Broker 参数解析与校验。 |
+| `mq-broker` | `MetadataStoreTest` | Unit / 单元测试 | Metadata safe writes, load validation, corrupt-file failure, and quarantine recovery. / 元数据安全写入、加载校验、损坏文件失败与隔离恢复。 |
 | `mq-broker` | `ClusterControllerTest` | Unit / 单元测试 | Topic creation, metadata, snapshot isolation. / Topic 创建、元数据、快照隔离。 |
 | `mq-broker` | `GroupCoordinatorTest` | Unit / 单元测试 | Join/sync assignment, heartbeat, offset commit/fetch. / 加组、同步分配、心跳、offset 提交/拉取。 |
 | `mq-broker` | `EmbeddedBrokerChannelTest` | Component / 组件测试 | Handler behavior through Netty `EmbeddedChannel`. / 通过 Netty `EmbeddedChannel` 验证 handler 行为。 |
