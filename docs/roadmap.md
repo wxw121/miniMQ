@@ -5,9 +5,9 @@
 
 ## 1. Current State / 当前状态
 
-MiniMQ has completed the V1.3 closeout and is on the V2.0 development line. The Maven version is `2.0.0-SNAPSHOT`; the latest stable tag is `v1.3.0`. The V2.0 storage recovery foundation now includes independent WAL, checkpointed replay, explicit flush policy, and append-count checkpoint cadence.
+MiniMQ has released V2.0 storage recovery as `v2.0.0`. The released Maven version is `2.0.0`; V2.1 segmented-log planning is the next development line. V2.0 includes independent WAL, checkpointed replay, explicit flush policy, and append-count checkpoint cadence.
 
-MiniMQ 已完成 V1.3 收口并处在 V2.0 开发主线。Maven 版本为 `2.0.0-SNAPSHOT`；最新稳定标签为 `v1.3.0`。V2.0 存储恢复基础现在包含独立 WAL、checkpoint 重放、显式刷盘策略，以及按 append 次数触发 checkpoint 的节奏。
+MiniMQ 已将 V2.0 存储恢复以 `v2.0.0` 发布。发布 Maven 版本为 `2.0.0`；下一开发主线为 V2.1 分段日志规划。V2.0 包含独立 WAL、checkpoint 重放、显式刷盘策略，以及按 append 次数触发 checkpoint 的节奏。
 
 The most important limitation is that the system is still single-replica and controller-static. This keeps the design compact, but it means broker failures can lose availability and data for affected partitions.
 
@@ -325,7 +325,7 @@ For a new agent session, the most productive next tasks are:
 1. Add protocol compatibility notes for future V2 fields. / 为后续 V2 字段增加协议兼容性说明。
 2. Start V2 metadata model for replicas without implementing full replication yet. / 先启动副本相关 V2 元数据模型，不急于实现完整副本机制。
 3. Run V2.0 storage recovery closeout checks, then prepare the V2.1 segmented-log plan. / 运行 V2.0 存储恢复收口检查，然后准备 V2.1 分段日志计划。
-4. Prepare V2.0 milestone tasks after the `v1.3.0` release tag. / 在 `v1.3.0` 发布 tag 后准备 V2.0 里程碑任务。
+4. Prepare the V2.1 segmented-log implementation plan after the `v2.0.0` release tag. / 在 `v2.0.0` 发布 tag 后准备 V2.1 分段日志实现计划。
 
 ## 6. Risk Register / 风险登记表
 

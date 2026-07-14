@@ -58,33 +58,33 @@ Latest result / 最近结果：
 
 | Metric / 指标 | Value / 数值 |
 | --- | ---: |
-| Tests run / 测试总数 | 74 |
+| Tests run / 测试总数 | 144 |
 | Failures / 失败数 | 0 |
 | Errors / 错误数 | 0 |
 | Skipped / 跳过数 | 0 |
-| Overall line coverage / 总体行覆盖率 | 91.70% |
-| Overall instruction coverage / 总体指令覆盖率 | 92.79% |
-| Overall branch coverage / 总体分支覆盖率 | 75.13% |
-| Overall method coverage / 总体方法覆盖率 | 95.62% |
+| Overall line coverage / 总体行覆盖率 | 91.91% |
+| Overall instruction coverage / 总体指令覆盖率 | 93.16% |
+| Overall branch coverage / 总体分支覆盖率 | 77.67% |
+| Overall method coverage / 总体方法覆盖率 | 97.21% |
 | Overall class coverage / 总体类覆盖率 | 100.00% |
 
 ## 5. Coverage By Module / 模块覆盖率
 
 | Module / 模块 | Instruction / 指令 | Branch / 分支 | Line / 行 | Method / 方法 | Class / 类 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `mq-broker` | 92.56% | 72.08% | 90.29% | 97.75% | 100.00% |
-| `mq-client` | 89.09% | 68.06% | 90.46% | 84.00% | 100.00% |
+| `mq-broker` | 94.25% | 76.04% | 92.41% | 97.14% | 100.00% |
+| `mq-client` | 92.26% | 76.52% | 90.06% | 92.68% | 100.00% |
 | `mq-common` | 96.96% | 84.38% | 97.81% | 100.00% | 100.00% |
 | `mq-demo` | 95.06% | 74.56% | 92.14% | 95.16% | 100.00% |
 | `mq-protocol` | 92.55% | 79.53% | 91.88% | 100.00% | 100.00% |
-| `mq-storage` | 90.08% | 71.43% | 90.43% | 100.00% | 100.00% |
+| `mq-storage` | 90.57% | 78.86% | 90.97% | 100.00% | 100.00% |
 
 ```mermaid
 xychart-beta
     title "Line Coverage By Module / 模块行覆盖率"
     x-axis ["broker/代理", "client/客户端", "common/公共", "demo/演示", "protocol/协议", "storage/存储"]
     y-axis "Line % / 行覆盖率 %" 0 --> 100
-    bar [90.29, 90.46, 97.81, 92.14, 91.88, 90.43]
+    bar [92.41, 90.06, 97.81, 92.14, 91.88, 90.97]
 ```
 
 ```mermaid
@@ -92,7 +92,7 @@ xychart-beta
     title "Overall Coverage / 总体覆盖率"
     x-axis ["Instruction/指令", "Branch/分支", "Line/行", "Method/方法", "Class/类"]
     y-axis "Coverage % / 覆盖率 %" 0 --> 100
-    bar [92.79, 75.13, 91.70, 95.62, 100.00]
+    bar [93.16, 77.67, 91.91, 97.21, 100.00]
 ```
 
 
@@ -215,9 +215,9 @@ The current agreed gate is:
 Per-module line coverage >= 90% for modules covered by JaCoCo check / 接入 JaCoCo check 的模块行覆盖率均 >= 90%
 ```
 
-The project currently satisfies this gate at 91.70% overall line coverage, with JaCoCo `check` bound to Maven `verify`. Blocking process entrypoints (`BrokerMain`, `MiniMqWebMain`, and `MiniMqWebDevMain`) are excluded from the report and gate because their behavior is covered indirectly through CLI, broker integration, and Web launcher tests.
+The project currently satisfies this gate at 91.91% overall line coverage, with JaCoCo `check` bound to Maven `verify`. Blocking process entrypoints (`BrokerMain`, `MiniMqWebMain`, and `MiniMqWebDevMain`) are excluded from the report and gate because their behavior is covered indirectly through CLI, broker integration, and Web launcher tests.
 
-项目当前总体行覆盖率为 91.70%，并且 JaCoCo `check` 已绑定到 Maven `verify`。阻塞式进程入口（`BrokerMain`、`MiniMqWebMain`、`MiniMqWebDevMain`）的行为已通过 CLI、Broker 集成测试和 Web 启动器测试间接覆盖，因此从报告和门禁统计中排除。
+项目当前总体行覆盖率为 91.91%，并且 JaCoCo `check` 已绑定到 Maven `verify`。阻塞式进程入口（`BrokerMain`、`MiniMqWebMain`、`MiniMqWebDevMain`）的行为已通过 CLI、Broker 集成测试和 Web 启动器测试间接覆盖，因此从报告和门禁统计中排除。
 
 ## 10. Slow Tests / 慢测试说明
 

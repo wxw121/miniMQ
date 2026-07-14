@@ -1,10 +1,10 @@
 # MiniMQ V2.0 Storage Recovery Closeout Report - 2026-07-14
 
-> Version: `2.0.0-SNAPSHOT`
+> Version: `2.0.0`
 >
 > Primary verification command: `mvn verify -gs .mvn/settings.xml -s .mvn/settings.xml`
 >
-> Result: `BUILD SUCCESS` in 6 minutes 56 seconds.
+> Result: `BUILD SUCCESS` in 6 minutes 54 seconds.
 
 ## Executive Summary
 
@@ -71,7 +71,6 @@ end-to-end suite that was not reached when earlier coverage checks failed.
 
 - The verified source tree is ready for the V2.0 storage recovery milestone
   commit and the `v2.0.0` tag.
-- The Maven development version remains `2.0.0-SNAPSHOT` until the next version
-  management decision.
+- The `v2.0.0` tag marks this verified release baseline.
 - The next development baseline is V2.1 segmented logs, sparse indexes,
   retention, and compaction.

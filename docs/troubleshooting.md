@@ -44,14 +44,14 @@ Expected baseline / 预期基线：
 
 | Metric / 指标 | Current baseline / 当前基线 |
 | --- | ---: |
-| Tests / 测试数 | 74 |
+| Tests / 测试数 | 144 |
 | Failures / 失败 | 0 |
 | Errors / 错误 | 0 |
 | Skipped / 跳过 | 0 |
-| Overall line coverage / 总体行覆盖率 | 91.70% |
+| Overall line coverage / 总体行覆盖率 | 91.91% |
 
-The latest V1.3 closeout report is in [test-report-2026-07-09.md](test-report-2026-07-09.md).
-最新 V1.3 收口报告见 [test-report-2026-07-09.md](test-report-2026-07-09.md)。
+The latest V2.0 storage recovery closeout report is in [test-report-2026-07-10-v2-storage.md](test-report-2026-07-10-v2-storage.md).
+最新 V2.0 存储恢复收口报告见 [test-report-2026-07-10-v2-storage.md](test-report-2026-07-10-v2-storage.md)。
 
 ### 2.2 Slow Integration Tests / 集成测试较慢
 
