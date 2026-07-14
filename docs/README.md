@@ -23,7 +23,7 @@ The current implementation focuses on a single-leader partition model. Broker 0 
 | 3 | [Testing Guide](testing.md) / [测试文档](testing.md) | Understand tests, coverage, commands, report locations, and quality gates. / 理解测试、覆盖率、命令、报告位置与质量门槛。 |
 | 4 | [Roadmap](roadmap.md) / [代办与路线图](roadmap.md) | Understand known limitations, TODOs, V2 features, and recommended next tasks. / 理解已知限制、待办事项、V2 功能与推荐下一步任务。 |
 | 5 | [Code Review Fix Log](code-review-2026-07-02.md) / [代码审查修复记录](code-review-2026-07-02.md) | See recently fixed bugs and why they mattered. / 查看近期修复的问题以及它们的重要性。 |
-| 6 | [Test Report](test-report-2026-07-09.md) / [测试报告](test-report-2026-07-09.md) | See latest V1.3 closeout test results. / 查看最新 V1.3 收口测试结果。 |
+| 6 | [Test Report](test-report-2026-07-10-v2-storage.md) / [测试报告](test-report-2026-07-10-v2-storage.md) | See the V2.0 storage recovery closeout results. / 查看 V2.0 存储恢复收口测试结果。 |
 | 7 | [Troubleshooting Guide](troubleshooting.md) / [故障排查指南](troubleshooting.md) | Resolve common Maven, port, Windows, test report, and GitHub/SSH issues. / 排查 Maven、端口、Windows、测试报告、GitHub/SSH 常见问题。 |
 
 ## 3. Current Snapshot / 当前快照
@@ -31,7 +31,7 @@ The current implementation focuses on a single-leader partition model. Broker 0 
 | Item / 项目 | Value / 值 |
 | --- | --- |
 | Language / 语言 | Java 17 |
-| Project version / 项目版本 | 2.0.0 |
+| Project version / 项目版本 | 2.1.0-SNAPSHOT |
 | Build tool / 构建工具 | Maven multi-module project / Maven 多模块项目 |
 | Network framework / 网络框架 | Netty 4.1 |
 | Serialization / 序列化 | Custom binary protocol over Netty `ByteBuf` / 基于 Netty `ByteBuf` 的自定义二进制协议 |
@@ -40,7 +40,7 @@ The current implementation focuses on a single-leader partition model. Broker 0 
 | Tests / 测试 | JUnit 5 + Surefire |
 | Coverage / 覆盖率 | JaCoCo |
 | Latest stable tag / 最新稳定标签 | `v2.0.0` |
-| Active development line / 当前开发主线 | V2.1 segmented-log planning / V2.1 分段日志规划 |
+| Active development line / 当前开发主线 | V2.1 segmented logs, sparse index, retention, and compaction / V2.1 分段日志、稀疏索引、保留策略和压缩 |
 
 ## 4. Module Map / 模块地图
 
@@ -93,17 +93,17 @@ mq-demo/target/site/jacoco/index.html
 Start a three-broker demo cluster / 启动三节点 Broker 演示集群：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-2.0.0.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller
-java -jar mq-demo/target/mq-demo-2.0.0.jar broker --broker-id 1 --port 9093 --data-dir ./data/broker-1 --controller-addr localhost:9092
-java -jar mq-demo/target/mq-demo-2.0.0.jar broker --broker-id 2 --port 9094 --data-dir ./data/broker-2 --controller-addr localhost:9092
+java -jar mq-demo/target/mq-demo-2.1.0-SNAPSHOT.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller
+java -jar mq-demo/target/mq-demo-2.1.0-SNAPSHOT.jar broker --broker-id 1 --port 9093 --data-dir ./data/broker-1 --controller-addr localhost:9092
+java -jar mq-demo/target/mq-demo-2.1.0-SNAPSHOT.jar broker --broker-id 2 --port 9094 --data-dir ./data/broker-2 --controller-addr localhost:9092
 ```
 
 Create, produce, and consume / 创建 Topic、生产消息、消费消息：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-2.0.0.jar create-topic --brokers localhost:9092 --name orders --partitions 3
-java -jar mq-demo/target/mq-demo-2.0.0.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
-java -jar mq-demo/target/mq-demo-2.0.0.jar consume --brokers localhost:9092 --topic orders --group order-processors
+java -jar mq-demo/target/mq-demo-2.1.0-SNAPSHOT.jar create-topic --brokers localhost:9092 --name orders --partitions 3
+java -jar mq-demo/target/mq-demo-2.1.0-SNAPSHOT.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
+java -jar mq-demo/target/mq-demo-2.1.0-SNAPSHOT.jar consume --brokers localhost:9092 --topic orders --group order-processors
 ```
 
 ## 6. Glossary / 专业名词解释

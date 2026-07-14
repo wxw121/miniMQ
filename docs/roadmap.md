@@ -5,9 +5,9 @@
 
 ## 1. Current State / 当前状态
 
-MiniMQ has released V2.0 storage recovery as `v2.0.0`. The released Maven version is `2.0.0`; V2.1 segmented-log planning is the next development line. V2.0 includes independent WAL, checkpointed replay, explicit flush policy, and append-count checkpoint cadence.
+MiniMQ has released V2.0 storage recovery as `v2.0.0` and opened the V2.1 development line. The Maven version is `2.1.0-SNAPSHOT`; the latest stable tag is `v2.0.0`. V2.1 focuses on segmented logs, sparse indexes, retention, and compaction.
 
-MiniMQ 已将 V2.0 存储恢复以 `v2.0.0` 发布。发布 Maven 版本为 `2.0.0`；下一开发主线为 V2.1 分段日志规划。V2.0 包含独立 WAL、checkpoint 重放、显式刷盘策略，以及按 append 次数触发 checkpoint 的节奏。
+MiniMQ 已将 V2.0 存储恢复以 `v2.0.0` 发布，并开启 V2.1 开发主线。Maven 版本为 `2.1.0-SNAPSHOT`；最新稳定标签为 `v2.0.0`。V2.1 聚焦分段日志、稀疏索引、保留策略和压缩。
 
 The most important limitation is that the system is still single-replica and controller-static. This keeps the design compact, but it means broker failures can lose availability and data for affected partitions.
 
