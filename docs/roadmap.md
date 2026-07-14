@@ -5,9 +5,9 @@
 
 ## 1. Current State / 当前状态
 
-MiniMQ has completed the V1.3 closeout and opened the V2.0 development line. The Maven version is `2.0.0-SNAPSHOT`; the latest stable tag is `v1.3.0`. The active V2.0 track is storage recovery foundation: independent WAL, checkpoint contract, and explicit flush policy.
+MiniMQ has completed the V1.3 closeout and is on the V2.0 development line. The Maven version is `2.0.0-SNAPSHOT`; the latest stable tag is `v1.3.0`. The V2.0 storage recovery foundation now includes independent WAL, checkpointed replay, explicit flush policy, and append-count checkpoint cadence.
 
-MiniMQ 已完成 V1.3 收口并打开 V2.0 开发主线。Maven 版本为 `2.0.0-SNAPSHOT`；最新稳定标签为 `v1.3.0`。当前 V2.0 主线是存储恢复基础：独立 WAL、checkpoint 契约和显式刷盘策略。
+MiniMQ 已完成 V1.3 收口并处在 V2.0 开发主线。Maven 版本为 `2.0.0-SNAPSHOT`；最新稳定标签为 `v1.3.0`。V2.0 存储恢复基础现在包含独立 WAL、checkpoint 重放、显式刷盘策略，以及按 append 次数触发 checkpoint 的节奏。
 
 The most important limitation is that the system is still single-replica and controller-static. This keeps the design compact, but it means broker failures can lose availability and data for affected partitions.
 
@@ -28,9 +28,9 @@ The most important limitation is that the system is still single-replica and con
 | P1 | Completed: Client stale metadata / `NOT_LEADER` resilience. / 已完成：客户端过期元数据与 `NOT_LEADER` 韧性。 | V1.3 caches metadata per topic, invalidates stale metadata on `NOT_LEADER` or cache routing failure, refreshes once, and reports contextual errors when the retry budget is exhausted. / V1.3 按 Topic 缓存元数据，在 `NOT_LEADER` 或缓存路由失败时失效并刷新一次，重试预算耗尽后返回带上下文的错误。 | `ProducerNotLeaderRetryTest` and `ConsumerNotLeaderRetryTest` cover cache reuse, invalidation, retry budget, and error context. / `ProducerNotLeaderRetryTest` 与 `ConsumerNotLeaderRetryTest` 覆盖缓存复用、失效、重试预算和错误上下文。 |
 | P1 | Completed: Metadata corruption recovery. / 已完成：元数据损坏恢复。 | Startup now validates JSON metadata shape and semantic consistency, fails clearly by default, and quarantines corrupt metadata only when recovery is explicitly enabled. / 启动现在校验 JSON 元数据结构和语义一致性，默认清晰失败；仅在显式启用恢复时隔离损坏元数据。 | `MetadataStoreTest` covers corrupt JSON, empty files, schema-incompatible documents, key mismatches, safe write, and quarantine behavior. / `MetadataStoreTest` 覆盖损坏 JSON、空文件、结构不兼容文档、key 不匹配、安全写入与隔离行为。 |
 | P1 | Completed: Log corruption and truncated-record recovery. / 已完成：日志损坏与截断记录恢复。 | Partition-log startup keeps complete valid records, truncates only incomplete tail records, and rejects structural corruption with clear storage errors. / 分区日志启动时保留完整有效记录，只截断尾部半条记录，并对结构性损坏返回清晰存储错误。 | `FilePartitionLogTest` covers truncated header, truncated key/value payload, invalid negative length, impossible payload size, non-monotonic offset, and recovered `nextOffset`. / `FilePartitionLogTest` 覆盖截断 header、截断 key/value payload、非法负长度、异常 payload 大小、非单调 offset 与恢复后的 `nextOffset`。 |
-| P0 | Active: V2.0 independent WAL design. / 进行中：V2.0 独立 WAL 设计。 | Separate durable write intent from partition-log layout so recovery has one ordered source of truth before segment/index work. / 将持久化写入意图与分区日志布局拆开，让恢复在分段/索引之前先有一个有序事实来源。 | WAL encode/decode, checksum, truncated-tail replay, idempotent replay, and unknown-record rejection tests. / WAL 编解码、校验和、尾部截断重放、幂等重放与未知记录拒绝测试。 |
-| P0 | Active: V2.0 checkpoint contract. / 进行中：V2.0 checkpoint 契约。 | Bound startup scanning cost and define the persisted high-watermark/replay point per topic-partition. / 限制启动扫描成本，并定义每个 Topic-Partition 的持久化高水位和重放起点。 | Checkpoint save/load, corrupt checkpoint fallback, and WAL replay from checkpoint tests. / checkpoint 保存/加载、损坏 checkpoint 回退与从 checkpoint 开始 WAL 重放测试。 |
-| P0 | Active: V2.0 flush policy. / 进行中：V2.0 刷盘策略。 | Make durability/latency tradeoffs explicit instead of hardcoding force-on-every-append behavior. / 显式化持久性与延迟权衡，不再把每次 append 都刷盘硬编码为唯一行为。 | Per-append, periodic, batch/manual flush, close flush, and invalid policy tests. / 每次追加、周期、批量/手动、关闭刷盘与非法策略测试。 |
+| P0 | Implemented: V2.0 independent WAL design. / 已实现：V2.0 独立 WAL 设计。 | Durable write intent is now separated from partition-log layout, giving recovery one ordered source of truth before segment/index work. / 已将持久化写入意图与分区日志布局拆开，让恢复在分段/索引之前先有一个有序事实来源。 | `WriteAheadLogTest` covers WAL encode/decode, checksum mismatch, truncated-tail recovery, unknown-record rejection, and payload copy safety. / `WriteAheadLogTest` 覆盖 WAL 编解码、校验和不匹配、尾部截断恢复、未知记录拒绝与 payload 拷贝安全。 |
+| P0 | Implemented: V2.0 checkpoint and broker startup replay. / 已实现：V2.0 checkpoint 与 Broker 启动重放。 | Startup loads checkpoint, verifies checkpointed partition high watermarks, falls back to WAL position 0 if a partition log is behind, and replays idempotently before request handling. / 启动会加载 checkpoint、校验 checkpoint 中分区高水位；如果分区日志落后则回退到 WAL position 0，并在开放请求处理前幂等重放。 | `CheckpointStoreTest` and `LogManagerRecoveryTest` cover save/load, corrupt checkpoint fallback, no temp-file leftovers, no-checkpoint replay, behind-checkpoint replay, and duplicate replay idempotence. / `CheckpointStoreTest` 与 `LogManagerRecoveryTest` 覆盖保存/加载、损坏 checkpoint 回退、无临时文件残留、无 checkpoint 重放、checkpoint 后分区落后重放和重复重放幂等。 |
+| P0 | Implemented: V2.0 flush policy and checkpoint cadence. / 已实现：V2.0 刷盘策略与 checkpoint 节奏。 | Durability/latency tradeoffs are explicit while default behavior remains force-on-every-append. / 持久性与延迟权衡已显式化，同时默认行为仍保持每次 append 都刷盘。 | `FlushPolicyTest`, `LogManagerFlushPolicyTest`, and `BrokerConfigTest` cover policy decisions, invalid settings, append-count checkpointing, and CLI parsing. / `FlushPolicyTest`、`LogManagerFlushPolicyTest` 与 `BrokerConfigTest` 覆盖策略判断、非法配置、按 append 次数 checkpoint 和 CLI 解析。 |
 
 ## 3. Version Roadmap / 版本路线图
 
@@ -122,22 +122,22 @@ V2.0 应通过独立 WAL 与 checkpoint 恢复，把“持久化意图”和“�
 
 Design proposal / 设计方案：
 
-1. WAL ownership: add `WriteAheadLog` under `mq-storage` and keep it independent from `FilePartitionLog`. The broker append path should first append durable intent to WAL, then apply the record to the partition log. / WAL 归属：在 `mq-storage` 增加 `WriteAheadLog`，并保持它独立于 `FilePartitionLog`。Broker append 路径先把持久化意图写入 WAL，再应用到分区日志。
-2. WAL file layout: store records in `{dataDir}/wal/minimq.wal` for V2.0, with future rolling left to V2.1. Each record starts with magic, version, record type, topic length, topic bytes, partition id, offset, key length, value length, payload bytes, and CRC32 checksum. / WAL 文件布局：V2.0 使用 `{dataDir}/wal/minimq.wal`，WAL 滚动留到 V2.1。每条记录包含 magic、version、record type、topic 长度、topic 字节、partition id、offset、key 长度、value 长度、payload 字节和 CRC32 校验和。
-3. WAL record types: start with `DATA_APPEND` only. Reserve `CHECKPOINT_MARKER` and `CONTROL_MARKER` values but reject unknown record types during replay. / WAL 记录类型：先只实现 `DATA_APPEND`。预留 `CHECKPOINT_MARKER` 和 `CONTROL_MARKER` 值，但重放时拒绝未知类型。
-4. Replay contract: startup loads checkpoint first, opens partition logs, replays WAL records after the checkpointed replay position, and applies each record idempotently by topic-partition offset. Duplicate offsets already present in the partition log are skipped; gaps fail fast. / 重放契约：启动先加载 checkpoint，再打开分区日志，从 checkpoint 记录的重放位置之后重放 WAL，并按 topic-partition offset 幂等应用记录。分区日志里已存在的重复 offset 跳过；出现 offset 空洞则快速失败。
-5. Checkpoint file: persist `{dataDir}/checkpoint/recovery-checkpoint.json` using temp-file write, force, and atomic replace. The checkpoint stores WAL byte position, per-partition high watermark, and creation time. / checkpoint 文件：使用临时文件写入、刷盘和原子替换持久化 `{dataDir}/checkpoint/recovery-checkpoint.json`。checkpoint 保存 WAL 字节位置、每分区高水位和创建时间。
-6. Checkpoint cadence: create a checkpoint on clean broker shutdown and after every configurable number of successful appends. If the checkpoint is missing or corrupt, replay from WAL position 0 and validate existing partition logs using V1.3 recovery rules. / checkpoint 节奏：Broker 正常关闭时创建 checkpoint，并在可配置次数的成功 append 后创建 checkpoint。checkpoint 缺失或损坏时，从 WAL 位置 0 开始重放，并用 V1.3 恢复规则校验现有分区日志。
-7. Flush policies: introduce `FlushPolicy` with `ALWAYS`, `EVERY_N_APPENDS`, `INTERVAL_MS`, and `MANUAL_ON_CLOSE`. Default V2.0 policy should remain `ALWAYS` for safety, while tests cover the other modes. / 刷盘策略：引入 `FlushPolicy`，包含 `ALWAYS`、`EVERY_N_APPENDS`、`INTERVAL_MS` 和 `MANUAL_ON_CLOSE`。V2.0 默认仍使用 `ALWAYS` 保守保证安全，同时测试覆盖其他模式。
+1. Implemented: WAL ownership adds `WriteAheadLog` under `mq-storage` and keeps it independent from `FilePartitionLog`. The broker append path first appends durable intent to WAL, then applies the record to the partition log. / 已实现：WAL 归属在 `mq-storage` 增加 `WriteAheadLog`，并保持它独立于 `FilePartitionLog`。Broker append 路径先把持久化意图写入 WAL，再应用到分区日志。
+2. Implemented: WAL file layout stores records in `{dataDir}/wal/minimq.wal` for V2.0, with future rolling left to V2.1. Each record starts with magic, version, record type, body length, body bytes, and CRC32 checksum; `DATA_APPEND` body contains topic, partition, offset, key, and value. / 已实现：V2.0 WAL 文件使用 `{dataDir}/wal/minimq.wal`，WAL 滚动留到 V2.1。每条记录包含 magic、version、record type、body 长度、body 字节和 CRC32 校验和；`DATA_APPEND` body 包含 topic、partition、offset、key 和 value。
+3. Implemented: WAL record types start with `DATA_APPEND`; reserved/unknown record types are rejected during replay. / 已实现：WAL 记录类型先从 `DATA_APPEND` 开始；预留或未知类型在重放时拒绝。
+4. Implemented: Replay contract loads checkpoint first, verifies checkpointed partition high watermarks, replays after the checkpointed WAL position only when partition logs are caught up, otherwise replays from WAL position 0, and applies each record idempotently by topic-partition offset. Duplicate offsets already present in the partition log are skipped; gaps fail fast. / 已实现：重放契约先加载 checkpoint 并校验 checkpoint 中分区高水位；只有分区日志已追上时才从 checkpoint 记录的 WAL 位置之后重放，否则从 WAL position 0 重放，并按 topic-partition offset 幂等应用记录。分区日志里已存在的重复 offset 跳过；出现 offset 空洞则快速失败。
+5. Implemented: checkpoint file persists `{dataDir}/checkpoint/recovery-checkpoint.json` using temp-file write, force, and atomic replace. The checkpoint stores WAL byte position, per-partition high watermark, and creation time. / 已实现：checkpoint 文件使用临时文件写入、刷盘和原子替换持久化 `{dataDir}/checkpoint/recovery-checkpoint.json`。checkpoint 保存 WAL 字节位置、每分区高水位和创建时间。
+6. Implemented: checkpoint is created on clean broker shutdown, during `LogManager` startup after replay, on explicit `checkpoint()`, and after every configured number of successful appends. / 已实现：Broker 正常关闭时、`LogManager` 启动重放后、显式 `checkpoint()`，以及达到配置的成功 append 次数后都会创建 checkpoint。
+7. Implemented: flush policies include `ALWAYS`, `EVERY_N_APPENDS`, `INTERVAL_MS`, and `MANUAL_ON_CLOSE`. Default V2.0 policy remains `ALWAYS` for safety, while tests cover the other modes. / 已实现：刷盘策略包含 `ALWAYS`、`EVERY_N_APPENDS`、`INTERVAL_MS` 和 `MANUAL_ON_CLOSE`。V2.0 默认仍使用 `ALWAYS` 保守保证安全，同时测试覆盖其他模式。
 8. Failure handling: incomplete WAL tail records are truncated like V1.3 log tails; checksum mismatch, negative lengths, impossible payload sizes, non-monotonic replay gaps, or unknown versions fail clearly. / 失败处理：WAL 尾部半条记录像 V1.3 日志尾部一样截断；校验和不匹配、负长度、异常 payload 大小、重放 offset 空洞或未知版本都清晰失败。
 
 Implementation sequence / 实现顺序：
 
-1. Define `WalRecord`, `WalRecordType`, `WriteAheadLog`, and WAL serde tests. / 定义 `WalRecord`、`WalRecordType`、`WriteAheadLog` 和 WAL 编解码测试。
-2. Add `RecoveryCheckpoint`, `CheckpointStore`, and safe-write/corrupt-checkpoint tests. / 增加 `RecoveryCheckpoint`、`CheckpointStore` 与安全写入/损坏 checkpoint 测试。
-3. Introduce `FlushPolicy` and make `FilePartitionLog`/WAL flush behavior configurable without changing default safety. / 引入 `FlushPolicy`，让 `FilePartitionLog`/WAL 刷盘行为可配置，同时不改变默认安全性。
-4. Wire broker startup recovery: load checkpoint, replay WAL, then expose partition logs to request handling. / 串接 Broker 启动恢复：加载 checkpoint、重放 WAL，然后再向请求处理开放分区日志。
-5. Add crash-style tests for truncated WAL, duplicate replay, checkpoint recovery, and invalid policy config. / 增加崩溃风格测试，覆盖 WAL 截断、重复重放、checkpoint 恢复和非法策略配置。
+1. Implemented: define `WalRecord`, `WalRecordType`, `WriteAheadLog`, and WAL serde tests. / 已实现：定义 `WalRecord`、`WalRecordType`、`WriteAheadLog` 和 WAL 编解码测试。
+2. Implemented: add `RecoveryCheckpoint`, `CheckpointStore`, and safe-write/corrupt-checkpoint tests. / 已实现：增加 `RecoveryCheckpoint`、`CheckpointStore` 与安全写入/损坏 checkpoint 测试。
+3. Implemented: introduce `FlushPolicy` and make `FilePartitionLog`/WAL flush behavior configurable without changing default safety. / 已实现：引入 `FlushPolicy`，让 `FilePartitionLog`/WAL 刷盘行为可配置，同时不改变默认安全性。
+4. Implemented: wire broker startup recovery by loading checkpoint, replaying WAL, and exposing recovered partition logs to request handling. / 已实现：串接 Broker 启动恢复，加载 checkpoint、重放 WAL，然后再向请求处理开放已恢复的分区日志。
+5. Implemented for V2.0 scope: crash-style tests cover truncated WAL, duplicate replay, checkpoint recovery, and invalid policy config. / V2.0 范围内已实现：崩溃风格测试覆盖 WAL 截断、重复重放、checkpoint 恢复和非法策略配置。
 
 ### 3.4 V2.1 Segmented Log, Index, Retention, And Compaction / V2.1 分段日志、索引、保留与压缩
 
@@ -324,7 +324,7 @@ For a new agent session, the most productive next tasks are:
 
 1. Add protocol compatibility notes for future V2 fields. / 为后续 V2 字段增加协议兼容性说明。
 2. Start V2 metadata model for replicas without implementing full replication yet. / 先启动副本相关 V2 元数据模型，不急于实现完整副本机制。
-3. Start V2.0 storage recovery foundation: independent WAL format, checkpoint contract, and flush policy. / 启动 V2.0 存储恢复基础：独立 WAL 格式、checkpoint 契约和刷盘策略。
+3. Run V2.0 storage recovery closeout checks, then prepare the V2.1 segmented-log plan. / 运行 V2.0 存储恢复收口检查，然后准备 V2.1 分段日志计划。
 4. Prepare V2.0 milestone tasks after the `v1.3.0` release tag. / 在 `v1.3.0` 发布 tag 后准备 V2.0 里程碑任务。
 
 ## 6. Risk Register / 风险登记表

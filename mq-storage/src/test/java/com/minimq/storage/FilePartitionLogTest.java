@@ -46,6 +46,20 @@ class FilePartitionLogTest {
     }
 
     @Test
+    void closeReleasesPartitionLogAndRejectsFurtherUse(@TempDir Path dir) throws IOException {
+        FilePartitionLog log = new FilePartitionLog(dir.resolve("orders-0.log"));
+        log.append("k".getBytes(), "v1".getBytes());
+
+        log.close();
+        log.close();
+
+        assertThrows(IllegalStateException.class, () -> log.append("k".getBytes(), "v2".getBytes()));
+        assertThrows(IllegalStateException.class, () -> log.appendAt(1, "k".getBytes(), "v2".getBytes()));
+        assertThrows(IllegalStateException.class, () -> log.read(0, 1024 * 1024));
+        assertThrows(IllegalStateException.class, log::flush);
+    }
+
+    @Test
     void recoverTruncatesIncompleteTailHeader(@TempDir Path dir) throws IOException {
         Path logPath = dir.resolve("orders-0.log");
         FilePartitionLog log = new FilePartitionLog(logPath);

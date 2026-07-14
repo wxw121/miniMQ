@@ -7,6 +7,7 @@ import com.minimq.broker.metadata.MetadataStore;
 import com.minimq.protocol.codec.MqDecoder;
 import com.minimq.protocol.codec.MqEncoder;
 import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
+import com.minimq.storage.LogManagerConfig;
 import com.minimq.storage.LogManager;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.ChannelFuture;
@@ -28,6 +29,7 @@ public class BrokerServer {
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
     private ChannelFuture channelFuture;
+    private PartitionManager partitionManager;
 
     public BrokerServer(BrokerConfig config) {
         this.config = config;
@@ -37,8 +39,10 @@ public class BrokerServer {
         MetadataStore metadataStore = new MetadataStore(config.dataDir(), config.recoverCorruptMetadata());
         ClusterController clusterController = new ClusterController(metadataStore);
         GroupCoordinator groupCoordinator = new GroupCoordinator(clusterController);
-        LogManager logManager = new LogManager(config.dataDir());
-        PartitionManager partitionManager = new PartitionManager(logManager);
+        LogManager logManager = new LogManager(
+                config.dataDir(),
+                new LogManagerConfig(config.flushPolicy(), config.checkpointEveryNAppends()));
+        partitionManager = new PartitionManager(logManager);
 
         if (config.controller()) {
             clusterController.registerBroker(new RegisterBrokerRequest(
@@ -77,6 +81,9 @@ public class BrokerServer {
         }
         if (workerGroup != null) {
             workerGroup.shutdownGracefully().sync();
+        }
+        if (partitionManager != null) {
+            partitionManager.close();
         }
     }
 }

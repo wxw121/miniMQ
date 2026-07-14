@@ -136,10 +136,9 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
     // 写入前校验当前 Broker 是否仍为 leader，防止过期元数据把消息写到错误节点。
     private ProduceResponse handleProduce(ProduceRequest request) {
-        PartitionLog log = partitionManager.getOrCreate(request.topicName(), request.partitionId());
         long baseOffset = -1;
         for (ProduceRecord record : request.records()) {
-            baseOffset = log.append(record.key(), record.value());
+            baseOffset = partitionManager.append(request.topicName(), request.partitionId(), record.key(), record.value());
         }
         return new ProduceResponse(request.topicName(), request.partitionId(), baseOffset);
     }

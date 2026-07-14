@@ -4,6 +4,7 @@ import com.minimq.common.model.Record;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedChannelException;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -21,9 +22,16 @@ public class FilePartitionLog implements PartitionLog {
     private static final int MAX_FIELD_LENGTH = 64 * 1024 * 1024;
 
     private final FileChannel channel;
+    private final boolean forceOnAppend;
+    private boolean closed;
     private long nextOffset;
 
     public FilePartitionLog(Path path) throws IOException {
+        this(path, true);
+    }
+
+    FilePartitionLog(Path path, boolean forceOnAppend) throws IOException {
+        this.forceOnAppend = forceOnAppend;
         Files.createDirectories(path.getParent() != null ? path.getParent() : Path.of("."));
         channel = FileChannel.open(path,
                 StandardOpenOption.CREATE,
@@ -84,13 +92,9 @@ public class FilePartitionLog implements PartitionLog {
     @Override
     public synchronized long append(byte[] key, byte[] value) {
         try {
+            ensureOpen();
             long offset = nextOffset;
-            channel.position(channel.size());
-            writeLong(offset);
-            writeBytes(key);
-            writeBytes(value);
-            channel.force(false);
-            nextOffset = offset + 1;
+            appendAtInternal(offset, key, value);
             return offset;
         } catch (IOException e) {
             throw new IllegalStateException("Failed to append record", e);
@@ -98,8 +102,29 @@ public class FilePartitionLog implements PartitionLog {
     }
 
     @Override
+    public synchronized void appendAt(long offset, byte[] key, byte[] value) {
+        ensureOpenUnchecked();
+        if (offset < nextOffset) {
+            Record existing = readExisting(offset);
+            if (existing != null && bytesEqual(existing.key(), key) && bytesEqual(existing.value(), value)) {
+                return;
+            }
+            throw new IllegalStateException("Conflicting record already exists at offset " + offset);
+        }
+        if (offset > nextOffset) {
+            throw new IllegalStateException("Cannot append offset " + offset + " when next offset is " + nextOffset);
+        }
+        try {
+            appendAtInternal(offset, key, value);
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to append record at offset " + offset, e);
+        }
+    }
+
+    @Override
     public synchronized List<Record> read(long fromOffset, int maxBytes) {
         try {
+            ensureOpen();
             List<Record> records = new ArrayList<>();
             channel.position(0);
             int bytesRead = 0;
@@ -124,6 +149,72 @@ public class FilePartitionLog implements PartitionLog {
     @Override
     public synchronized long highWatermark() {
         return nextOffset;
+    }
+
+    @Override
+    public synchronized void flush() {
+        try {
+            ensureOpen();
+            channel.force(false);
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to flush partition log", e);
+        }
+    }
+
+    @Override
+    public synchronized void close() {
+        if (closed) {
+            return;
+        }
+        try {
+            channel.force(false);
+            channel.close();
+            closed = true;
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to close partition log", e);
+        }
+    }
+
+    private void ensureOpenUnchecked() {
+        try {
+            ensureOpen();
+        } catch (IOException e) {
+            throw new IllegalStateException("Partition log is closed", e);
+        }
+    }
+
+    private void ensureOpen() throws IOException {
+        if (closed || !channel.isOpen()) {
+            throw new ClosedChannelException();
+        }
+    }
+
+    private void appendAtInternal(long offset, byte[] key, byte[] value) throws IOException {
+        channel.position(channel.size());
+        writeLong(offset);
+        writeBytes(key);
+        writeBytes(value);
+        if (forceOnAppend) {
+            channel.force(false);
+        }
+        nextOffset = offset + 1;
+    }
+
+    private Record readExisting(long offset) {
+        List<Record> records = read(offset, Integer.MAX_VALUE);
+        for (Record record : records) {
+            if (record.offset() == offset) {
+                return record;
+            }
+            if (record.offset() > offset) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private boolean bytesEqual(byte[] left, byte[] right) {
+        return java.util.Arrays.equals(left, right);
     }
 
     private void writeLong(long value) throws IOException {

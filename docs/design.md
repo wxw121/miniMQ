@@ -187,9 +187,9 @@ checkpoint 包含：
 | `partitionHighWatermarks` | Map of `topic-partition -> nextOffset`. / `topic-partition -> nextOffset` 映射。 |
 | `createdAtEpochMs` | Creation timestamp for diagnostics. / 用于诊断的创建时间戳。 |
 
-Checkpoint writes use the same safe-write model as metadata: temp file, force, and atomic replace where supported. If the checkpoint is missing or corrupt, recovery replays from WAL position 0 and validates partition logs using V1.3 corruption-recovery rules.
+Checkpoint writes use the same safe-write model as metadata: temp file, force, and atomic replace where supported. If the checkpoint is missing or corrupt, recovery replays from WAL position 0 and validates partition logs using V1.3 corruption-recovery rules. A loaded checkpoint is trusted only when each checkpointed partition log has reached at least the stored high watermark; if any partition log falls behind, startup replays from WAL position 0 so the idempotent append path can refill missing records.
 
-checkpoint 写入使用与元数据相同的安全写入模型：临时文件、刷盘，并在平台支持时原子替换。checkpoint 缺失或损坏时，恢复从 WAL position 0 开始重放，并使用 V1.3 损坏恢复规则校验分区日志。
+checkpoint 写入使用与元数据相同的安全写入模型：临时文件、刷盘，并在平台支持时原子替换。checkpoint 缺失或损坏时，恢复从 WAL position 0 开始重放，并使用 V1.3 损坏恢复规则校验分区日志。已加载的 checkpoint 只有在每个已记录分区日志都达到对应高水位时才可信；只要任一分区日志落后，启动会从 WAL position 0 重放，让幂等 append 路径补齐缺失记录。
 
 #### Flush Policy / 刷盘策略
 
@@ -207,6 +207,18 @@ V2.0 引入显式 `FlushPolicy`：
 The default remains `ALWAYS` until replication and stronger recovery tests exist. This preserves V1.3's conservative durability behavior while making future performance work explicit.
 
 默认策略保持 `ALWAYS`，直到副本机制和更强恢复测试完成。这保留 V1.3 的保守持久性行为，同时把后续性能优化显式化。
+
+Broker CLI flags expose the V2.0 policy without changing existing defaults:
+
+Broker CLI 参数暴露 V2.0 策略，同时不改变现有默认行为：
+
+| Flag / 参数 | Meaning / 含义 |
+| --- | --- |
+| `--flush-policy always` | Default: force WAL and partition logs after every append. / 默认：每次 append 后刷 WAL 与分区日志。 |
+| `--flush-policy every-n-appends --flush-every-n-appends N` | Force after every `N` successful appends. / 每 `N` 次成功 append 后刷盘。 |
+| `--flush-policy interval-ms --flush-interval-ms N` | Force when at least `N` milliseconds have elapsed since the last flush. / 距上次刷盘至少经过 `N` 毫秒后刷盘。 |
+| `--flush-policy manual-on-close` | Do not flush during append; explicit checkpoint or broker shutdown still flushes before saving checkpoint. / append 期间不主动刷盘；显式 checkpoint 或 Broker 关闭仍会在保存 checkpoint 前刷盘。 |
+| `--checkpoint-every-n-appends N` | Save a recovery checkpoint after every `N` successful appends; `0` disables append-count checkpointing. / 每 `N` 次成功 append 后保存恢复 checkpoint；`0` 表示关闭按次数 checkpoint。 |
 
 ## 5. Metadata Design / 元数据设计
 

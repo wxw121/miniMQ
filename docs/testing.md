@@ -129,9 +129,14 @@ The following screenshots are generated from the latest verified Surefire and Ja
 | `mq-common` | `Murmur2PartitionerTest` | Unit / 单元测试 | Stable partitioning and invalid partition count. / 稳定分区与非法分区数校验。 |
 | `mq-common` | `RangeAssignorTest` | Unit / 单元测试 | Range assignment and assignment serialization boundaries. / Range 分配与 assignment 序列化边界。 |
 | `mq-common` | `CommonModelTest` | Unit / 单元测试 | Records and error code mapping. / Record 模型与错误码映射。 |
-| `mq-storage` | `FilePartitionLogTest` | Unit / 单元测试 | Append/read/reopen recovery, truncated-tail recovery, structural corruption rejection, and `LogManager` caching. / 追加、读取、重开恢复、尾部截断恢复、结构性损坏拒绝与 `LogManager` 缓存。 |
+| `mq-storage` | `FilePartitionLogTest` | Unit / 单元测试 | Append/read/reopen recovery, truncated-tail recovery, structural corruption rejection, close behavior, and `LogManager` caching. / 追加、读取、重开恢复、尾部截断恢复、结构性损坏拒绝、关闭行为与 `LogManager` 缓存。 |
+| `mq-storage` | `WriteAheadLogTest` | Unit / 单元测试 | WAL encode/decode, checksum mismatch, truncated-tail recovery, unknown record type rejection, and payload copy safety. / WAL 编解码、校验和不匹配、尾部截断恢复、未知记录类型拒绝与 payload 拷贝安全。 |
+| `mq-storage` | `CheckpointStoreTest` | Unit / 单元测试 | Recovery checkpoint safe write, load, corrupt-checkpoint fallback, and temp-file cleanup. / 恢复 checkpoint 安全写入、加载、损坏 checkpoint 回退与临时文件清理。 |
+| `mq-storage` | `LogManagerRecoveryTest` | Unit / 单元测试 | WAL replay without checkpoint, replay when partition logs fall behind checkpoint, and duplicate replay idempotence. / 无 checkpoint WAL 重放、分区日志落后 checkpoint 时重放，以及重复重放幂等。 |
+| `mq-storage` | `FlushPolicyTest` | Unit / 单元测试 | Flush policy decisions and invalid storage config. / 刷盘策略判断与非法存储配置。 |
+| `mq-storage` | `LogManagerFlushPolicyTest` | Unit / 单元测试 | Append-count checkpoint cadence, explicit checkpoint refresh, concurrent append offsets, and close behavior. / 按 append 次数触发 checkpoint、显式 checkpoint 刷新、并发 append offset 与关闭行为。 |
 | `mq-protocol` | `ProtocolSerdesTest` | Unit / 单元测试 | Request/response round trips, malformed collection counts, frame limits, encoder. / 请求/响应往返、畸形集合 count、帧限制和编码器。 |
-| `mq-broker` | `BrokerConfigTest` | Unit / 单元测试 | Broker argument parsing and validation. / Broker 参数解析与校验。 |
+| `mq-broker` | `BrokerConfigTest` | Unit / 单元测试 | Broker argument parsing and validation, including flush/checkpoint options. / Broker 参数解析与校验，包括刷盘与 checkpoint 选项。 |
 | `mq-broker` | `MetadataStoreTest` | Unit / 单元测试 | Metadata safe writes, load validation, corrupt-file failure, and quarantine recovery. / 元数据安全写入、加载校验、损坏文件失败与隔离恢复。 |
 | `mq-broker` | `ClusterControllerTest` | Unit / 单元测试 | Topic creation, metadata, snapshot isolation. / Topic 创建、元数据、快照隔离。 |
 | `mq-broker` | `GroupCoordinatorTest` | Unit / 单元测试 | Join/sync assignment, heartbeat, offset commit/fetch. / 加组、同步分配、心跳、offset 提交/拉取。 |
@@ -147,7 +152,12 @@ The following screenshots are generated from the latest verified Surefire and Ja
 | `mq-demo` | `MiniMqE2ETest` | E2E / 端到端测试 | Three-broker cluster with two consumers. / 三节点 Broker 集群与两个 Consumer。 |
 | `mq-demo` | `MiniMqWebAppTest` | Web integration / Web 集成测试 | Static assets, real Web flow, mock fallback, HTTP errors, runtime reuse, concurrent request isolation, stale runtime rebuild, and LRU runtime eviction. / 静态资源、真实 Web 主流程、mock fallback、HTTP 错误、runtime 复用、并发请求隔离、旧 runtime 重建和 LRU runtime 淘汰。 |
 
-### 7.1 Web Runtime Regression Coverage / Web Runtime 回归覆盖
+### 7.1 V2.0 Storage Recovery Closeout / V2.0 存储恢复收口
+
+The V2.0 storage recovery closeout is recorded in `docs/test-report-2026-07-10-v2-storage.md`.
+V2.0 存储恢复收口记录见 `docs/test-report-2026-07-10-v2-storage.md`。
+
+### 7.2 Web Runtime Regression Coverage / Web Runtime 回归覆盖
 
 The Web backend has dedicated regression tests for the three runtime risks fixed in the current version.
 

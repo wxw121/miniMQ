@@ -16,4 +16,16 @@ public class PartitionManager {
     public PartitionLog getOrCreate(String topic, int partitionId) {
         return logManager.getOrCreate(topic, partitionId);
     }
+
+    public long append(String topic, int partitionId, byte[] key, byte[] value) {
+        return logManager.append(topic, partitionId, key, value);
+    }
+
+    public void checkpoint() {
+        logManager.checkpoint();
+    }
+
+    public void close() {
+        logManager.close();
+    }
 }

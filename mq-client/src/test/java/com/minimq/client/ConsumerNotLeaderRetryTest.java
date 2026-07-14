@@ -173,6 +173,41 @@ class ConsumerNotLeaderRetryTest {
         }
     }
 
+    @Test
+    void pollRefreshesExpiredCachedPartitionMetadataBeforeFetching() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("consumer-expired-partition-metadata");
+        try (BrokerTestHarness controller = BrokerTestHarness.startController(dataDir);
+             NetworkClient admin = new NetworkClient("admin");
+             TestableConsumer consumer = new TestableConsumer(
+                     controller.bootstrapServers(), "expired-metadata-group", "consumer-expired-metadata")) {
+            admin.connect("127.0.0.1", controller.port());
+            admin.ensureSuccess(admin.send(
+                    ApiKeys.CREATE_TOPIC, new CreateTopicRequest("orders", 1)));
+            MetadataResponse freshMetadata = (MetadataResponse) admin.send(
+                    ApiKeys.METADATA, new MetadataRequest("orders"))
+                    .body();
+            List<PartitionMetadata> cachedPartitions = new ArrayList<>(
+                    freshMetadata.topics().get(0).partitions());
+            MetadataResponse cachedMetadata = new MetadataResponse(
+                    freshMetadata.brokers(),
+                    List.of(new TopicMetadata("orders", cachedPartitions)));
+
+            consumer.enqueueMetadata(cachedMetadata);
+            consumer.subscribe("orders");
+            cachedPartitions.clear();
+
+            consumer.countMetadataFetchesDuringPoll();
+            consumer.enqueueMetadata(freshMetadata);
+            consumer.enqueueFetchResponse(successResponse(0));
+
+            List<ConsumerRecord> records = consumer.poll(Duration.ofMillis(10));
+
+            assertEquals(1, records.size());
+            assertEquals(1, consumer.metadataFetchesDuringPoll());
+            assertEquals(1, consumer.fetchAttempts());
+        }
+    }
+
     private static MetadataResponse metadataWithLeaders(int partition0Leader, int partition1Leader) {
         return new MetadataResponse(
                 List.of(

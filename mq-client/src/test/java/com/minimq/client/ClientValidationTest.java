@@ -1,8 +1,12 @@
 package com.minimq.client;
 
+import com.minimq.client.exception.MiniMqMetadataException;
+import com.minimq.client.exception.MiniMqServerException;
+import com.minimq.common.error.ErrorCode;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class ClientValidationTest {
@@ -20,5 +24,15 @@ class ClientValidationTest {
                 // no-op
             }
         });
+    }
+
+    @Test
+    void clientExceptionsExposeActionableContext() {
+        MiniMqMetadataException metadata = new MiniMqMetadataException("Topic not found: orders");
+        MiniMqServerException server = new MiniMqServerException(ErrorCode.UNKNOWN_PARTITION);
+
+        assertEquals("Topic not found: orders", metadata.getMessage());
+        assertEquals(ErrorCode.UNKNOWN_PARTITION, server.errorCode());
+        assertEquals("Request failed: UNKNOWN_PARTITION", server.getMessage());
     }
 }

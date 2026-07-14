@@ -2,6 +2,8 @@ package com.minimq.broker;
 
 import org.junit.jupiter.api.Test;
 
+import com.minimq.storage.FlushPolicy;
+
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -19,7 +21,10 @@ class BrokerConfigTest {
                 "--data-dir", "./data/broker-2",
                 "--controller",
                 "--recover-corrupt-metadata",
-                "--controller-addr", "localhost:9092"
+                "--controller-addr", "localhost:9092",
+                "--flush-policy", "every-n-appends",
+                "--flush-every-n-appends", "5",
+                "--checkpoint-every-n-appends", "10"
         });
 
         assertEquals(2, config.brokerId());
@@ -30,6 +35,8 @@ class BrokerConfigTest {
         assertTrue(config.recoverCorruptMetadata());
         assertEquals("localhost", config.controllerHost());
         assertEquals(9092, config.controllerPort());
+        assertEquals(FlushPolicy.everyNAppends(5), config.flushPolicy());
+        assertEquals(10, config.checkpointEveryNAppends());
     }
 
     @Test
@@ -38,5 +45,11 @@ class BrokerConfigTest {
         assertThrows(IllegalArgumentException.class, () -> BrokerConfig.parse(new String[] {"--port"}));
         assertThrows(IllegalArgumentException.class,
                 () -> BrokerConfig.parse(new String[] {"--controller-addr", "localhost"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> BrokerConfig.parse(new String[] {"--flush-policy", "sometimes"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> BrokerConfig.parse(new String[] {"--flush-every-n-appends", "0"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> BrokerConfig.parse(new String[] {"--checkpoint-every-n-appends", "-1"}));
     }
 }
