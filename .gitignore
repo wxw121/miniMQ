@@ -24,6 +24,7 @@ Thumbs.db
 .agents/
 .run/
 .codex-skill-install-*/
+.worktrees/
 .npm-cache/
 .playwright-cli/
 .m2/
