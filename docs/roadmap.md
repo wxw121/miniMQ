@@ -5,9 +5,9 @@
 
 ## 1. Current State / 当前状态
 
-MiniMQ has released V2.0 storage recovery as `v2.0.0` and is closing the V2.1.0 segmented-log milestone on `2.1.0-SNAPSHOT`. The latest stable tag is still `v2.0.0` until V2.1.0 is released. V2.1.0 covers segmented directories, sparse indexes, legacy single-file migration, and broker CLI wiring; retention and compaction move to the next V2.1.x milestone.
+MiniMQ has released V2.0 storage recovery as `v2.0.0`, completed the local V2.1.0 segmented-log implementation, and is now developing V2.1.1 retention and compaction on `2.1.1-SNAPSHOT`. The latest stable tag is still `v2.0.0` until the V2.1 line is tagged. V2.1.1 covers sealed-segment retention, sealed-segment compaction, atomic catalog switching, read-snapshot deletion protection, and broker CLI wiring for maintenance policies.
 
-MiniMQ 已将 V2.0 存储恢复以 `v2.0.0` 发布，并正在 `2.1.0-SNAPSHOT` 上收口 V2.1.0 分段日志里程碑。最新稳定标签在 V2.1.0 发布前仍为 `v2.0.0`。V2.1.0 覆盖分段目录、稀疏索引、旧单文件迁移和 Broker CLI 装配；保留策略与压缩进入下一个 V2.1.x 里程碑。
+MiniMQ 已将 V2.0 存储恢复以 `v2.0.0` 发布，已完成本地 V2.1.0 分段日志实现，并正在 `2.1.1-SNAPSHOT` 上研发 V2.1.1 保留策略与压缩。最新稳定标签在 V2.1 线打 tag 前仍为 `v2.0.0`。V2.1.1 覆盖 sealed segment 保留策略、sealed segment 压缩、原子 catalog 切换、读快照删除保护，以及维护策略的 Broker CLI 装配。
 
 The most important limitation is that the system is still single-replica and controller-static. This keeps the design compact, but it means broker failures can lose availability and data for affected partitions.
 
@@ -32,7 +32,7 @@ The most important limitation is that the system is still single-replica and con
 | P0 | Implemented: V2.0 checkpoint and broker startup replay. / 已实现：V2.0 checkpoint 与 Broker 启动重放。 | Startup loads checkpoint, verifies checkpointed partition high watermarks, falls back to WAL position 0 if a partition log is behind, and replays idempotently before request handling. / 启动会加载 checkpoint、校验 checkpoint 中分区高水位；如果分区日志落后则回退到 WAL position 0，并在开放请求处理前幂等重放。 | `CheckpointStoreTest` and `LogManagerRecoveryTest` cover save/load, corrupt checkpoint fallback, no temp-file leftovers, no-checkpoint replay, behind-checkpoint replay, and duplicate replay idempotence. / `CheckpointStoreTest` 与 `LogManagerRecoveryTest` 覆盖保存/加载、损坏 checkpoint 回退、无临时文件残留、无 checkpoint 重放、checkpoint 后分区落后重放和重复重放幂等。 |
 | P0 | Implemented: V2.0 flush policy and checkpoint cadence. / 已实现：V2.0 刷盘策略与 checkpoint 节奏。 | Durability/latency tradeoffs are explicit while default behavior remains force-on-every-append. / 持久性与延迟权衡已显式化，同时默认行为仍保持每次 append 都刷盘。 | `FlushPolicyTest`, `LogManagerFlushPolicyTest`, and `BrokerConfigTest` cover policy decisions, invalid settings, append-count checkpointing, and CLI parsing. / `FlushPolicyTest`、`LogManagerFlushPolicyTest` 与 `BrokerConfigTest` 覆盖策略判断、非法配置、按 append 次数 checkpoint 和 CLI 解析。 |
 | P0 | Implemented: V2.1.0 segmented log and sparse index. / 已实现：V2.1.0 分段日志与稀疏索引。 | Partition data now lives under `segments/{topic}-{partition}` with cataloged segment files and sparse offset indexes; old single files migrate on startup. / 分区数据现在位于 `segments/{topic}-{partition}`，包含 catalog 管理的 segment 文件和稀疏 offset 索引；旧单文件在启动时迁移。 | `SegmentedPartitionLogTest`, `SegmentFileTest`, `SparseOffsetIndexTest`, `SegmentCatalogStoreTest`, and `LogManagerSegmentRecoveryTest` cover rolling, reads, index rebuild, migration, staging cleanup, and corrupt recovery boundaries. / 这些测试覆盖滚动、读取、索引重建、迁移、staging 清理和损坏恢复边界。 |
-| P1 | Next: V2.1.x retention and compaction. / 下一步：V2.1.x 保留策略与压缩。 | Segment layout is now stable enough to delete old complete segments and later rewrite compacted segments by key. / 分段布局已足够稳定，可继续实现整段删除旧数据，并后续按 key 重写压缩段。 | Add retention policy unit tests, disk-bound integration tests, and compaction fixture tests before enabling in broker defaults. / 在默认启用前补保留策略单元测试、磁盘上界集成测试和压缩 fixture 测试。 |
+| P0 | Implemented: V2.1.1 retention, compaction, and read snapshots. / 已实现：V2.1.1 保留策略、压缩与读快照。 | Sealed segments can now be deleted by time/size policy or compacted by latest key while in-flight reads keep a stable segment view. / sealed segment 现在可以按时间/容量策略删除，也可以按最新 key 压缩，同时进行中的读取保持稳定 segment 视图。 | `RetentionPlannerTest`, `SegmentedPartitionLogRetentionTest`, `SegmentCompactorTest`, `SegmentedPartitionLogCompactionTest`, `SegmentedPartitionLogSnapshotTest`, and `LogManagerMaintenanceTest` cover policy selection, file cleanup, compaction semantics, read-snapshot protection, append-count maintenance, checkpointing, and replay after retained offsets. / 这些测试覆盖策略选择、文件清理、压缩语义、读快照保护、按 append 次数维护、checkpoint 和保留 offset 后的重放。 |
 
 ## 3. Version Roadmap / 版本路线图
 
@@ -63,8 +63,9 @@ timeline
     V2.1.0 Segmented Log / V2.1.0 分段日志 : Log segments / 日志分段
                                            : Sparse index / 稀疏索引
                                            : Legacy migration / 旧日志迁移
-    V2.1.x Retention And Compaction / V2.1.x 保留与压缩 : Retention / 保留策略
-                                                       : Compaction / 压缩
+    V2.1.1 Retention And Compaction / V2.1.1 保留与压缩 : Retention / 保留策略
+                                                         : Compaction / 压缩
+                                                         : Read snapshots / 读快照
     V2.2 Read Performance / V2.2 读取性能 : mmap or sendfile / mmap 或 sendfile
                                            : Zero-copy experiment / 零拷贝实验
     V2.3 Replication / V2.3 副本机制 : Partition replicas / 分区副本
@@ -148,6 +149,10 @@ V2.1.0 has switched the active broker storage path from one file per partition t
 
 V2.1.0 已把活跃 Broker 存储路径从每分区一个文件切换为每分区一个分段目录。每个分区现在包含 `catalog.json`、有序 `.log` 文件和稀疏 `.index` 文件。旧单文件布局作为迁移来源处理。
 
+V2.1.1 builds on that layout with sealed-segment retention, sealed-segment compaction, atomic catalog switching, read-snapshot deletion protection, and append-count maintenance triggers. Replication, service discovery, circuit breakers, Epoll, and zero-copy remain in later productionization versions.
+
+V2.1.1 在该布局上补齐 sealed segment 保留策略、sealed segment 压缩、原子 catalog 切换、读快照删除保护和按 append 次数触发维护。副本、服务发现、熔断降级、Epoll 与零拷贝继续放在后续生产化版本。
+
 ```mermaid
 flowchart LR
     p[orders-0 partition<br/>orders-0 分区]
@@ -181,11 +186,19 @@ V2.1.0 implemented scope / V2.1.0 已实现范围：
 4. `LogManager` stores new partitions under `{dataDir}/segments/{topic}-{partition}`, migrates old `{topic}-{partition}.log` files, cleans interrupted `.migrating` staging directories, and keeps WAL/checkpoint replay on the new layout. / `LogManager` 将新分区存储到 `{dataDir}/segments/{topic}-{partition}`，迁移旧 `{topic}-{partition}.log` 文件，清理中断遗留的 `.migrating` staging 目录，并把 WAL/checkpoint 重放串到新布局。
 5. Broker CLI exposes `--segment-max-bytes` and `--sparse-index-interval-records`. / Broker CLI 暴露 `--segment-max-bytes` 与 `--sparse-index-interval-records`。
 
-V2.1.x remaining scope / V2.1.x 剩余范围：
+V2.1.1 implemented scope / V2.1.1 已实现范围：
 
-1. Retention policy by time and/or size, deleting only fully sealed old segments. / 按时间和/或大小实现保留策略，只删除完整 sealed old segment。
-2. Compaction workflow that rewrites segment data by latest key while preserving offset semantics. / 实现按 key 最新值重写 segment 的压缩流程，同时保留 offset 语义。
-3. Operational guardrails such as dry-run reports, disk usage metrics, and compaction interruption recovery. / 增加 dry-run 报告、磁盘用量指标、压缩中断恢复等运维保护。
+1. Retention policy by time and/or size deletes only fully sealed old segments and advances `logStartOffset`. / 按时间和/或大小实现保留策略，只删除完整 sealed old segment，并推进 `logStartOffset`。
+2. Compaction rewrites sealed segments by latest non-null key, preserves null-key records, and keeps logical offset semantics. / 压缩按非 null key 最新值重写 sealed segment，保留 null-key 记录，并保持逻辑 offset 语义。
+3. Atomic catalog switching and startup cleanup handle interrupted `.cleaned`, `.obsolete`, and temporary catalog files. / 原子 catalog 切换与启动清理会处理中断遗留的 `.cleaned`、`.obsolete` 和临时 catalog 文件。
+4. Read snapshots delay physical deletion until in-flight reads complete, and WAL replay skips records below `logStartOffset`. / 读快照会延迟物理删除直到正在进行的读取完成，WAL replay 会跳过低于 `logStartOffset` 的记录。
+5. Broker CLI exposes retention, compaction, and maintenance cadence settings. / Broker CLI 暴露保留策略、压缩和维护节奏配置。
+
+Remaining V2.1 hardening / V2.1 剩余加固：
+
+1. Add dry-run reports before destructive maintenance actions. / 在破坏性维护动作前增加 dry-run 报告。
+2. Add maintenance metrics for deleted bytes, compacted segments, skipped reads, and cleanup failures. / 增加删除字节数、压缩 segment 数、跳过读取和清理失败等维护指标。
+3. Add operator controls for manual maintenance windows and compaction throttling. / 增加手动维护窗口和压缩限速等运维控制。
 
 Retention deletes old data by time or size. Compaction keeps the latest value for each key. They solve different problems:
 
@@ -339,9 +352,9 @@ For a new agent session, the most productive next tasks are:
 
 对新 agent 会话，最建议继续做：
 
-1. Finish the V2.1.0 release review and tag after this segmented-log closeout commit. / 在本次分段日志收口提交后完成 V2.1.0 发布检查与 tag。
-2. Start V2.1.x retention policy design and tests on top of the stable segment/catalog layout. / 基于稳定的 segment/catalog 布局启动 V2.1.x 保留策略设计与测试。
-3. Design compaction only after retention has clear deletion and recovery semantics. / 在保留策略具备清晰删除与恢复语义后再设计压缩。
+1. Review the V2.1.1 retention/compaction branch and tag the next V2.1 milestone after push access is restored. / 在 push 通路恢复后，复核 V2.1.1 保留策略/压缩分支并为下一个 V2.1 里程碑打 tag。
+2. Add V2.1 maintenance observability: dry-run reports, deleted-byte counters, compaction counters, and cleanup failure metrics. / 增加 V2.1 维护可观测性：dry-run 报告、删除字节计数、压缩计数和清理失败指标。
+3. Add operator controls for maintenance windows and compaction throttling before enabling aggressive defaults. / 在启用更激进默认值前，增加维护窗口和压缩限速等运维控制。
 4. Keep replicas, service discovery, circuit breaker, Epoll, and zero-copy in later productionization versions. / 副本、服务发现、熔断、Epoll 与零拷贝继续放在后续生产化版本。
 
 ## 6. Risk Register / 风险登记表
@@ -350,7 +363,7 @@ For a new agent session, the most productive next tasks are:
 | --- | --- | --- |
 | Static controller failure / 静态 Controller 故障 | Cluster control-plane unavailable. / 集群控制面不可用。 | Add controller election. / 增加 Controller 选举。 |
 | Single replica partition / 单副本分区 | Data unavailable/lost if broker fails. / Broker 故障时数据不可用或丢失。 | Add replication and ISR. / 增加副本与 ISR。 |
-| Retention/compaction not yet implemented / 尚未实现保留与压缩 | Disk usage can still grow without bounds. / 磁盘使用量仍可能无上界增长。 | Implement V2.1.x retention first, then compaction. / 先实现 V2.1.x 保留策略，再实现压缩。 |
+| Maintenance observability is still limited / 日志维护可观测性仍有限 | Operators can configure retention and compaction but cannot yet see rich dry-run or metrics output. / 运维可以配置保留策略和压缩，但还没有完整 dry-run 或指标输出。 | Add dry-run reports, counters, and cleanup failure metrics in the next hardening step. / 下一步补充 dry-run 报告、计数器和清理失败指标。 |
 | Synchronous clients / 同步客户端 | Limited throughput. / 吞吐受限。 | Add batching and async APIs. / 增加批量发送和异步 API。 |
 | JSON metadata overwrite / JSON 元数据覆盖写 | Possible corruption on crash. / 崩溃时可能损坏。 | Write temp file then atomic move; add checksums. / 先写临时文件再原子移动，并增加校验和。 |
 | Simplified rebalance / 简化 rebalance | Group behavior differs from production Kafka. / 消费组行为与生产级 Kafka 有差异。 | Add explicit rebalance states and member protocols. / 增加显式 rebalance 状态和成员协议。 |

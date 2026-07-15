@@ -58,33 +58,33 @@ Latest result / 最近结果：
 
 | Metric / 指标 | Value / 数值 |
 | --- | ---: |
-| Tests run / 测试总数 | 174 |
+| Tests run / 测试总数 | 189 |
 | Failures / 失败数 | 0 |
 | Errors / 错误数 | 0 |
 | Skipped / 跳过数 | 0 |
-| Overall line coverage / 总体行覆盖率 | 91.94% |
-| Overall instruction coverage / 总体指令覆盖率 | 93.00% |
-| Overall branch coverage / 总体分支覆盖率 | 80.05% |
-| Overall method coverage / 总体方法覆盖率 | 97.66% |
+| Overall line coverage / 总体行覆盖率 | 91.97% |
+| Overall instruction coverage / 总体指令覆盖率 | 93.03% |
+| Overall branch coverage / 总体分支覆盖率 | 80.60% |
+| Overall method coverage / 总体方法覆盖率 | 97.70% |
 | Overall class coverage / 总体类覆盖率 | 100.00% |
 
 ## 5. Coverage By Module / 模块覆盖率
 
 | Module / 模块 | Instruction / 指令 | Branch / 分支 | Line / 行 | Method / 方法 | Class / 类 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `mq-broker` | 94.56% | 76.90% | 92.69% | 97.14% | 100.00% |
+| `mq-broker` | 94.59% | 77.26% | 92.81% | 97.17% | 100.00% |
 | `mq-client` | 92.26% | 76.52% | 90.06% | 92.68% | 100.00% |
 | `mq-common` | 96.84% | 84.38% | 97.84% | 100.00% | 100.00% |
 | `mq-demo` | 95.06% | 74.56% | 92.14% | 95.16% | 100.00% |
 | `mq-protocol` | 92.55% | 79.53% | 91.88% | 100.00% | 100.00% |
-| `mq-storage` | 91.28% | 83.68% | 91.36% | 100.00% | 100.00% |
+| `mq-storage` | 91.70% | 83.74% | 91.48% | 99.58% | 100.00% |
 
 ```mermaid
 xychart-beta
     title "Line Coverage By Module / 模块行覆盖率"
     x-axis ["broker/代理", "client/客户端", "common/公共", "demo/演示", "protocol/协议", "storage/存储"]
     y-axis "Line % / 行覆盖率 %" 0 --> 100
-    bar [92.69, 90.06, 97.84, 92.14, 91.88, 91.36]
+    bar [92.81, 90.06, 97.84, 92.14, 91.88, 91.48]
 ```
 
 ```mermaid
@@ -92,15 +92,15 @@ xychart-beta
     title "Overall Coverage / 总体覆盖率"
     x-axis ["Instruction/指令", "Branch/分支", "Line/行", "Method/方法", "Class/类"]
     y-axis "Coverage % / 覆盖率 %" 0 --> 100
-    bar [93.00, 80.05, 91.94, 97.66, 100.00]
+    bar [93.03, 80.60, 91.97, 97.70, 100.00]
 ```
 
 
 ## 6. Key Flow Test Evidence / 关键流程测试结果截图
 
-The following screenshots are generated from the latest verified Surefire and JaCoCo results. They make the core quality evidence visible in the Markdown document itself, so a new reader can inspect the main flows without opening every `target` report directory.
+The numeric baseline above and the closeout report are the source of truth for the latest verified Surefire and JaCoCo results. The screenshots below remain visual aids for the core flows, so a new reader can inspect the main testing shape without opening every `target` report directory.
 
-以下截图基于最近一次通过验证的 Surefire 与 JaCoCo 结果生成。它们把核心质量证据直接嵌入 Markdown 文档中，新读者无需逐个打开 `target` 报告目录，也能快速看到关键流程的测试结论。
+上面的数字基线与收口报告是最近一次通过验证的 Surefire 与 JaCoCo 结果来源。下面截图保留为核心流程的可视化辅助，新读者无需逐个打开 `target` 报告目录，也能快速看到关键测试形态。
 
 ### 6.1 Full Build Verification / 完整构建验证
 
@@ -142,8 +142,15 @@ The following screenshots are generated from the latest verified Surefire and Ja
 | `mq-storage` | `SegmentFileTest` | Unit / 单元测试 | Segment file append/read budgets, corrupt index rebuild, missing logs, non-monotonic offsets, and closed behavior. / Segment 文件追加、读取预算、损坏索引重建、缺失日志、非单调 offset 与关闭行为。 |
 | `mq-storage` | `SegmentedPartitionLogTest` | Unit / 单元测试 | Segment rolling, cross-segment reads, index rebuild, active-tail truncation, sealed-segment corruption rejection, idempotent replay, and overlapping catalog rejection. / Segment 滚动、跨 segment 读取、索引重建、活跃尾部截断、sealed segment 损坏拒绝、幂等重放和重叠 catalog 拒绝。 |
 | `mq-storage` | `LogManagerSegmentRecoveryTest` | Unit / 单元测试 | Legacy single-file migration, WAL/checkpoint replay on segmented layout, legacy cleanup, and interrupted staging cleanup. / 旧单文件迁移、新分段布局上的 WAL/checkpoint 重放、旧文件清理和中断 staging 清理。 |
+| `mq-storage` | `LogManagerConfigTest` | Unit / 单元测试 | Maintenance policy validation and compatibility constructors. / 维护策略校验与兼容构造器。 |
+| `mq-storage` | `RetentionPlannerTest` | Unit / 单元测试 | Time and size retention selection with active-segment protection. / 按时间和容量选择保留删除目标，并保护活跃 segment。 |
+| `mq-storage` | `SegmentedPartitionLogRetentionTest` | Unit / 单元测试 | Sealed-segment retention, catalog `logStartOffset`, file cleanup, and replay after retained offsets are removed. / sealed segment 保留、catalog `logStartOffset`、文件清理，以及保留 offset 被删除后的重放。 |
+| `mq-storage` | `SegmentCompactorTest` | Unit / 单元测试 | Latest-key compaction planning, null-key preservation, and bounded segment rewrites. / 最新 key 压缩规划、null-key 保留和有界 segment 重写。 |
+| `mq-storage` | `SegmentedPartitionLogCompactionTest` | Unit / 单元测试 | Sealed-only compaction, atomic catalog publication, cleaned-file cleanup, and offset-hole reads. / 仅对 sealed segment 压缩、原子 catalog 发布、cleaned 文件清理和 offset 空洞读取。 |
+| `mq-storage` | `SegmentedPartitionLogSnapshotTest` | Unit / 单元测试 | In-flight read snapshots, deferred physical deletion, and startup cleanup for interrupted maintenance files. / 进行中的读快照、延迟物理删除和中断维护文件的启动清理。 |
+| `mq-storage` | `LogManagerMaintenanceTest` | Unit / 单元测试 | Append-count maintenance, manual compaction, checkpointing, and WAL replay after retained offsets are removed. / 按 append 次数触发维护、手动压缩、checkpoint，以及保留 offset 被删除后的 WAL replay。 |
 | `mq-protocol` | `ProtocolSerdesTest` | Unit / 单元测试 | Request/response round trips, malformed collection counts, frame limits, encoder. / 请求/响应往返、畸形集合 count、帧限制和编码器。 |
-| `mq-broker` | `BrokerConfigTest` | Unit / 单元测试 | Broker argument parsing and validation, including flush/checkpoint and segment options. / Broker 参数解析与校验，包括刷盘、checkpoint 与 segment 选项。 |
+| `mq-broker` | `BrokerConfigTest` | Unit / 单元测试 | Broker argument parsing and validation, including flush/checkpoint, segment, retention, compaction, and maintenance options. / Broker 参数解析与校验，包括刷盘、checkpoint、segment、保留策略、压缩和维护选项。 |
 | `mq-broker` | `MetadataStoreTest` | Unit / 单元测试 | Metadata safe writes, load validation, corrupt-file failure, and quarantine recovery. / 元数据安全写入、加载校验、损坏文件失败与隔离恢复。 |
 | `mq-broker` | `ClusterControllerTest` | Unit / 单元测试 | Topic creation, metadata, snapshot isolation. / Topic 创建、元数据、快照隔离。 |
 | `mq-broker` | `GroupCoordinatorTest` | Unit / 单元测试 | Join/sync assignment, heartbeat, offset commit/fetch. / 加组、同步分配、心跳、offset 提交/拉取。 |
@@ -169,7 +176,12 @@ V2.0 存储恢复收口记录见 `docs/test-report-2026-07-10-v2-storage.md`。
 The V2.1.0 segmented-log closeout is recorded in `docs/test-report-2026-07-15-v2.1.0-segmented-log.md`.
 V2.1.0 分段日志收口记录见 `docs/test-report-2026-07-15-v2.1.0-segmented-log.md`。
 
-### 7.3 Web Runtime Regression Coverage / Web Runtime 回归覆盖
+### 7.3 V2.1.1 Retention And Compaction Closeout / V2.1.1 保留策略与压缩收口
+
+The V2.1.1 retention and compaction closeout is recorded in `docs/test-report-2026-07-15-v2.1.1-retention-compaction.md`.
+V2.1.1 保留策略与压缩收口记录见 `docs/test-report-2026-07-15-v2.1.1-retention-compaction.md`。
+
+### 7.4 Web Runtime Regression Coverage / Web Runtime 回归覆盖
 
 The Web backend has dedicated regression tests for the three runtime risks fixed in the current version.
 
@@ -227,9 +239,9 @@ The current agreed gate is:
 Per-module line coverage >= 90% for modules covered by JaCoCo check / 接入 JaCoCo check 的模块行覆盖率均 >= 90%
 ```
 
-The project currently satisfies this gate at 91.94% overall line coverage, with JaCoCo `check` bound to Maven `verify`. Blocking process entrypoints (`BrokerMain`, `MiniMqWebMain`, and `MiniMqWebDevMain`) are excluded from the report and gate because their behavior is covered indirectly through CLI, broker integration, and Web launcher tests.
+The project currently satisfies this gate at 91.97% overall line coverage, with JaCoCo `check` bound to Maven `verify`. Blocking process entrypoints (`BrokerMain`, `MiniMqWebMain`, and `MiniMqWebDevMain`) are excluded from the report and gate because their behavior is covered indirectly through CLI, broker integration, and Web launcher tests.
 
-项目当前总体行覆盖率为 91.94%，并且 JaCoCo `check` 已绑定到 Maven `verify`。阻塞式进程入口（`BrokerMain`、`MiniMqWebMain`、`MiniMqWebDevMain`）的行为已通过 CLI、Broker 集成测试和 Web 启动器测试间接覆盖，因此从报告和门禁统计中排除。
+项目当前总体行覆盖率为 91.97%，并且 JaCoCo `check` 已绑定到 Maven `verify`。阻塞式进程入口（`BrokerMain`、`MiniMqWebMain`、`MiniMqWebDevMain`）的行为已通过 CLI、Broker 集成测试和 Web 启动器测试间接覆盖，因此从报告和门禁统计中排除。
 
 ## 10. Slow Tests / 慢测试说明
 

@@ -46,7 +46,7 @@ flowchart TB
 | Module | Responsibility / 职责 | Key classes / 关键类 |
 | --- | --- | --- |
 | `mq-common` | Shared domain objects, error codes, Murmur2 partitioning, range assignment, assignment serialization. / 公共领域对象、错误码、Murmur2 分区、Range 分配、分配结果序列化。 | `ErrorCode`, `Record`, `Murmur2Partitioner`, `RangeAssignor`, `AssignmentSerde` |
-| `mq-storage` | Local append-only partition log with WAL-backed segmented storage. / 基于 WAL 的本地追加写分段分区日志。 | `PartitionLog`, `SegmentedPartitionLog`, `SegmentFile`, `SparseOffsetIndex`, `LogManager` |
+| `mq-storage` | Local append-only partition log with WAL-backed segmented storage, retention, and sealed-segment compaction. / 基于 WAL 的本地追加写分段分区日志、保留策略和 sealed segment 压缩。 | `PartitionLog`, `SegmentedPartitionLog`, `SegmentFile`, `SparseOffsetIndex`, `LogManager` |
 | `mq-protocol` | Binary frame format, request/response headers, API messages, Netty decoder/encoder. / 二进制帧格式、请求/响应头、API 消息、Netty 编解码器。 | `MqFrame`, `ProtocolSerdes`, `MqDecoder`, `MqEncoder`, `ProtocolMessages` |
 | `mq-broker` | Server runtime, metadata controller, group coordinator, request handling, metadata sync. / 服务端运行时、元数据 Controller、消费组协调器、请求处理、元数据同步。 | `BrokerServer`, `MqRequestHandler`, `ClusterController`, `GroupCoordinator`, `MetadataSync` |
 | `mq-client` | Producer and Consumer SDK. / 生产者和消费者 SDK。 | `NetworkClient`, `Producer`, `Consumer` |
@@ -174,6 +174,10 @@ Each topic-partition now has one segmented directory under the broker data direc
 
 `LogManager` 在启动时仍会接受旧单文件 `{topic}-{partitionId}.log` 数据，并迁移到分段目录。WAL 重放和 checkpoint 校验会在开放请求处理之前完成，因此 Broker 只有在分区日志追上或完成幂等重放后才对外处理流量。
 
+V2.1.1 maintenance runs after recovery on the same segmented catalog. Retention removes only sealed segments by age or total sealed bytes, compaction rewrites only sealed segments by latest key, and read snapshots delay physical deletion until in-flight fetches leave their segment view. WAL replay skips records below `logStartOffset`, so retained-away offsets are not restored on restart.
+
+V2.1.1 日志维护在恢复完成后基于同一份分段 catalog 执行。保留策略只按时间或 sealed segment 总字节数删除 sealed segment，压缩只按最新 key 重写 sealed segment，读快照会延迟物理删除直到正在进行的 fetch 离开自己的 segment 视图。WAL replay 会跳过低于 `logStartOffset` 的记录，因此已被保留策略移除的 offset 不会在重启时恢复。
+
 ```mermaid
 flowchart LR
     handler[MqRequestHandler<br/>请求处理器]
@@ -211,7 +215,7 @@ MiniMQ 可以通过 `mq-demo` 打出的 fat jar 启动。第一个 Broker 通常
 3. Metadata is persisted as one JSON document. This is easy to inspect but not a scalable metadata log; V1.3 adds corrupt-file validation, safe write, and quarantine behavior before V2 introduces a stronger metadata log. / 元数据以单个 JSON 文档持久化，易读但不是可扩展的元数据日志；V1.3 已增加损坏文件校验、安全写入和隔离行为，V2 再引入更强的元数据日志。
 4. Consumer group rebalancing is simplified. There is no full Kafka-style rebalance protocol, session management, or cooperative assignment. / 消费组再均衡经过简化，还没有完整 Kafka 风格的 rebalance 协议、会话管理或协作式分配。
 5. The client SDK now supports fixed-backoff connection retry, configurable request timeout, typed client exceptions, topic-level metadata cache invalidation, and a fixed retry budget of one metadata refresh retry for Producer/Consumer data-plane requests after `NOT_LEADER`. Full replication-aware failover and controller HA are still future work. / 客户端 SDK 现在支持固定退避连接重试、可配置请求超时、类型化客户端异常、Topic 级元数据缓存失效，以及 Producer/Consumer 数据面请求遇到 `NOT_LEADER` 后刷新元数据重试一次的固定预算。完整的副本感知故障转移和 Controller 高可用仍是后续工作。
-6. V2.1.0 has segment rolling, sparse indexes, WAL replay, checkpoint validation, and legacy single-file migration. Retention and compaction are not implemented yet and remain the next V2.1.x storage track. / V2.1.0 已具备 segment 滚动、稀疏索引、WAL 重放、checkpoint 校验和旧单文件迁移。保留策略与压缩尚未实现，仍是下一个 V2.1.x 存储主线。
+6. V2.1.1 has segment rolling, sparse indexes, WAL replay, checkpoint validation, legacy single-file migration, sealed-segment retention, sealed-segment compaction, and read-snapshot deletion protection. Operational dry-run reports and maintenance metrics remain future hardening work. / V2.1.1 已具备 segment 滚动、稀疏索引、WAL 重放、checkpoint 校验、旧单文件迁移、sealed segment 保留策略、sealed segment 压缩和读快照删除保护。dry-run 报告与维护指标仍是后续加固工作。
 
 ## 9. Architecture Glossary / 架构名词表
 

@@ -31,7 +31,7 @@ The current implementation focuses on a single-leader partition model. Broker 0 
 | Item / 项目 | Value / 值 |
 | --- | --- |
 | Language / 语言 | Java 17 |
-| Project version / 项目版本 | 2.1.0-SNAPSHOT |
+| Project version / 项目版本 | 2.1.1-SNAPSHOT |
 | Build tool / 构建工具 | Maven multi-module project / Maven 多模块项目 |
 | Network framework / 网络框架 | Netty 4.1 |
 | Serialization / 序列化 | Custom binary protocol over Netty `ByteBuf` / 基于 Netty `ByteBuf` 的自定义二进制协议 |
@@ -40,7 +40,7 @@ The current implementation focuses on a single-leader partition model. Broker 0 
 | Tests / 测试 | JUnit 5 + Surefire |
 | Coverage / 覆盖率 | JaCoCo |
 | Latest stable tag / 最新稳定标签 | `v2.0.0` |
-| Active development line / 当前开发主线 | V2.1 segmented logs, sparse index, retention, and compaction / V2.1 分段日志、稀疏索引、保留策略和压缩 |
+| Active development line / 当前开发主线 | V2.1.1 retention, compaction, and read-snapshot protection on segmented logs / V2.1.1 分段日志保留策略、压缩与读快照保护 |
 
 ## 4. Module Map / 模块地图
 
@@ -93,17 +93,17 @@ mq-demo/target/site/jacoco/index.html
 Start a three-broker demo cluster / 启动三节点 Broker 演示集群：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-2.1.0-SNAPSHOT.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller
-java -jar mq-demo/target/mq-demo-2.1.0-SNAPSHOT.jar broker --broker-id 1 --port 9093 --data-dir ./data/broker-1 --controller-addr localhost:9092
-java -jar mq-demo/target/mq-demo-2.1.0-SNAPSHOT.jar broker --broker-id 2 --port 9094 --data-dir ./data/broker-2 --controller-addr localhost:9092
+java -jar mq-demo/target/mq-demo-2.1.1-SNAPSHOT.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller
+java -jar mq-demo/target/mq-demo-2.1.1-SNAPSHOT.jar broker --broker-id 1 --port 9093 --data-dir ./data/broker-1 --controller-addr localhost:9092
+java -jar mq-demo/target/mq-demo-2.1.1-SNAPSHOT.jar broker --broker-id 2 --port 9094 --data-dir ./data/broker-2 --controller-addr localhost:9092
 ```
 
 Create, produce, and consume / 创建 Topic、生产消息、消费消息：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-2.1.0-SNAPSHOT.jar create-topic --brokers localhost:9092 --name orders --partitions 3
-java -jar mq-demo/target/mq-demo-2.1.0-SNAPSHOT.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
-java -jar mq-demo/target/mq-demo-2.1.0-SNAPSHOT.jar consume --brokers localhost:9092 --topic orders --group order-processors
+java -jar mq-demo/target/mq-demo-2.1.1-SNAPSHOT.jar create-topic --brokers localhost:9092 --name orders --partitions 3
+java -jar mq-demo/target/mq-demo-2.1.1-SNAPSHOT.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
+java -jar mq-demo/target/mq-demo-2.1.1-SNAPSHOT.jar consume --brokers localhost:9092 --topic orders --group order-processors
 ```
 
 ## 6. Glossary / 专业名词解释
