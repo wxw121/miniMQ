@@ -117,6 +117,10 @@ final class SegmentFile implements AutoCloseable {
         return descriptor.baseOffset();
     }
 
+    long createdAtEpochMs() {
+        return descriptor.createdAtEpochMs();
+    }
+
     long firstOffset() {
         return firstOffset;
     }

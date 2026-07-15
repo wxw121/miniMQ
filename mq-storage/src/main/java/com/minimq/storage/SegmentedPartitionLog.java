@@ -8,7 +8,9 @@ import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Stream;
 
 /**
@@ -119,6 +121,41 @@ public final class SegmentedPartitionLog implements PartitionLog {
         }
     }
 
+    synchronized void applyRetention(RetentionPolicy policy, long nowEpochMs) {
+        ensureOpen();
+        List<Long> basesToDelete = RetentionPlanner.segmentsToDelete(segmentMetadata(), policy, nowEpochMs);
+        if (basesToDelete.isEmpty()) {
+            return;
+        }
+        Set<Long> deleteSet = new HashSet<>(basesToDelete);
+        List<SegmentFile> keptSegments = segments.stream()
+                .filter(segment -> !deleteSet.contains(segment.baseOffset()))
+                .toList();
+        if (keptSegments.isEmpty()) {
+            return;
+        }
+        List<SegmentDescriptor> keptDescriptors = catalog.segments().stream()
+                .filter(descriptor -> !deleteSet.contains(descriptor.baseOffset()))
+                .toList();
+        SegmentCatalog nextCatalog = new SegmentCatalog(
+                catalog.generation() + 1,
+                catalog.activeBaseOffset(),
+                keptDescriptors.get(0).baseOffset(),
+                keptDescriptors);
+        catalogStore.save(nextCatalog);
+        List<SegmentFile> deletedSegments = segments.stream()
+                .filter(segment -> deleteSet.contains(segment.baseOffset()))
+                .toList();
+        segments.clear();
+        segments.addAll(keptSegments);
+        catalog = nextCatalog;
+        for (SegmentFile segment : deletedSegments) {
+            long baseOffset = segment.baseOffset();
+            segment.close();
+            deleteSegmentFiles(baseOffset);
+        }
+    }
+
     private void initialize() throws IOException {
         catalog = catalogStore.load().orElseGet(this::discoverOrCreateCatalog);
         List<SegmentDescriptor> descriptors = catalog.segments();
@@ -225,6 +262,28 @@ public final class SegmentedPartitionLog implements PartitionLog {
 
     private SegmentFile activeSegment() {
         return segments.get(segments.size() - 1);
+    }
+
+    private List<SegmentMetadata> segmentMetadata() {
+        List<SegmentMetadata> metadata = new ArrayList<>();
+        for (int i = 0; i < segments.size(); i++) {
+            SegmentFile segment = segments.get(i);
+            metadata.add(new SegmentMetadata(
+                    segment.baseOffset(),
+                    segment.createdAtEpochMs(),
+                    segment.size(),
+                    i == segments.size() - 1));
+        }
+        return metadata;
+    }
+
+    private void deleteSegmentFiles(long baseOffset) {
+        try {
+            Files.deleteIfExists(SegmentFile.logPath(partitionDir, baseOffset));
+            Files.deleteIfExists(SegmentFile.indexPath(partitionDir, baseOffset));
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to delete retained segment " + baseOffset, e);
+        }
     }
 
     private void closeOpenedSegments() {
