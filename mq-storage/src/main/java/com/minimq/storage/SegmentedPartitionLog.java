@@ -52,6 +52,9 @@ public final class SegmentedPartitionLog implements PartitionLog {
     public synchronized void appendAt(long offset, byte[] key, byte[] value) {
         ensureOpen();
         if (offset < nextOffset) {
+            if (offset < catalog.logStartOffset()) {
+                return;
+            }
             Record existing = findRecord(offset);
             if (existing != null && java.util.Arrays.equals(existing.key(), key)
                     && java.util.Arrays.equals(existing.value(), value)) {

@@ -67,7 +67,22 @@ public class LogManager {
         successfulAppends++;
         flushAfterAppendIfNeeded();
         checkpointAfterAppendIfNeeded();
+        maintenanceAfterAppendIfNeeded();
         return offset;
+    }
+
+    public synchronized void maintain() {
+        ensureOpen();
+        if (!config.maintenanceConfig().enabled()) {
+            return;
+        }
+        for (PartitionLog log : logs.values()) {
+            if (log instanceof SegmentedPartitionLog segmented) {
+                segmented.applyRetention(config.maintenanceConfig().retentionPolicy(), clock.millis());
+                segmented.applyCompaction(config.maintenanceConfig().compactionPolicy());
+            }
+        }
+        saveCheckpoint();
     }
 
     public synchronized void checkpoint() {
@@ -145,6 +160,12 @@ public class LogManager {
     private void checkpointAfterAppendIfNeeded() {
         if (config.shouldCheckpointAfterAppend(successfulAppends)) {
             saveCheckpoint();
+        }
+    }
+
+    private void maintenanceAfterAppendIfNeeded() {
+        if (config.maintenanceConfig().shouldRunAfterAppend(successfulAppends)) {
+            maintain();
         }
     }
 
