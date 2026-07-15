@@ -39,6 +39,21 @@ class RetentionPlannerTest {
     }
 
     @Test
+    void sizeRetentionAccountsForSegmentsAlreadySelectedByTime() {
+        List<SegmentMetadata> segments = List.of(
+                new SegmentMetadata(0, 0, 400, false),
+                new SegmentMetadata(10, 1_500, 400, false),
+                new SegmentMetadata(20, 1_500, 100, true));
+
+        List<Long> deleted = RetentionPlanner.segmentsToDelete(
+                segments,
+                RetentionPolicy.of(1_000, 500),
+                1_100);
+
+        assertEquals(List.of(0L), deleted);
+    }
+
+    @Test
     void disabledPolicyDeletesNothing() {
         List<SegmentMetadata> segments = List.of(
                 new SegmentMetadata(0, 0, 400, false),

@@ -60,6 +60,9 @@ public final class SegmentedPartitionLog implements PartitionLog {
                     && java.util.Arrays.equals(existing.value(), value)) {
                 return;
             }
+            if (existing == null && isHistoricalOffsetHole(offset)) {
+                return;
+            }
             throw new IllegalStateException("Conflicting record already exists at offset " + offset);
         }
         if (offset > nextOffset) {
@@ -230,8 +233,14 @@ public final class SegmentedPartitionLog implements PartitionLog {
     }
 
     private void initialize() throws IOException {
-        catalogStore.cleanupMaintenanceArtifacts();
-        catalog = catalogStore.load().orElseGet(this::discoverOrCreateCatalog);
+        var loadedCatalog = catalogStore.load();
+        if (loadedCatalog.isPresent()) {
+            recoverMaintenanceArtifacts(loadedCatalog.get());
+            catalog = loadedCatalog.get();
+        } else {
+            catalogStore.cleanupMaintenanceArtifacts();
+            catalog = discoverOrCreateCatalog();
+        }
         List<SegmentDescriptor> descriptors = catalog.segments();
         long previousLastOffset = -1;
         for (int i = 0; i < descriptors.size(); i++) {
@@ -321,6 +330,10 @@ public final class SegmentedPartitionLog implements PartitionLog {
         } catch (IOException e) {
             throw new IllegalStateException("Failed to read existing segmented record", e);
         }
+    }
+
+    private boolean isHistoricalOffsetHole(long offset) {
+        return offset >= catalog.logStartOffset() && offset < nextOffset;
     }
 
     private int segmentIndexFor(long offset) {
@@ -441,6 +454,44 @@ public final class SegmentedPartitionLog implements PartitionLog {
             }
         }
         throw new IllegalStateException("Missing segment descriptor " + baseOffset);
+    }
+
+    private void recoverMaintenanceArtifacts(SegmentCatalog visibleCatalog) throws IOException {
+        for (SegmentDescriptor descriptor : visibleCatalog.segments()) {
+            recoverVisibleSegmentFiles(descriptor.baseOffset());
+        }
+        catalogStore.cleanupMaintenanceArtifacts();
+    }
+
+    private void recoverVisibleSegmentFiles(long baseOffset) throws IOException {
+        Path logPath = SegmentFile.logPath(partitionDir, baseOffset);
+        if (Files.exists(logPath)) {
+            return;
+        }
+        Path cleanedLogPath = SegmentFile.cleanedLogPath(partitionDir, baseOffset);
+        if (Files.exists(cleanedLogPath)) {
+            moveReplacing(cleanedLogPath, logPath);
+            promoteMatchingIndex(baseOffset, true);
+            return;
+        }
+        Path obsoleteLogPath = SegmentFile.obsoleteLogPath(partitionDir, baseOffset);
+        if (Files.exists(obsoleteLogPath)) {
+            moveReplacing(obsoleteLogPath, logPath);
+            promoteMatchingIndex(baseOffset, false);
+        }
+    }
+
+    private void promoteMatchingIndex(long baseOffset, boolean cleaned) throws IOException {
+        Path indexPath = SegmentFile.indexPath(partitionDir, baseOffset);
+        if (Files.exists(indexPath)) {
+            return;
+        }
+        Path source = cleaned
+                ? SegmentFile.cleanedIndexPath(partitionDir, baseOffset)
+                : SegmentFile.obsoleteIndexPath(partitionDir, baseOffset);
+        if (Files.exists(source)) {
+            moveReplacing(source, indexPath);
+        }
     }
 
     private void replaceWithCleanedSegment(long baseOffset) throws IOException {

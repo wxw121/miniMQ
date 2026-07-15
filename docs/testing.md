@@ -58,14 +58,14 @@ Latest result / 最近结果：
 
 | Metric / 指标 | Value / 数值 |
 | --- | ---: |
-| Tests run / 测试总数 | 189 |
+| Tests run / 测试总数 | 193 |
 | Failures / 失败数 | 0 |
 | Errors / 错误数 | 0 |
 | Skipped / 跳过数 | 0 |
 | Overall line coverage / 总体行覆盖率 | 91.97% |
-| Overall instruction coverage / 总体指令覆盖率 | 93.03% |
-| Overall branch coverage / 总体分支覆盖率 | 80.60% |
-| Overall method coverage / 总体方法覆盖率 | 97.70% |
+| Overall instruction coverage / 总体指令覆盖率 | 92.96% |
+| Overall branch coverage / 总体分支覆盖率 | 80.57% |
+| Overall method coverage / 总体方法覆盖率 | 97.72% |
 | Overall class coverage / 总体类覆盖率 | 100.00% |
 
 ## 5. Coverage By Module / 模块覆盖率
@@ -77,14 +77,14 @@ Latest result / 最近结果：
 | `mq-common` | 96.84% | 84.38% | 97.84% | 100.00% | 100.00% |
 | `mq-demo` | 95.06% | 74.56% | 92.14% | 95.16% | 100.00% |
 | `mq-protocol` | 92.55% | 79.53% | 91.88% | 100.00% | 100.00% |
-| `mq-storage` | 91.70% | 83.74% | 91.48% | 99.58% | 100.00% |
+| `mq-storage` | 91.59% | 83.58% | 91.50% | 99.58% | 100.00% |
 
 ```mermaid
 xychart-beta
     title "Line Coverage By Module / 模块行覆盖率"
     x-axis ["broker/代理", "client/客户端", "common/公共", "demo/演示", "protocol/协议", "storage/存储"]
     y-axis "Line % / 行覆盖率 %" 0 --> 100
-    bar [92.81, 90.06, 97.84, 92.14, 91.88, 91.48]
+    bar [92.81, 90.06, 97.84, 92.14, 91.88, 91.50]
 ```
 
 ```mermaid
@@ -92,7 +92,7 @@ xychart-beta
     title "Overall Coverage / 总体覆盖率"
     x-axis ["Instruction/指令", "Branch/分支", "Line/行", "Method/方法", "Class/类"]
     y-axis "Coverage % / 覆盖率 %" 0 --> 100
-    bar [93.03, 80.60, 91.97, 97.70, 100.00]
+    bar [92.96, 80.57, 91.97, 97.72, 100.00]
 ```
 
 
@@ -143,12 +143,12 @@ The numeric baseline above and the closeout report are the source of truth for t
 | `mq-storage` | `SegmentedPartitionLogTest` | Unit / 单元测试 | Segment rolling, cross-segment reads, index rebuild, active-tail truncation, sealed-segment corruption rejection, idempotent replay, and overlapping catalog rejection. / Segment 滚动、跨 segment 读取、索引重建、活跃尾部截断、sealed segment 损坏拒绝、幂等重放和重叠 catalog 拒绝。 |
 | `mq-storage` | `LogManagerSegmentRecoveryTest` | Unit / 单元测试 | Legacy single-file migration, WAL/checkpoint replay on segmented layout, legacy cleanup, and interrupted staging cleanup. / 旧单文件迁移、新分段布局上的 WAL/checkpoint 重放、旧文件清理和中断 staging 清理。 |
 | `mq-storage` | `LogManagerConfigTest` | Unit / 单元测试 | Maintenance policy validation and compatibility constructors. / 维护策略校验与兼容构造器。 |
-| `mq-storage` | `RetentionPlannerTest` | Unit / 单元测试 | Time and size retention selection with active-segment protection. / 按时间和容量选择保留删除目标，并保护活跃 segment。 |
+| `mq-storage` | `RetentionPlannerTest` | Unit / 单元测试 | Time and size retention selection, combined time/byte accounting, and active-segment protection. / 按时间和容量选择保留删除目标、组合时间/容量计数，并保护活跃 segment。 |
 | `mq-storage` | `SegmentedPartitionLogRetentionTest` | Unit / 单元测试 | Sealed-segment retention, catalog `logStartOffset`, file cleanup, and replay after retained offsets are removed. / sealed segment 保留、catalog `logStartOffset`、文件清理，以及保留 offset 被删除后的重放。 |
 | `mq-storage` | `SegmentCompactorTest` | Unit / 单元测试 | Latest-key compaction planning, null-key preservation, and bounded segment rewrites. / 最新 key 压缩规划、null-key 保留和有界 segment 重写。 |
-| `mq-storage` | `SegmentedPartitionLogCompactionTest` | Unit / 单元测试 | Sealed-only compaction, atomic catalog publication, cleaned-file cleanup, and offset-hole reads. / 仅对 sealed segment 压缩、原子 catalog 发布、cleaned 文件清理和 offset 空洞读取。 |
+| `mq-storage` | `SegmentedPartitionLogCompactionTest` | Unit / 单元测试 | Sealed-only compaction, atomic catalog publication, interrupted replacement recovery, cleaned-file cleanup, and offset-hole reads. / 仅对 sealed segment 压缩、原子 catalog 发布、中断替换恢复、cleaned 文件清理和 offset 空洞读取。 |
 | `mq-storage` | `SegmentedPartitionLogSnapshotTest` | Unit / 单元测试 | In-flight read snapshots, deferred physical deletion, and startup cleanup for interrupted maintenance files. / 进行中的读快照、延迟物理删除和中断维护文件的启动清理。 |
-| `mq-storage` | `LogManagerMaintenanceTest` | Unit / 单元测试 | Append-count maintenance, manual compaction, checkpointing, and WAL replay after retained offsets are removed. / 按 append 次数触发维护、手动压缩、checkpoint，以及保留 offset 被删除后的 WAL replay。 |
+| `mq-storage` | `LogManagerMaintenanceTest` | Unit / 单元测试 | Append-count maintenance, manual compaction, checkpointing, and WAL replay after retained offsets or compacted offset holes. / 按 append 次数触发维护、手动压缩、checkpoint，以及保留 offset 或压缩 offset 空洞后的 WAL replay。 |
 | `mq-protocol` | `ProtocolSerdesTest` | Unit / 单元测试 | Request/response round trips, malformed collection counts, frame limits, encoder. / 请求/响应往返、畸形集合 count、帧限制和编码器。 |
 | `mq-broker` | `BrokerConfigTest` | Unit / 单元测试 | Broker argument parsing and validation, including flush/checkpoint, segment, retention, compaction, and maintenance options. / Broker 参数解析与校验，包括刷盘、checkpoint、segment、保留策略、压缩和维护选项。 |
 | `mq-broker` | `MetadataStoreTest` | Unit / 单元测试 | Metadata safe writes, load validation, corrupt-file failure, and quarantine recovery. / 元数据安全写入、加载校验、损坏文件失败与隔离恢复。 |
