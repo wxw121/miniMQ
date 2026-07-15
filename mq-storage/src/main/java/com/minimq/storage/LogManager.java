@@ -2,10 +2,16 @@ package com.minimq.storage;
 
 import java.io.IOException;
 import java.time.Clock;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -18,6 +24,7 @@ public class LogManager {
     private final CheckpointStore checkpointStore;
     private final LogManagerConfig config;
     private final Clock clock;
+    private final Set<Path> pendingLegacyCleanup = new HashSet<>();
     private long successfulAppends;
     private long lastFlushEpochMs;
     private boolean closed;
@@ -47,14 +54,8 @@ public class LogManager {
 
     public PartitionLog getOrCreate(String topic, int partitionId) {
         ensureOpen();
-        String name = topic + "-" + partitionId + ".log";
-        return logs.computeIfAbsent(name, n -> {
-            try {
-                return new FilePartitionLog(dataDir.resolve(n), false);
-            } catch (IOException e) {
-                throw new IllegalStateException("Failed to open log " + n, e);
-            }
-        });
+        String partitionKey = topic + "-" + partitionId;
+        return logs.computeIfAbsent(partitionKey, this::openPartitionLog);
     }
 
     public synchronized long append(String topic, int partitionId, byte[] key, byte[] value) {
@@ -132,6 +133,7 @@ public class LogManager {
     private void saveCheckpoint() {
         flushAll();
         checkpointStore.save(checkpointStore.checkpoint(writeAheadLog.size(), highWatermarks()));
+        cleanupMigratedLegacyFiles();
     }
 
     private void flushAfterAppendIfNeeded() {
@@ -160,11 +162,76 @@ public class LogManager {
 
     private Map<String, Long> highWatermarks() {
         Map<String, Long> highWatermarks = new HashMap<>();
-        logs.forEach((name, log) -> {
-            String key = name.endsWith(".log") ? name.substring(0, name.length() - ".log".length()) : name;
-            highWatermarks.put(key, log.highWatermark());
-        });
+        logs.forEach((partitionKey, log) -> highWatermarks.put(partitionKey, log.highWatermark()));
         return highWatermarks;
+    }
+
+    private PartitionLog openPartitionLog(String partitionKey) {
+        Path segmentsDir = dataDir.resolve("segments").resolve(partitionKey);
+        Path legacyFile = dataDir.resolve(partitionKey + ".log");
+        try {
+            if (!Files.exists(segmentsDir) && Files.exists(legacyFile)) {
+                migrateLegacyLog(partitionKey, legacyFile, segmentsDir);
+            }
+            if (Files.exists(legacyFile)) {
+                pendingLegacyCleanup.add(legacyFile);
+            }
+            return new SegmentedPartitionLog(segmentsDir, config.segmentedLogConfig());
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to open segmented log " + partitionKey, e);
+        }
+    }
+
+    private void migrateLegacyLog(String partitionKey, Path legacyFile, Path segmentsDir) throws IOException {
+        Path stagingDir = segmentsDir.resolveSibling(partitionKey + ".migrating");
+        deleteRecursively(stagingDir);
+        try (FilePartitionLog legacy = new FilePartitionLog(legacyFile);
+             SegmentedPartitionLog staged = new SegmentedPartitionLog(stagingDir, config.segmentedLogConfig())) {
+            long fromOffset = 0;
+            while (true) {
+                List<com.minimq.common.model.Record> records = legacy.read(fromOffset, 1024 * 1024);
+                if (records.isEmpty()) {
+                    break;
+                }
+                for (com.minimq.common.model.Record record : records) {
+                    staged.appendAt(record.offset(), record.key(), record.value());
+                    fromOffset = record.offset() + 1;
+                }
+            }
+            staged.flush();
+        }
+        moveDirectory(stagingDir, segmentsDir);
+        pendingLegacyCleanup.add(legacyFile);
+    }
+
+    private void cleanupMigratedLegacyFiles() {
+        for (Path legacyFile : new ArrayList<>(pendingLegacyCleanup)) {
+            try {
+                Files.deleteIfExists(legacyFile);
+                pendingLegacyCleanup.remove(legacyFile);
+            } catch (IOException e) {
+                throw new IllegalStateException("Failed to delete migrated legacy log " + legacyFile, e);
+            }
+        }
+    }
+
+    private void moveDirectory(Path source, Path target) throws IOException {
+        try {
+            Files.move(source, target, StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException atomicFailure) {
+            Files.move(source, target);
+        }
+    }
+
+    private void deleteRecursively(Path path) throws IOException {
+        if (!Files.exists(path)) {
+            return;
+        }
+        try (java.util.stream.Stream<Path> paths = Files.walk(path)) {
+            for (Path child : paths.sorted(Comparator.reverseOrder()).toList()) {
+                Files.deleteIfExists(child);
+            }
+        }
     }
 
     private record PartitionRef(String topic, int partitionId) {
