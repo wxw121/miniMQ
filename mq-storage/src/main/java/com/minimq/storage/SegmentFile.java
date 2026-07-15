@@ -234,6 +234,55 @@ final class SegmentFile implements AutoCloseable {
         return partitionDir.resolve(String.format("%020d.index", baseOffset));
     }
 
+    static Path cleanedLogPath(Path partitionDir, long baseOffset) {
+        return partitionDir.resolve(String.format("%020d.cleaned.log", baseOffset));
+    }
+
+    static Path cleanedIndexPath(Path partitionDir, long baseOffset) {
+        return partitionDir.resolve(String.format("%020d.cleaned.index", baseOffset));
+    }
+
+    static Path obsoleteLogPath(Path partitionDir, long baseOffset) {
+        return partitionDir.resolve(String.format("%020d.obsolete.log", baseOffset));
+    }
+
+    static Path obsoleteIndexPath(Path partitionDir, long baseOffset) {
+        return partitionDir.resolve(String.format("%020d.obsolete.index", baseOffset));
+    }
+
+    static void writeCleaned(
+            Path partitionDir,
+            long baseOffset,
+            List<Record> records,
+            SegmentedLogConfig config) throws IOException {
+        Path logPath = cleanedLogPath(partitionDir, baseOffset);
+        Path indexPath = cleanedIndexPath(partitionDir, baseOffset);
+        Files.deleteIfExists(logPath);
+        Files.deleteIfExists(indexPath);
+        try (FileChannel logChannel = FileChannel.open(logPath,
+                StandardOpenOption.CREATE_NEW,
+                StandardOpenOption.READ,
+                StandardOpenOption.WRITE);
+             SparseOffsetIndex index = SparseOffsetIndex.open(indexPath)) {
+            long previousOffset = -1;
+            long recordCount = 0;
+            for (Record record : records) {
+                if (record.offset() < baseOffset || record.offset() <= previousOffset) {
+                    throw new IOException("Invalid compacted record offset " + record.offset());
+                }
+                long position = logChannel.size();
+                PartitionLogRecordCodec.write(logChannel, record.offset(), record.key(), record.value());
+                if (recordCount % config.sparseIndexIntervalRecords() == 0) {
+                    index.append(record.offset(), position);
+                }
+                previousOffset = record.offset();
+                recordCount++;
+            }
+            logChannel.force(false);
+            index.flush();
+        }
+    }
+
     private static SparseOffsetIndex rebuildIndex(
             Path partitionDir,
             long baseOffset,

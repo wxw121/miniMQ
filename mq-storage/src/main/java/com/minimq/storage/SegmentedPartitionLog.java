@@ -5,11 +5,14 @@ import com.minimq.common.model.Record;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.FileTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -154,6 +157,72 @@ public final class SegmentedPartitionLog implements PartitionLog {
             }
         } finally {
             endReaderQuiescence();
+        }
+    }
+
+    synchronized void applyCompaction(CompactionPolicy policy) {
+        ensureOpen();
+        try {
+            List<SegmentCompactor.SegmentReplacement> replacements =
+                    SegmentCompactor.plan(List.copyOf(segments), policy);
+            if (replacements.isEmpty()) {
+                return;
+            }
+            Map<Long, SegmentCompactor.SegmentReplacement> replacementByBase = new HashMap<>();
+            for (SegmentCompactor.SegmentReplacement replacement : replacements) {
+                replacementByBase.put(replacement.baseOffset(), replacement);
+                if (!replacement.retainedRecords().isEmpty()) {
+                    SegmentFile.writeCleaned(
+                            partitionDir,
+                            replacement.baseOffset(),
+                            replacement.retainedRecords(),
+                            config);
+                }
+            }
+
+            List<SegmentDescriptor> compactedDescriptors = catalog.segments().stream()
+                    .filter(descriptor -> {
+                        SegmentCompactor.SegmentReplacement replacement =
+                                replacementByBase.get(descriptor.baseOffset());
+                        return replacement == null || !replacement.retainedRecords().isEmpty();
+                    })
+                    .toList();
+            SegmentCatalog nextCatalog = new SegmentCatalog(
+                    catalog.generation() + 1,
+                    catalog.activeBaseOffset(),
+                    catalog.logStartOffset(),
+                    compactedDescriptors);
+
+            beginReaderQuiescence();
+            try {
+                catalogStore.save(nextCatalog);
+                List<SegmentFile> compactedSegments = new ArrayList<>();
+                for (SegmentFile segment : segments) {
+                    SegmentCompactor.SegmentReplacement replacement = replacementByBase.get(segment.baseOffset());
+                    if (replacement == null) {
+                        compactedSegments.add(segment);
+                        continue;
+                    }
+                    segment.close();
+                    if (replacement.retainedRecords().isEmpty()) {
+                        deleteSegmentFiles(replacement.baseOffset());
+                    } else {
+                        replaceWithCleanedSegment(replacement.baseOffset());
+                        compactedSegments.add(SegmentFile.open(
+                                partitionDir,
+                                descriptorFor(replacement.baseOffset()),
+                                false,
+                                config));
+                    }
+                }
+                segments.clear();
+                segments.addAll(compactedSegments);
+                catalog = nextCatalog;
+            } finally {
+                endReaderQuiescence();
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to compact segmented log " + partitionDir, e);
         }
     }
 
@@ -359,6 +428,38 @@ public final class SegmentedPartitionLog implements PartitionLog {
             Files.deleteIfExists(SegmentFile.indexPath(partitionDir, baseOffset));
         } catch (IOException e) {
             throw new IllegalStateException("Failed to delete retained segment " + baseOffset, e);
+        }
+    }
+
+    private SegmentDescriptor descriptorFor(long baseOffset) {
+        for (SegmentDescriptor descriptor : catalog.segments()) {
+            if (descriptor.baseOffset() == baseOffset) {
+                return descriptor;
+            }
+        }
+        throw new IllegalStateException("Missing segment descriptor " + baseOffset);
+    }
+
+    private void replaceWithCleanedSegment(long baseOffset) throws IOException {
+        Path logPath = SegmentFile.logPath(partitionDir, baseOffset);
+        Path indexPath = SegmentFile.indexPath(partitionDir, baseOffset);
+        Path obsoleteLogPath = SegmentFile.obsoleteLogPath(partitionDir, baseOffset);
+        Path obsoleteIndexPath = SegmentFile.obsoleteIndexPath(partitionDir, baseOffset);
+        Files.deleteIfExists(obsoleteLogPath);
+        Files.deleteIfExists(obsoleteIndexPath);
+        moveReplacing(logPath, obsoleteLogPath);
+        moveReplacing(indexPath, obsoleteIndexPath);
+        moveReplacing(SegmentFile.cleanedLogPath(partitionDir, baseOffset), logPath);
+        moveReplacing(SegmentFile.cleanedIndexPath(partitionDir, baseOffset), indexPath);
+        Files.deleteIfExists(obsoleteLogPath);
+        Files.deleteIfExists(obsoleteIndexPath);
+    }
+
+    private void moveReplacing(Path source, Path target) throws IOException {
+        try {
+            Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException atomicFailure) {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 
