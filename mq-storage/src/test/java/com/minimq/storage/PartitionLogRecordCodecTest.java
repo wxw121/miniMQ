@@ -3,6 +3,7 @@ package com.minimq.storage;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
@@ -46,5 +47,21 @@ class PartitionLogRecordCodecTest {
             assertThrows(PartitionLogRecordCodec.IncompleteRecordException.class,
                     () -> PartitionLogRecordCodec.read(channel, 0, channel.size()));
         }
+    }
+
+    @Test
+    void rejectsNegativeOffsetsAndInvalidStoredFieldLengths(@TempDir Path dir) throws Exception {
+        Path path = dir.resolve("invalid-length.log");
+        ByteBuffer invalid = ByteBuffer.allocate(Long.BYTES + Integer.BYTES);
+        invalid.putLong(0);
+        invalid.putInt(-2);
+        Files.write(path, invalid.array());
+
+        try (FileChannel channel = FileChannel.open(path, READ, WRITE)) {
+            assertThrows(IOException.class, () -> PartitionLogRecordCodec.read(channel, 0, channel.size()));
+        }
+
+        assertThrows(IllegalArgumentException.class,
+                () -> PartitionLogRecordCodec.encodedSize(-1, null, null));
     }
 }

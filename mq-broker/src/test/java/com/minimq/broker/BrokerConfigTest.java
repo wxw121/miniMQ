@@ -24,7 +24,9 @@ class BrokerConfigTest {
                 "--controller-addr", "localhost:9092",
                 "--flush-policy", "every-n-appends",
                 "--flush-every-n-appends", "5",
-                "--checkpoint-every-n-appends", "10"
+                "--checkpoint-every-n-appends", "10",
+                "--segment-max-bytes", "4096",
+                "--sparse-index-interval-records", "8"
         });
 
         assertEquals(2, config.brokerId());
@@ -37,6 +39,8 @@ class BrokerConfigTest {
         assertEquals(9092, config.controllerPort());
         assertEquals(FlushPolicy.everyNAppends(5), config.flushPolicy());
         assertEquals(10, config.checkpointEveryNAppends());
+        assertEquals(4096, config.segmentMaxBytes());
+        assertEquals(8, config.sparseIndexIntervalRecords());
     }
 
     @Test
@@ -51,5 +55,9 @@ class BrokerConfigTest {
                 () -> BrokerConfig.parse(new String[] {"--flush-every-n-appends", "0"}));
         assertThrows(IllegalArgumentException.class,
                 () -> BrokerConfig.parse(new String[] {"--checkpoint-every-n-appends", "-1"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> BrokerConfig.parse(new String[] {"--segment-max-bytes", "0"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> BrokerConfig.parse(new String[] {"--sparse-index-interval-records", "0"}));
     }
 }

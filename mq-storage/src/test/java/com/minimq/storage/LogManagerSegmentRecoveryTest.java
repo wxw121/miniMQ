@@ -34,6 +34,24 @@ class LogManagerSegmentRecoveryTest {
         assertFalse(Files.exists(legacyFile));
     }
 
+    @Test
+    void discardsInterruptedMigrationStagingBeforeMigratingLegacyFile(@TempDir Path dir) throws Exception {
+        Path legacyFile = dir.resolve("orders-0.log");
+        try (FilePartitionLog legacy = new FilePartitionLog(legacyFile)) {
+            legacy.append("k0".getBytes(), "v0".getBytes());
+        }
+        Path staging = dir.resolve("segments").resolve("orders-0.migrating");
+        Files.createDirectories(staging);
+        Files.writeString(staging.resolve("partial"), "incomplete");
+
+        LogManager manager = new LogManager(dir, segmentConfig());
+        List<Record> records = manager.getOrCreate("orders", 0).read(0, 1_024);
+
+        assertEquals(List.of(0L), records.stream().map(Record::offset).toList());
+        assertFalse(Files.exists(staging));
+        assertTrue(Files.exists(dir.resolve("segments/orders-0/catalog.json")));
+    }
+
     private LogManagerConfig segmentConfig() {
         return new LogManagerConfig(FlushPolicy.always(), 0, new SegmentedLogConfig(1, 1));
     }

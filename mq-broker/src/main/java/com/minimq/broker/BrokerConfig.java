@@ -1,6 +1,7 @@
 package com.minimq.broker;
 
 import com.minimq.storage.FlushPolicy;
+import com.minimq.storage.SegmentedLogConfig;
 
 import java.nio.file.Path;
 
@@ -17,7 +18,9 @@ public record BrokerConfig(
         int controllerPort,
         boolean recoverCorruptMetadata,
         FlushPolicy flushPolicy,
-        int checkpointEveryNAppends) {
+        int checkpointEveryNAppends,
+        long segmentMaxBytes,
+        int sparseIndexIntervalRecords) {
 
     public BrokerConfig(
             int brokerId,
@@ -38,7 +41,9 @@ public record BrokerConfig(
                 controllerPort,
                 recoverCorruptMetadata,
                 FlushPolicy.always(),
-                0);
+                0,
+                SegmentedLogConfig.DEFAULT_SEGMENT_MAX_BYTES,
+                SegmentedLogConfig.DEFAULT_SPARSE_INDEX_INTERVAL_RECORDS);
     }
 
     public static BrokerConfig parse(String[] args) {
@@ -54,6 +59,8 @@ public record BrokerConfig(
         int flushEveryNAppends = 1;
         long flushIntervalMs = 1_000;
         int checkpointEveryNAppends = 0;
+        long segmentMaxBytes = SegmentedLogConfig.DEFAULT_SEGMENT_MAX_BYTES;
+        int sparseIndexIntervalRecords = SegmentedLogConfig.DEFAULT_SPARSE_INDEX_INTERVAL_RECORDS;
 
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
@@ -72,6 +79,12 @@ public record BrokerConfig(
                         parseNonNegativeInt(
                                 value(args, ++i, "--checkpoint-every-n-appends"),
                                 "--checkpoint-every-n-appends");
+                case "--segment-max-bytes" -> segmentMaxBytes =
+                        parsePositiveLong(value(args, ++i, "--segment-max-bytes"), "--segment-max-bytes");
+                case "--sparse-index-interval-records" -> sparseIndexIntervalRecords =
+                        parsePositiveInt(
+                                value(args, ++i, "--sparse-index-interval-records"),
+                                "--sparse-index-interval-records");
                 case "--controller-addr" -> {
                     String[] parts = value(args, ++i, "--controller-addr").split(":", 2);
                     if (parts.length != 2 || parts[0].isBlank() || parts[1].isBlank()) {
@@ -93,7 +106,9 @@ public record BrokerConfig(
                 controllerPort,
                 recoverCorruptMetadata,
                 parseFlushPolicy(flushPolicyName, flushEveryNAppends, flushIntervalMs),
-                checkpointEveryNAppends);
+                checkpointEveryNAppends,
+                segmentMaxBytes,
+                sparseIndexIntervalRecords);
     }
 
     private static String value(String[] args, int index, String name) {

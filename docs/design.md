@@ -97,9 +97,9 @@ flowchart TB
 
 ## 4. Storage Design / 存储设计
 
-`FilePartitionLog` stores records in a binary append-only file. Each append writes the next offset and the key/value byte arrays.
+`LogManager` now stores active topic-partitions with `SegmentedPartitionLog`. A partition is represented by a segment directory, a catalog file, ordered `.log` segment files, and sparse `.index` files. `FilePartitionLog` remains as the legacy single-file layout used for migration compatibility and focused recovery tests.
 
-`FilePartitionLog` 使用二进制追加写文件保存消息。每次 append 会写入下一条 offset 和 key/value 字节数组。
+`LogManager` 现在使用 `SegmentedPartitionLog` 存储活跃 Topic-Partition。一个分区由 segment 目录、catalog 文件、有序 `.log` segment 文件和稀疏 `.index` 文件组成。`FilePartitionLog` 保留为旧单文件布局，用于迁移兼容和聚焦恢复测试。
 
 ### 4.1 Record Layout / 记录格式
 
@@ -117,13 +117,9 @@ flowchart TB
 | `valueLen` | `-1` for null value, `0` for empty value, positive for byte length. / `-1` 表示 null value，`0` 表示空 value，正数表示字节长度。 |
 | `value` | Optional value bytes. / 可选 value 字节。 |
 
-The log recovers `nextOffset` by scanning the file from the beginning and setting `nextOffset = lastOffset + 1`. This is simple but O(file size). A future segmented design should store checkpoints or sparse indexes.
+V2.1.0 recovers a segmented partition by loading `catalog.json`, opening each listed segment in offset order, rebuilding sparse indexes when needed, truncating only an incomplete active segment tail, and rejecting structural corruption such as non-monotonic offsets or incomplete tails in sealed segments. If an old `{topic}-{partition}.log` file exists, `LogManager` migrates it once into the new segment directory and cleans interrupted `.migrating` staging directories before retrying.
 
-日志启动时通过从头扫描文件恢复 `nextOffset`，最终设置为 `lastOffset + 1`。这种方式简单但复杂度是 O(file size)。未来分段日志应引入 checkpoint 或稀疏索引。
-
-V1.3 corruption recovery keeps the current single-file layout but makes startup safer. During log scanning, the reader should accept complete valid records, stop at the first incomplete tail record, truncate that damaged tail, and recover `nextOffset` from the last valid offset. Structural corruption such as negative key/value lengths, impossible payload sizes, or non-monotonic offsets should produce a clear storage exception instead of continuing with ambiguous data.
-
-V1.3 损坏恢复阶段仍保留当前单文件布局，但要让启动更安全。日志扫描时应接受完整有效记录；遇到尾部半条记录时停止扫描、截断损坏尾部，并用最后一条有效 offset 恢复 `nextOffset`。如果出现负 key/value 长度、异常 payload 大小、offset 非单调等结构性损坏，应抛出清晰的存储异常，而不是继续加载含糊数据。
+V2.1.0 通过加载 `catalog.json` 恢复分段分区，按 offset 顺序打开每个 segment，必要时重建稀疏索引，只截断活跃 segment 的尾部半条记录，并拒绝非单调 offset、sealed segment 尾部半条记录等结构性损坏。如果发现旧 `{topic}-{partition}.log` 文件，`LogManager` 会一次性迁移到新的 segment 目录，并在重试前清理中断遗留的 `.migrating` staging 目录。
 
 ### 4.2 Write Safety / 写入安全
 
@@ -133,9 +129,9 @@ The implementation uses a `writeFully(ByteBuffer)` loop because `FileChannel.wri
 
 ### 4.3 V2.0 WAL, Checkpoint, And Flush Policy / V2.0 WAL、Checkpoint 与刷盘策略
 
-V2.0 starts the storage recovery foundation. The main change is to separate durable write intent from the current single-file partition-log layout. The WAL is not a replacement for segmented logs; it is the ordered recovery source used before V2.1 introduces segments, indexes, retention, and compaction.
+V2.0 starts the storage recovery foundation. The main change is to separate durable write intent from the legacy single-file partition-log layout. The WAL is not a replacement for segmented logs; it remains the ordered recovery source now replayed into the V2.1.0 segmented layout, with retention and compaction still scheduled for V2.1.x.
 
-V2.0 启动存储恢复基础。核心变化是把持久化写入意图与当前单文件分区日志布局拆开。WAL 不替代分段日志；它是在 V2.1 引入 segment、索引、保留和压缩前使用的有序恢复来源。
+V2.0 启动存储恢复基础。核心变化是把持久化写入意图与旧单文件分区日志布局拆开。WAL 不替代分段日志；它仍是有序恢复来源，现在会重放到 V2.1.0 分段布局中，而保留策略与压缩继续安排在 V2.1.x。
 
 #### WAL Contract / WAL 契约
 
@@ -219,6 +215,29 @@ Broker CLI 参数暴露 V2.0 策略，同时不改变现有默认行为：
 | `--flush-policy interval-ms --flush-interval-ms N` | Force when at least `N` milliseconds have elapsed since the last flush. / 距上次刷盘至少经过 `N` 毫秒后刷盘。 |
 | `--flush-policy manual-on-close` | Do not flush during append; explicit checkpoint or broker shutdown still flushes before saving checkpoint. / append 期间不主动刷盘；显式 checkpoint 或 Broker 关闭仍会在保存 checkpoint 前刷盘。 |
 | `--checkpoint-every-n-appends N` | Save a recovery checkpoint after every `N` successful appends; `0` disables append-count checkpointing. / 每 `N` 次成功 append 后保存恢复 checkpoint；`0` 表示关闭按次数 checkpoint。 |
+| `--segment-max-bytes N` | Roll the active segment after it would exceed `N` bytes; default comes from `SegmentedLogConfig`. / 活跃 segment 追加后将超过 `N` 字节时滚动；默认值来自 `SegmentedLogConfig`。 |
+| `--sparse-index-interval-records N` | Add one sparse index entry every `N` records per segment. / 每个 segment 内每 `N` 条记录写入一个稀疏索引项。 |
+
+### 4.4 V2.1.0 Segmented Log And Sparse Index / V2.1.0 分段日志与稀疏索引
+
+The V2.1.0 layout is:
+
+V2.1.0 布局为：
+
+```text
+{dataDir}/
+  segments/
+    {topic}-{partition}/
+      catalog.json
+      00000000000000000000.log
+      00000000000000000000.index
+      00000000000000000042.log
+      00000000000000000042.index
+```
+
+`catalog.json` records the active segment base offset, log start offset, generation, and ordered segment descriptors. Segment log files reuse the record format above. Sparse index files contain fixed-width `(offset, filePosition)` entries and are rebuilt from segment logs if missing or corrupt. V2.1.0 intentionally stops at segment rolling, sparse indexes, migration, and startup recovery. Retention and compaction are scheduled for the next V2.1.x step.
+
+`catalog.json` 记录活跃 segment base offset、log start offset、generation 和有序 segment descriptor。Segment log 文件复用上面的记录格式。稀疏索引文件保存固定宽度的 `(offset, filePosition)` 条目；缺失或损坏时会从 segment log 重建。V2.1.0 有意只收敛到 segment 滚动、稀疏索引、迁移和启动恢复；保留策略与压缩安排到下一个 V2.1.x 阶段。
 
 ## 5. Metadata Design / 元数据设计
 
@@ -377,7 +396,7 @@ Malformed request bodies are handled inside `MqRequestHandler` so that, when the
 | Decision / 决策 | Benefit / 收益 | Cost / 代价 |
 | --- | --- | --- |
 | Custom binary protocol / 自定义二进制协议 | Easy to inspect low-level messaging behavior. / 便于观察底层消息行为。 | More validation and compatibility work than JSON/HTTP. / 比 JSON/HTTP 需要更多校验和兼容性工作。 |
-| Single local log file per partition / 每分区一个本地日志文件 | Very easy to understand and test. / 非常易于理解和测试。 | No retention, compaction, or fast sparse indexing. / 没有保留策略、压缩或快速稀疏索引。 |
+| Segmented local log per partition / 每分区本地分段日志 | Supports sparse indexing, faster recovery boundaries, and future whole-segment deletion. / 支持稀疏索引、更清晰的恢复边界和后续整段删除。 | More catalog/index validation is required, and retention/compaction still need V2.1.x work. / 需要更多 catalog/index 校验，保留策略与压缩仍需 V2.1.x 补齐。 |
 | JSON metadata store / JSON 元数据存储 | Human-readable and easy for demos. / 人类可读，适合演示。 | Not a scalable metadata log. / 不是可扩展的元数据日志。 |
 | Static controller role / 静态 Controller 角色 | Simple bootstrapping. / 启动流程简单。 | No controller high availability. / 没有 Controller 高可用。 |
 | Synchronous client API / 同步客户端 API | Easy to use and test. / 易用且易测。 | Lower throughput than async batching. / 吞吐低于异步批量方案。 |

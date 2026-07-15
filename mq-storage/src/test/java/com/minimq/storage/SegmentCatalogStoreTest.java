@@ -54,4 +54,25 @@ class SegmentCatalogStoreTest {
 
         assertTrue(failure.getMessage().contains("catalog.json"));
     }
+
+    @Test
+    void distinguishesMissingAndEmptyCatalogFiles(@TempDir Path dir) throws Exception {
+        SegmentCatalogStore store = new SegmentCatalogStore(dir);
+
+        assertTrue(store.load().isEmpty());
+
+        Files.write(dir.resolve("catalog.json"), new byte[0]);
+
+        assertThrows(IOException.class, store::load);
+    }
+
+    @Test
+    void validatesDescriptorAndCatalogBounds() {
+        assertThrows(IllegalArgumentException.class, () -> new SegmentDescriptor(-1, 0));
+        assertThrows(IllegalArgumentException.class, () -> new SegmentDescriptor(0, -1));
+        assertThrows(IllegalArgumentException.class,
+                () -> new SegmentCatalog(-1, 0, 0, List.of(new SegmentDescriptor(0, 0))));
+        assertThrows(IllegalArgumentException.class,
+                () -> new SegmentCatalog(0, 0, 1, List.of(new SegmentDescriptor(0, 0))));
+    }
 }
