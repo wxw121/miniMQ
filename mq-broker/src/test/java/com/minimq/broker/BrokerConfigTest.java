@@ -26,7 +26,12 @@ class BrokerConfigTest {
                 "--flush-every-n-appends", "5",
                 "--checkpoint-every-n-appends", "10",
                 "--segment-max-bytes", "4096",
-                "--sparse-index-interval-records", "8"
+                "--sparse-index-interval-records", "8",
+                "--retention-ms", "60000",
+                "--retention-bytes", "1048576",
+                "--compaction-enabled",
+                "--compaction-max-segments", "4",
+                "--maintenance-every-n-appends", "12"
         });
 
         assertEquals(2, config.brokerId());
@@ -41,6 +46,11 @@ class BrokerConfigTest {
         assertEquals(10, config.checkpointEveryNAppends());
         assertEquals(4096, config.segmentMaxBytes());
         assertEquals(8, config.sparseIndexIntervalRecords());
+        assertEquals(60_000, config.retentionMs());
+        assertEquals(1_048_576, config.retentionBytes());
+        assertTrue(config.compactionEnabled());
+        assertEquals(4, config.compactionMaxSegments());
+        assertEquals(12, config.maintenanceEveryNAppends());
     }
 
     @Test
@@ -59,5 +69,13 @@ class BrokerConfigTest {
                 () -> BrokerConfig.parse(new String[] {"--segment-max-bytes", "0"}));
         assertThrows(IllegalArgumentException.class,
                 () -> BrokerConfig.parse(new String[] {"--sparse-index-interval-records", "0"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> BrokerConfig.parse(new String[] {"--retention-ms", "-1"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> BrokerConfig.parse(new String[] {"--retention-bytes", "-1"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> BrokerConfig.parse(new String[] {"--compaction-max-segments", "0"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> BrokerConfig.parse(new String[] {"--maintenance-every-n-appends", "-1"}));
     }
 }

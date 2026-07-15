@@ -6,7 +6,8 @@ package com.minimq.storage;
 public record LogManagerConfig(
         FlushPolicy flushPolicy,
         int checkpointEveryNAppends,
-        SegmentedLogConfig segmentedLogConfig) {
+        SegmentedLogConfig segmentedLogConfig,
+        LogMaintenanceConfig maintenanceConfig) {
 
     public LogManagerConfig {
         if (flushPolicy == null) {
@@ -18,14 +19,28 @@ public record LogManagerConfig(
         if (segmentedLogConfig == null) {
             throw new IllegalArgumentException("segmentedLogConfig is required");
         }
+        if (maintenanceConfig == null) {
+            throw new IllegalArgumentException("maintenanceConfig is required");
+        }
+    }
+
+    public LogManagerConfig(
+            FlushPolicy flushPolicy,
+            int checkpointEveryNAppends,
+            SegmentedLogConfig segmentedLogConfig) {
+        this(flushPolicy, checkpointEveryNAppends, segmentedLogConfig, LogMaintenanceConfig.disabled());
     }
 
     public LogManagerConfig(FlushPolicy flushPolicy, int checkpointEveryNAppends) {
-        this(flushPolicy, checkpointEveryNAppends, SegmentedLogConfig.defaults());
+        this(flushPolicy, checkpointEveryNAppends, SegmentedLogConfig.defaults(), LogMaintenanceConfig.disabled());
     }
 
     public static LogManagerConfig defaults() {
-        return new LogManagerConfig(FlushPolicy.always(), 0, SegmentedLogConfig.defaults());
+        return new LogManagerConfig(
+                FlushPolicy.always(),
+                0,
+                SegmentedLogConfig.defaults(),
+                LogMaintenanceConfig.disabled());
     }
 
     boolean shouldCheckpointAfterAppend(long successfulAppends) {

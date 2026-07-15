@@ -20,7 +20,14 @@ public record BrokerConfig(
         FlushPolicy flushPolicy,
         int checkpointEveryNAppends,
         long segmentMaxBytes,
-        int sparseIndexIntervalRecords) {
+        int sparseIndexIntervalRecords,
+        long retentionMs,
+        long retentionBytes,
+        boolean compactionEnabled,
+        int compactionMaxSegments,
+        int maintenanceEveryNAppends) {
+
+    public static final int DEFAULT_COMPACTION_MAX_SEGMENTS = 4;
 
     public BrokerConfig(
             int brokerId,
@@ -43,7 +50,12 @@ public record BrokerConfig(
                 FlushPolicy.always(),
                 0,
                 SegmentedLogConfig.DEFAULT_SEGMENT_MAX_BYTES,
-                SegmentedLogConfig.DEFAULT_SPARSE_INDEX_INTERVAL_RECORDS);
+                SegmentedLogConfig.DEFAULT_SPARSE_INDEX_INTERVAL_RECORDS,
+                0,
+                0,
+                false,
+                DEFAULT_COMPACTION_MAX_SEGMENTS,
+                0);
     }
 
     public static BrokerConfig parse(String[] args) {
@@ -61,6 +73,11 @@ public record BrokerConfig(
         int checkpointEveryNAppends = 0;
         long segmentMaxBytes = SegmentedLogConfig.DEFAULT_SEGMENT_MAX_BYTES;
         int sparseIndexIntervalRecords = SegmentedLogConfig.DEFAULT_SPARSE_INDEX_INTERVAL_RECORDS;
+        long retentionMs = 0;
+        long retentionBytes = 0;
+        boolean compactionEnabled = false;
+        int compactionMaxSegments = DEFAULT_COMPACTION_MAX_SEGMENTS;
+        int maintenanceEveryNAppends = 0;
 
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
@@ -85,6 +102,17 @@ public record BrokerConfig(
                         parsePositiveInt(
                                 value(args, ++i, "--sparse-index-interval-records"),
                                 "--sparse-index-interval-records");
+                case "--retention-ms" -> retentionMs =
+                        parseNonNegativeLong(value(args, ++i, "--retention-ms"), "--retention-ms");
+                case "--retention-bytes" -> retentionBytes =
+                        parseNonNegativeLong(value(args, ++i, "--retention-bytes"), "--retention-bytes");
+                case "--compaction-enabled" -> compactionEnabled = true;
+                case "--compaction-max-segments" -> compactionMaxSegments =
+                        parsePositiveInt(value(args, ++i, "--compaction-max-segments"), "--compaction-max-segments");
+                case "--maintenance-every-n-appends" -> maintenanceEveryNAppends =
+                        parseNonNegativeInt(
+                                value(args, ++i, "--maintenance-every-n-appends"),
+                                "--maintenance-every-n-appends");
                 case "--controller-addr" -> {
                     String[] parts = value(args, ++i, "--controller-addr").split(":", 2);
                     if (parts.length != 2 || parts[0].isBlank() || parts[1].isBlank()) {
@@ -108,7 +136,12 @@ public record BrokerConfig(
                 parseFlushPolicy(flushPolicyName, flushEveryNAppends, flushIntervalMs),
                 checkpointEveryNAppends,
                 segmentMaxBytes,
-                sparseIndexIntervalRecords);
+                sparseIndexIntervalRecords,
+                retentionMs,
+                retentionBytes,
+                compactionEnabled,
+                compactionMaxSegments,
+                maintenanceEveryNAppends);
     }
 
     private static String value(String[] args, int index, String name) {
@@ -146,6 +179,14 @@ public record BrokerConfig(
 
     private static int parseNonNegativeInt(String value, String name) {
         int parsed = Integer.parseInt(value);
+        if (parsed < 0) {
+            throw new IllegalArgumentException(name + " must be non-negative");
+        }
+        return parsed;
+    }
+
+    private static long parseNonNegativeLong(String value, String name) {
+        long parsed = Long.parseLong(value);
         if (parsed < 0) {
             throw new IllegalArgumentException(name + " must be non-negative");
         }

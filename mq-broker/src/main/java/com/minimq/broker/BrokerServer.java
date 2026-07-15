@@ -9,6 +9,9 @@ import com.minimq.protocol.codec.MqEncoder;
 import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
 import com.minimq.storage.LogManagerConfig;
 import com.minimq.storage.LogManager;
+import com.minimq.storage.CompactionPolicy;
+import com.minimq.storage.LogMaintenanceConfig;
+import com.minimq.storage.RetentionPolicy;
 import com.minimq.storage.SegmentedLogConfig;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.ChannelFuture;
@@ -47,7 +50,13 @@ public class BrokerServer {
                         config.checkpointEveryNAppends(),
                         new SegmentedLogConfig(
                                 config.segmentMaxBytes(),
-                                config.sparseIndexIntervalRecords())));
+                                config.sparseIndexIntervalRecords()),
+                        LogMaintenanceConfig.of(
+                                RetentionPolicy.of(config.retentionMs(), config.retentionBytes()),
+                                config.compactionEnabled()
+                                        ? CompactionPolicy.enabled(config.compactionMaxSegments())
+                                        : CompactionPolicy.disabled(),
+                                config.maintenanceEveryNAppends())));
         partitionManager = new PartitionManager(logManager);
 
         if (config.controller()) {
