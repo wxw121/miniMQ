@@ -164,7 +164,7 @@ final class SegmentFile implements AutoCloseable {
         recordCount++;
     }
 
-    List<Record> read(long fromOffset, int maxBytes) throws IOException {
+    synchronized List<Record> read(long fromOffset, int maxBytes) throws IOException {
         ensureOpen();
         if (maxBytes <= 0) {
             return List.of();
@@ -189,7 +189,7 @@ final class SegmentFile implements AutoCloseable {
         return records;
     }
 
-    Record recordAt(long offset) throws IOException {
+    synchronized Record recordAt(long offset) throws IOException {
         for (Record record : read(offset, Integer.MAX_VALUE)) {
             if (record.offset() == offset) {
                 return record;

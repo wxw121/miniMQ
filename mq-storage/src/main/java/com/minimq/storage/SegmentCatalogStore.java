@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 /**
  * Safely publishes and loads one partition's segment catalog.
@@ -35,6 +36,18 @@ final class SegmentCatalogStore {
         }
     }
 
+    void cleanupMaintenanceArtifacts() throws IOException {
+        Path parent = catalogFile.getParent();
+        if (parent == null || !Files.exists(parent)) {
+            return;
+        }
+        try (Stream<Path> paths = Files.list(parent)) {
+            for (Path path : paths.filter(this::isMaintenanceArtifact).toList()) {
+                Files.deleteIfExists(path);
+            }
+        }
+    }
+
     void save(SegmentCatalog catalog) {
         try {
             Path parent = catalogFile.getParent();
@@ -55,6 +68,15 @@ final class SegmentCatalogStore {
         } catch (IOException e) {
             throw new IllegalStateException("Failed to save segment catalog " + catalogFile, e);
         }
+    }
+
+    private boolean isMaintenanceArtifact(Path path) {
+        String name = path.getFileName().toString();
+        return name.equals(catalogFile.getFileName() + ".tmp")
+                || name.endsWith(".cleaned.log")
+                || name.endsWith(".cleaned.index")
+                || name.endsWith(".obsolete.log")
+                || name.endsWith(".obsolete.index");
     }
 
     private void forceFile(Path path) throws IOException {

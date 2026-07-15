@@ -11,6 +11,8 @@ import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
 /**
@@ -20,10 +22,13 @@ public final class SegmentedPartitionLog implements PartitionLog {
     private final Path partitionDir;
     private final SegmentedLogConfig config;
     private final SegmentCatalogStore catalogStore;
-    private final List<SegmentFile> segments = new ArrayList<>();
+    private final CopyOnWriteArrayList<SegmentFile> segments = new CopyOnWriteArrayList<>();
+    private final Object readerMonitor = new Object();
+    private final AtomicInteger activeReaders = new AtomicInteger();
+    private boolean maintenanceDeleting;
     private SegmentCatalog catalog;
     private long nextOffset;
-    private boolean closed;
+    private volatile boolean closed;
 
     public SegmentedPartitionLog(Path partitionDir, SegmentedLogConfig config) throws IOException {
         this.partitionDir = partitionDir;
@@ -68,30 +73,17 @@ public final class SegmentedPartitionLog implements PartitionLog {
     }
 
     @Override
-    public synchronized List<Record> read(long fromOffset, int maxBytes) {
-        ensureOpen();
-        if (maxBytes <= 0) {
-            return List.of();
-        }
-        try {
-            List<Record> records = new ArrayList<>();
-            int bytesRead = 0;
-            int startIndex = segmentIndexFor(fromOffset);
-            for (int i = startIndex; i < segments.size(); i++) {
-                int remaining = Math.max(1, maxBytes - bytesRead);
-                List<Record> segmentRecords = segments.get(i).read(fromOffset, remaining);
-                for (Record record : segmentRecords) {
-                    int recordSize = PartitionLogRecordCodec.encodedSize(record.offset(), record.key(), record.value());
-                    if (!records.isEmpty() && bytesRead + recordSize > maxBytes) {
-                        return records;
-                    }
-                    records.add(record);
-                    bytesRead += recordSize;
-                }
+    public List<Record> read(long fromOffset, int maxBytes) {
+        try (ReadSnapshot ignored = acquireReadSnapshot()) {
+            ensureOpen();
+            if (maxBytes <= 0) {
+                return List.of();
             }
-            return records;
-        } catch (IOException e) {
-            throw new IllegalStateException("Failed to read segmented records", e);
+            try {
+                return readFrom(snapshotSegments(), fromOffset, maxBytes);
+            } catch (IOException e) {
+                throw new IllegalStateException("Failed to read segmented records", e);
+            }
         }
     }
 
@@ -113,9 +105,14 @@ public final class SegmentedPartitionLog implements PartitionLog {
             return;
         }
         try {
-            flush();
-            segments.forEach(SegmentFile::close);
             closed = true;
+            beginReaderQuiescence();
+            try {
+                flushSegments();
+                segments.forEach(SegmentFile::close);
+            } finally {
+                endReaderQuiescence();
+            }
         } catch (RuntimeException e) {
             throw new IllegalStateException("Failed to close segmented partition log", e);
         }
@@ -146,17 +143,22 @@ public final class SegmentedPartitionLog implements PartitionLog {
         List<SegmentFile> deletedSegments = segments.stream()
                 .filter(segment -> deleteSet.contains(segment.baseOffset()))
                 .toList();
-        segments.clear();
-        segments.addAll(keptSegments);
+        segments.removeIf(segment -> deleteSet.contains(segment.baseOffset()));
         catalog = nextCatalog;
-        for (SegmentFile segment : deletedSegments) {
-            long baseOffset = segment.baseOffset();
-            segment.close();
-            deleteSegmentFiles(baseOffset);
+        beginReaderQuiescence();
+        try {
+            for (SegmentFile segment : deletedSegments) {
+                long baseOffset = segment.baseOffset();
+                segment.close();
+                deleteSegmentFiles(baseOffset);
+            }
+        } finally {
+            endReaderQuiescence();
         }
     }
 
     private void initialize() throws IOException {
+        catalogStore.cleanupMaintenanceArtifacts();
         catalog = catalogStore.load().orElseGet(this::discoverOrCreateCatalog);
         List<SegmentDescriptor> descriptors = catalog.segments();
         long previousLastOffset = -1;
@@ -250,9 +252,13 @@ public final class SegmentedPartitionLog implements PartitionLog {
     }
 
     private int segmentIndexFor(long offset) {
+        return segmentIndexFor(segments, offset);
+    }
+
+    private int segmentIndexFor(List<SegmentFile> candidateSegments, long offset) {
         int selected = 0;
-        for (int i = 0; i < segments.size(); i++) {
-            if (segments.get(i).baseOffset() > offset) {
+        for (int i = 0; i < candidateSegments.size(); i++) {
+            if (candidateSegments.get(i).baseOffset() > offset) {
                 break;
             }
             selected = i;
@@ -262,6 +268,76 @@ public final class SegmentedPartitionLog implements PartitionLog {
 
     private SegmentFile activeSegment() {
         return segments.get(segments.size() - 1);
+    }
+
+    private List<Record> readFrom(List<SegmentFile> segmentSnapshot, long fromOffset, int maxBytes)
+            throws IOException {
+        List<Record> records = new ArrayList<>();
+        int bytesRead = 0;
+        int startIndex = segmentIndexFor(segmentSnapshot, fromOffset);
+        for (int i = startIndex; i < segmentSnapshot.size(); i++) {
+            int remaining = Math.max(1, maxBytes - bytesRead);
+            List<Record> segmentRecords = segmentSnapshot.get(i).read(fromOffset, remaining);
+            for (Record record : segmentRecords) {
+                int recordSize = PartitionLogRecordCodec.encodedSize(record.offset(), record.key(), record.value());
+                if (!records.isEmpty() && bytesRead + recordSize > maxBytes) {
+                    return records;
+                }
+                records.add(record);
+                bytesRead += recordSize;
+            }
+        }
+        return records;
+    }
+
+    private List<SegmentFile> snapshotSegments() {
+        return List.copyOf(segments);
+    }
+
+    private ReadSnapshot acquireReadSnapshot() {
+        boolean interrupted = false;
+        synchronized (readerMonitor) {
+            while (maintenanceDeleting) {
+                try {
+                    readerMonitor.wait(50);
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                }
+            }
+            activeReaders.incrementAndGet();
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
+        return new ReadSnapshot();
+    }
+
+    private void beginReaderQuiescence() {
+        boolean interrupted = false;
+        synchronized (readerMonitor) {
+            maintenanceDeleting = true;
+            while (activeReaders.get() > 0) {
+                try {
+                    readerMonitor.wait(50);
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                }
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private void endReaderQuiescence() {
+        synchronized (readerMonitor) {
+            maintenanceDeleting = false;
+            readerMonitor.notifyAll();
+        }
+    }
+
+    private void flushSegments() {
+        segments.forEach(SegmentFile::flush);
     }
 
     private List<SegmentMetadata> segmentMetadata() {
@@ -294,6 +370,17 @@ public final class SegmentedPartitionLog implements PartitionLog {
     private void ensureOpen() {
         if (closed) {
             throw new IllegalStateException("SegmentedPartitionLog is closed");
+        }
+    }
+
+    private final class ReadSnapshot implements AutoCloseable {
+        @Override
+        public void close() {
+            synchronized (readerMonitor) {
+                if (activeReaders.decrementAndGet() == 0) {
+                    readerMonitor.notifyAll();
+                }
+            }
         }
     }
 }
