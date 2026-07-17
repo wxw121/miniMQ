@@ -485,7 +485,16 @@ V2.3 保持线协议版本为 1，并扩展元数据与内部副本流量：
 - Leader 在 `ReplicaStateManager` 中跟踪 ISR 副本 log-end offset；
 - 客户端 `FETCH` 与 sendfile 响应暴露复制感知 high watermark，并省略不低于该 watermark 的记录；
 - 即使复制 watermark 较低，`REPLICA_FETCH` 仍返回 Follower 追平所需的 Leader 日志字节；
-- `MARK_BROKER_OFFLINE` 将 Broker 移出 ISR，并在静态 Controller 上选举下一个 ISR Leader。
+- `MARK_BROKER_OFFLINE` 将 Broker 移出 ISR，并在静态 Controller 上选举下一个 ISR Leader；
+- `ReplicaStateManager.noteLeadership` records the leader log end at election time and applies an election grace period: before new writes, unreported ISR followers do not block reads of pre-election data; after new writes, strict replication HW semantics apply again;
+- `updateReplicaLeo` uses monotonic `Math.max`, so retried replica fetch requests cannot lower replication HW.
+
+- `ReplicaStateManager.noteLeadership` 在选举时记录 Leader log end，并应用选举宽限期：无新写入前，未上报的 ISR follower 不阻塞故障前数据读取；有新写入后恢复严格 replication HW 语义；
+- `updateReplicaLeo` 使用单调 `Math.max`，避免重试的副本拉取请求拉低 replication HW。
+
+Known limitations fixed in follow-up `2.3.1` are tracked in `docs/code-review-2026-07-17-v2.3-replication.md`.
+
+已知限制与 `2.3.1` 计划修复项见 `docs/code-review-2026-07-17-v2.3-replication.md`。
 
 ## 12. Design Tradeoffs / 设计取舍
 

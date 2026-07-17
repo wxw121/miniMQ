@@ -5,13 +5,13 @@
 
 ## 1. Current State / 当前状态
 
-MiniMQ has released V2.0 storage recovery as `v2.0.0`, tagged V2.1.2 maintenance observability as `v2.1.2-maintenance-observability`, released V2.2 zero-copy FETCH sendfile as `v2.2.0-read-performance` on `2.2.0`, and is implementing V2.3 replication on `2.3.0-SNAPSHOT`.
+MiniMQ has released V2.0 storage recovery as `v2.0.0`, tagged V2.1.2 maintenance observability as `v2.1.2-maintenance-observability`, released V2.2 zero-copy FETCH sendfile as `v2.2.0-read-performance` on `2.2.0`, released V2.3 replication as `v2.3.0-replication` on `2.3.0`, and is opening the `2.3.1-SNAPSHOT` patch line for replication hardening.
 
-MiniMQ 已将 V2.0 存储恢复以 `v2.0.0` 发布，已将 V2.1.2 维护可观测性打为 `v2.1.2-maintenance-observability`，已将 V2.2 零拷贝 FETCH sendfile 以 `v2.2.0-read-performance` 发布为 `2.2.0`，并在 `2.3.0-SNAPSHOT` 上实现 V2.3 副本机制。
+MiniMQ 已将 V2.0 存储恢复以 `v2.0.0` 发布，已将 V2.1.2 维护可观测性打为 `v2.1.2-maintenance-observability`，已将 V2.2 零拷贝 FETCH sendfile 以 `v2.2.0-read-performance` 发布为 `2.2.0`，已将 V2.3 副本机制以 `v2.3.0-replication` 发布为 `2.3.0`，并开启 `2.3.1-SNAPSHOT` 补丁线用于副本机制加固。
 
-The most important limitation is that the system is still single-replica and controller-static. This keeps the design compact, but it means broker failures can lose availability and data for affected partitions.
+The most important remaining limitation is that replication still depends on a static controller and manual broker-offline operations. Automatic failure detection, ISR lag management, and controller HA remain future work.
 
-最重要的限制是系统仍然是单副本、静态 Controller。这样设计紧凑，但意味着 Broker 故障会导致对应分区不可用，甚至丢失数据。
+当前最重要的剩余限制是副本机制仍依赖静态 Controller 与手动 `MARK_BROKER_OFFLINE` 运维操作。自动故障检测、ISR 滞后管理与 Controller 高可用仍属于后续工作。
 
 ## 2. Immediate TODOs / 近期代办
 
@@ -36,6 +36,8 @@ The most important limitation is that the system is still single-replica and con
 | P0 | Implemented: V2.1.2 maintenance observability and controls. / 已实现：V2.1.2 维护可观测性与控制项。 | Operators can preview destructive maintenance, inspect counters, bound compaction bytes, use maintenance windows, and trigger maintenance manually. / 运维可以预览破坏性维护、查看计数器、限制压缩字节量、使用维护窗口并手动触发维护。 | `LogManagerMaintenanceTest`, `SegmentedPartitionLogCompactionTest`, and `BrokerConfigTest` cover dry-run reports, metrics, byte throttling, maintenance windows, and CLI parsing. / 这些测试覆盖 dry-run 报告、维护指标、字节限速、维护窗口和 CLI 解析。 |
 | P0 | Implemented: V2.2 zero-copy FETCH sendfile path. / 已实现：V2.2 零拷贝 FETCH sendfile 路径。 | Broker FETCH can transfer segmented-log bytes with Netty `DefaultFileRegion` while preserving heap fallback and reader-lease safety. / Broker FETCH 可用 Netty `DefaultFileRegion` 传输分段日志字节，同时保留 heap 回退和读租约安全。 | `SegmentedPartitionLogFetchPlanTest`, `FetchResponseWriterTest`, `ZeroCopyFetchIntegrationTest`, and `FetchBenchmarkTest` cover planning, writer selection, real TCP, and metrics. / 这些测试覆盖规划、writer 选择、真实 TCP 与指标。 |
 | P0 | Implemented: V2.3 replication foundation. / 已实现：V2.3 副本机制基础。 | Partitions now carry replica and ISR lists, followers pull with `REPLICA_FETCH`, leaders expose replication-aware high watermarks, and the controller can mark brokers offline to elect a new leader. / 分区现在带有 replica 与 ISR 列表，Follower 通过 `REPLICA_FETCH` 拉取，Leader 暴露复制感知的 high watermark，Controller 可标记 Broker 离线并选举新 Leader。 | `ClusterControllerTest`, `ReplicaStateManagerTest`, and `ReplicationIntegrationTest` cover metadata assignment, ISR high watermark math, follower catch-up, leader failover, and `NOT_LEADER` redirects. / 这些测试覆盖元数据分配、ISR high watermark 计算、Follower 追平、Leader 故障转移与 `NOT_LEADER` 重定向。 |
+| P0 | Completed: V2.3 replication P0 code-review fixes. / 已完成：V2.3 副本机制 P0 代码审查修复。 | Client/sendfile FETCH now honor replication HW; replica fetch catch-up is uncapped; offline election is atomic; failover read grace and monotonic LEO updates are in place. / 客户端/sendfile FETCH 遵守 replication HW；副本追平不再被错误截断；离线选举原子化；failover 读宽限期与单调 LEO 更新已落地。 | See `docs/code-review-2026-07-17-v2.3-replication.md` and `docs/test-report-2026-07-17-v2.3-replication.md`. / 见 `docs/code-review-2026-07-17-v2.3-replication.md` 与 `docs/test-report-2026-07-17-v2.3-replication.md`。 |
+| P1 | Planned: V2.3.1 replication hardening. / 计划：V2.3.1 副本机制加固。 | Preferred-leader election, ISR lag shrink/expand, sendfile concurrency safety, replica-fetch connection pooling, persisted follower LEO, and missing unit tests. / preferred leader 选举、ISR 滞后收缩/扩容、sendfile 并发安全、副本拉取连接池、持久化 follower LEO 与缺失单测。 | Tracked as R3-P1-01..08 in `docs/code-review-2026-07-17-v2.3-replication.md`. / 见 `docs/code-review-2026-07-17-v2.3-replication.md` 中 R3-P1-01..08。 |
 
 ## 3. Version Roadmap / 版本路线图
 
@@ -267,6 +269,24 @@ Implemented scope / 已实现范围：
 3. Implemented: `ReplicaStateManager` computes replication-aware high watermarks from ISR replica log-end offsets. / 已实现：`ReplicaStateManager` 根据 ISR 副本 log-end offset 计算复制感知的 high watermark。
 4. Implemented: `MARK_BROKER_OFFLINE` removes a broker from ISR and elects the next ISR leader on the static controller. / 已实现：`MARK_BROKER_OFFLINE` 将 Broker 移出 ISR，并在静态 Controller 上选举下一个 ISR Leader。
 5. Verified: `ClusterControllerTest`, `ReplicaStateManagerTest`, and `ReplicationIntegrationTest`. / 已验证：上述测试类。
+6. Released as `2.3.0` with P0 review fixes documented in `docs/code-review-2026-07-17-v2.3-replication.md`. / 以 `2.3.0` 发布，P0 审查修复记录在 `docs/code-review-2026-07-17-v2.3-replication.md`。
+
+### 3.6.1 V2.3.1 Replication Hardening / V2.3.1 副本机制加固
+
+`2.3.1-SNAPSHOT` tracks the remaining P1 replication backlog:
+
+`2.3.1-SNAPSHOT` 跟踪剩余 P1 副本待办：
+
+1. Preferred leader election by `replicaBrokerIds` order instead of lowest broker ID. / 按 `replicaBrokerIds` 顺序选举 preferred leader，而不是最小 broker ID。
+2. ISR lag shrink and broker rejoin expansion. / ISR 滞后收缩与 Broker 重新加入后的扩容。
+3. Active-segment append/read concurrency safety for sendfile FETCH. / sendfile FETCH 的 active segment 追加/读取并发安全。
+4. Close channel on partial sendfile failure. / sendfile 部分写入失败时关闭连接。
+5. Replica-fetch connection pooling per leader broker. / 按 Leader Broker 复用副本拉取连接。
+6. Persist or rebuild follower LEO across broker restart. / Broker 重启后持久化或重建 follower LEO。
+7. Leader promotion with replica LEO comparison. / 结合副本 LEO 比较的 Leader 提升。
+8. Unit tests for `ReplicaFetcher`, `LeaderReplicaClient`, and `REPLICA_FETCH` handler paths. / 为 `ReplicaFetcher`、`LeaderReplicaClient`、`REPLICA_FETCH` handler 补单测。
+
+Reference / 参考：`docs/code-review-2026-07-17-v2.3-replication.md` (R3-P1-01..08).
 
 Out of scope for V2.3 / 本阶段不包含：
 
@@ -380,7 +400,7 @@ For a new agent session, the most productive next tasks are:
 
 对新 agent 会话，最建议继续做：
 
-1. Begin V2.3 replication: metadata replica/ISR lists, follower fetch API, and leader failover tests. / 开始 V2.3 副本机制：元数据 replica/ISR 列表、Follower 拉取 API 与 Leader 故障转移测试。
+1. Begin V2.3.1 replication hardening from `docs/code-review-2026-07-17-v2.3-replication.md` (R3-P1-01..08). / 从 `docs/code-review-2026-07-17-v2.3-replication.md`（R3-P1-01..08）开始 V2.3.1 副本机制加固。
 2. Add an operator-facing maintenance API or CLI command that renders `LogMaintenanceReport` and `LogMaintenanceMetrics`. / 增加面向运维的维护 API 或 CLI 命令，用来输出 `LogMaintenanceReport` 和 `LogMaintenanceMetrics`。
 3. Keep service discovery, circuit breaker, Epoll, and mmap in later productionization versions. / 服务发现、熔断、Epoll 与 mmap 继续放在后续生产化版本。
 

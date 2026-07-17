@@ -23,25 +23,27 @@ The current implementation focuses on a single-leader partition model. Broker 0 
 | 3 | [Testing Guide](testing.md) / [测试文档](testing.md) | Understand tests, coverage, commands, report locations, and quality gates. / 理解测试、覆盖率、命令、报告位置与质量门槛。 |
 | 4 | [Roadmap](roadmap.md) / [代办与路线图](roadmap.md) | Understand known limitations, TODOs, V2 features, and recommended next tasks. / 理解已知限制、待办事项、V2 功能与推荐下一步任务。 |
 | 5 | [Code Review Fix Log](code-review-2026-07-02.md) / [代码审查修复记录](code-review-2026-07-02.md) | See recently fixed bugs and why they mattered. / 查看近期修复的问题以及它们的重要性。 |
+| 5b | [V2.3 Code Review Fix Log](code-review-2026-07-17-v2.3-replication.md) / [V2.3 代码审查修复记录](code-review-2026-07-17-v2.3-replication.md) | See V2.3 replication review findings, `2.3.0` fixes, and `2.3.1` backlog. / 查看 V2.3 副本审查问题、`2.3.0` 修复与 `2.3.1` 待办。 |
 | 6 | [Test Report](test-report-2026-07-10-v2-storage.md) / [测试报告](test-report-2026-07-10-v2-storage.md) | See the V2.0 storage recovery closeout results. / 查看 V2.0 存储恢复收口测试结果。 |
-| 7 | [Troubleshooting Guide](troubleshooting.md) / [故障排查指南](troubleshooting.md) | Resolve common Maven, port, Windows, test report, and GitHub/SSH issues. / 排查 Maven、端口、Windows、测试报告、GitHub/SSH 常见问题。 |
+| 7 | [V2.3 Replication Test Report](test-report-2026-07-17-v2.3-replication.md) / [V2.3 副本机制测试报告](test-report-2026-07-17-v2.3-replication.md) | See the V2.3 replication release verification. / 查看 V2.3 副本机制发布验证。 |
+| 8 | [Troubleshooting Guide](troubleshooting.md) / [故障排查指南](troubleshooting.md) | Resolve common Maven, port, Windows, test report, and GitHub/SSH issues. / 排查 Maven、端口、Windows、测试报告、GitHub/SSH 常见问题。 |
 
 ## 3. Current Snapshot / 当前快照
 
 | Item / 项目 | Value / 值 |
 | --- | --- |
 | Language / 语言 | Java 17 |
-| Project version / 项目版本 | 2.3.0-SNAPSHOT |
+| Project version / 项目版本 | 2.3.0 |
 | Build tool / 构建工具 | Maven multi-module project / Maven 多模块项目 |
 | Network framework / 网络框架 | Netty 4.1 |
 | Serialization / 序列化 | Custom binary protocol over Netty `ByteBuf` / 基于 Netty `ByteBuf` 的自定义二进制协议 |
 | Metadata persistence / 元数据持久化 | JSON via Jackson / 通过 Jackson 写入 JSON |
-| Storage / 存储 | WAL-backed segmented log with retention, compaction, dry-run reports, maintenance metrics, and zero-copy FETCH sendfile / 基于 WAL 的分段日志，支持保留策略、压缩、dry-run 报告、维护指标和零拷贝 FETCH sendfile |
+| Storage / 存储 | WAL-backed segmented log with retention, compaction, dry-run reports, maintenance metrics, zero-copy FETCH sendfile, and ISR-aware replication / 基于 WAL 的分段日志，支持保留策略、压缩、dry-run 报告、维护指标、零拷贝 FETCH sendfile 与 ISR 感知副本 |
 | Tests / 测试 | JUnit 5 + Surefire |
 | Coverage / 覆盖率 | JaCoCo |
-| Latest milestone tag / 最新里程碑标签 | `v2.2.0-read-performance` |
-| Active development line / 当前开发主线 | V2.3 replication / V2.3 副本机制 |
-| Latest evidence / 最新证据 | [V2.2 read performance test report](test-report-2026-07-17-v2.2-read-performance.md) / [V2.2 读取性能测试报告](test-report-2026-07-17-v2.2-read-performance.md) |
+| Latest milestone tag / 最新里程碑标签 | `v2.3.0-replication` |
+| Active development line / 当前开发主线 | V2.3.1 replication hardening / V2.3.1 副本机制加固 |
+| Latest evidence / 最新证据 | [V2.3 replication test report](test-report-2026-07-17-v2.3-replication.md) / [V2.3 副本机制测试报告](test-report-2026-07-17-v2.3-replication.md) |
 
 ## 4. Module Map / 模块地图
 
@@ -94,23 +96,23 @@ mq-demo/target/site/jacoco/index.html
 Start a three-broker demo cluster / 启动三节点 Broker 演示集群：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-2.3.0-SNAPSHOT.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller
-java -jar mq-demo/target/mq-demo-2.3.0-SNAPSHOT.jar broker --broker-id 1 --port 9093 --data-dir ./data/broker-1 --controller-addr localhost:9092
-java -jar mq-demo/target/mq-demo-2.3.0-SNAPSHOT.jar broker --broker-id 2 --port 9094 --data-dir ./data/broker-2 --controller-addr localhost:9092
+java -jar mq-demo/target/mq-demo-2.3.0.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller
+java -jar mq-demo/target/mq-demo-2.3.0.jar broker --broker-id 1 --port 9093 --data-dir ./data/broker-1 --controller-addr localhost:9092
+java -jar mq-demo/target/mq-demo-2.3.0.jar broker --broker-id 2 --port 9094 --data-dir ./data/broker-2 --controller-addr localhost:9092
 ```
 
 Create, produce, and consume / 创建 Topic、生产消息、消费消息：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-2.3.0-SNAPSHOT.jar create-topic --brokers localhost:9092 --name orders --partitions 3
-java -jar mq-demo/target/mq-demo-2.3.0-SNAPSHOT.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
-java -jar mq-demo/target/mq-demo-2.3.0-SNAPSHOT.jar consume --brokers localhost:9092 --topic orders --group order-processors
+java -jar mq-demo/target/mq-demo-2.3.0.jar create-topic --brokers localhost:9092 --name orders --partitions 3
+java -jar mq-demo/target/mq-demo-2.3.0.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
+java -jar mq-demo/target/mq-demo-2.3.0.jar consume --brokers localhost:9092 --topic orders --group order-processors
 ```
 
 Benchmark FETCH heap versus sendfile / 对比 HEAP 与 sendfile 的 FETCH 基准：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-2.3.0-SNAPSHOT.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
+java -jar mq-demo/target/mq-demo-2.3.0.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
 ```
 
 ## 6. Glossary / 专业名词解释
