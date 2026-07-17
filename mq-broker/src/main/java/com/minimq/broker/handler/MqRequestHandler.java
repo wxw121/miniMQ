@@ -1,12 +1,12 @@
 package com.minimq.broker.handler;
 
 import com.minimq.broker.BrokerConfig;
+import com.minimq.broker.FetchTransferMetrics;
 import com.minimq.broker.MetadataSync;
 import com.minimq.broker.PartitionManager;
 import com.minimq.broker.controller.ClusterController;
 import com.minimq.broker.controller.GroupCoordinator;
 import com.minimq.common.error.ErrorCode;
-import com.minimq.common.model.Record;
 import com.minimq.protocol.ApiKeys;
 import com.minimq.protocol.ProtocolSerdes;
 import com.minimq.protocol.message.MqRequestHeader;
@@ -20,9 +20,6 @@ import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 
-import java.util.ArrayList;
-import java.util.List;
-
 /**
  * Broker 请求处理器，将网络帧解码成业务请求，并按 API 类型路由到存储或控制器。
  */
@@ -32,16 +29,27 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     private final ClusterController clusterController;
     private final GroupCoordinator groupCoordinator;
     private final PartitionManager partitionManager;
+    private final FetchResponseWriter fetchResponseWriter;
 
     public MqRequestHandler(
             BrokerConfig config,
             ClusterController clusterController,
             GroupCoordinator groupCoordinator,
             PartitionManager partitionManager) {
+        this(config, clusterController, groupCoordinator, partitionManager, new FetchTransferMetrics());
+    }
+
+    public MqRequestHandler(
+            BrokerConfig config,
+            ClusterController clusterController,
+            GroupCoordinator groupCoordinator,
+            PartitionManager partitionManager,
+            FetchTransferMetrics fetchTransferMetrics) {
         this.config = config;
         this.clusterController = clusterController;
         this.groupCoordinator = groupCoordinator;
         this.partitionManager = partitionManager;
+        this.fetchResponseWriter = new FetchResponseWriter(config, fetchTransferMetrics);
     }
 
     @Override
@@ -84,7 +92,12 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                     FetchRequest request = (FetchRequest) requestBody;
                     errorCode = ensureLeader(request.topicName(), request.partitionId());
                     if (errorCode == ErrorCode.NONE) {
-                        responseBody = handleFetch(request);
+                        PartitionLog partitionLog =
+                                partitionManager.getOrCreate(request.topicName(), request.partitionId());
+                        MqResponseHeader fetchHeader =
+                                new MqResponseHeader(header.correlationId(), ErrorCode.NONE);
+                        fetchResponseWriter.write(ctx, fetchHeader, request, partitionLog);
+                        return;
                     }
                 }
                 case ApiKeys.JOIN_GROUP -> {
@@ -141,17 +154,6 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             baseOffset = partitionManager.append(request.topicName(), request.partitionId(), record.key(), record.value());
         }
         return new ProduceResponse(request.topicName(), request.partitionId(), baseOffset);
-    }
-
-    // 拉取请求只读取本地 leader 分区日志，并按 maxBytes 限制单次返回体大小。
-    private FetchResponse handleFetch(FetchRequest request) {
-        PartitionLog log = partitionManager.getOrCreate(request.topicName(), request.partitionId());
-        List<Record> records = log.read(request.fetchOffset(), request.maxBytes());
-        List<FetchedRecord> fetched = new ArrayList<>();
-        for (Record record : records) {
-            fetched.add(new FetchedRecord(record.offset(), record.key(), record.value()));
-        }
-        return new FetchResponse(request.topicName(), request.partitionId(), log.highWatermark(), fetched);
     }
 
     private ErrorCode ensureLeader(String topicName, int partitionId) {
