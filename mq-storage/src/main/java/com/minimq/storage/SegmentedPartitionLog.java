@@ -15,13 +15,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
 /**
  * A partition log backed by ordered, size-rolled log segments.
  */
-public final class SegmentedPartitionLog implements PartitionLog {
+public final class SegmentedPartitionLog implements PartitionLog, TransferablePartitionLog {
     private final Path partitionDir;
     private final SegmentedLogConfig config;
     private final SegmentCatalogStore catalogStore;
@@ -93,6 +94,46 @@ public final class SegmentedPartitionLog implements PartitionLog {
             } catch (IOException e) {
                 throw new IllegalStateException("Failed to read segmented records", e);
             }
+        }
+    }
+
+    @Override
+    public FetchPlan planFetch(long fromOffset, int maxBytes) {
+        ReadSnapshot snapshot = acquireReadSnapshot();
+        try {
+            ensureOpen();
+            final long fetchHighWatermark;
+            final List<SegmentFile> segmentSnapshot;
+            synchronized (this) {
+                fetchHighWatermark = nextOffset;
+                segmentSnapshot = List.copyOf(segments);
+            }
+            if (maxBytes <= 0) {
+                return new FetchPlan(fetchHighWatermark, 0, 0, List.of(), snapshot::close);
+            }
+            int recordCount = 0;
+            int recordBytes = 0;
+            List<FileRegionSlice> slices = new ArrayList<>();
+            int startIndex = segmentIndexFor(segmentSnapshot, fromOffset);
+            for (int i = startIndex; i < segmentSnapshot.size(); i++) {
+                if (recordCount > 0 && recordBytes >= maxBytes) {
+                    break;
+                }
+                int remaining = Math.max(1, maxBytes - recordBytes);
+                SegmentFile.PlannedRead planned =
+                        segmentSnapshot.get(i).planRead(
+                                fromOffset, remaining, fetchHighWatermark, recordCount == 0);
+                if (planned.recordCount() == 0) {
+                    continue;
+                }
+                recordCount += planned.recordCount();
+                recordBytes += planned.recordBytes();
+                slices.add(planned.slice());
+            }
+            return new FetchPlan(fetchHighWatermark, recordCount, recordBytes, slices, snapshot::close);
+        } catch (IOException | RuntimeException failure) {
+            snapshot.close();
+            throw new IllegalStateException("Failed to plan segmented fetch", failure);
         }
     }
 
@@ -708,8 +749,13 @@ public final class SegmentedPartitionLog implements PartitionLog {
     }
 
     private final class ReadSnapshot implements AutoCloseable {
+        private final AtomicBoolean snapshotClosed = new AtomicBoolean();
+
         @Override
         public void close() {
+            if (!snapshotClosed.compareAndSet(false, true)) {
+                return;
+            }
             synchronized (readerMonitor) {
                 if (activeReaders.decrementAndGet() == 0) {
                     readerMonitor.notifyAll();
