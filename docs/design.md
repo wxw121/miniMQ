@@ -9,9 +9,9 @@ MiniMQ aims to be small enough to read, but realistic enough to explain the esse
 
 MiniMQ 的目标是“小到能读完，大到能讲清消息队列核心机制”。项目有意避免把关键行为藏在框架里：协议序列化是手写的，存储格式是显式的，消费组分配逻辑也直接体现在代码里。因此它适合作为学习项目、面试作品、以及新 agent 继续迭代的上下文载体。
 
-The design optimizes for clarity, determinism, and testability. It does not yet optimize for throughput, replication safety, multi-tenant isolation, or operational automation.
+The design optimizes for clarity, determinism, and testability. V2.3 adds a replication foundation with ISR-aware client FETCH visibility, while automatic broker failure detection and producer acknowledgement policies remain future work.
 
-当前设计优先考虑清晰性、确定性和可测试性，还没有优先考虑吞吐极限、副本安全、多租户隔离或运维自动化。
+当前设计优先考虑清晰性、确定性和可测试性。V2.3 增加了带 ISR 感知客户端 FETCH 可见性的副本基础能力，自动 Broker 故障检测与 Producer 确认策略仍属于后续工作。
 
 ## 2. Protocol Design / 协议设计
 
@@ -66,8 +66,8 @@ If `errorCode != NONE`, response body is omitted. This rule keeps error response
 
 | ApiKey | Name / 名称 | Plane / 平面 | Purpose / 用途 |
 | ---: | --- | --- | --- |
-| 0 | `CREATE_TOPIC` | Control / 控制面 | Create a topic with N partitions. / 创建包含 N 个分区的 Topic。 |
-| 1 | `METADATA` | Control / 控制面 | Fetch brokers and topic-partition leader metadata. / 拉取 Broker 列表和 Topic-Partition leader 元数据。 |
+| 0 | `CREATE_TOPIC` | Control / 控制面 | Create a topic with N partitions and replication factor. / 创建包含 N 个分区与副本因子的 Topic。 |
+| 1 | `METADATA` | Control / 控制面 | Fetch brokers and topic-partition leader, replica, and ISR metadata. / 拉取 Broker 列表和 Topic-Partition leader、副本与 ISR 元数据。 |
 | 2 | `PRODUCE` | Data / 数据面 | Append records to a topic partition. / 向 Topic 分区追加消息。 |
 | 3 | `FETCH` | Data / 数据面 | Read records from a topic partition starting at an offset. / 从指定 offset 开始读取 Topic 分区消息。 |
 | 4 | `JOIN_GROUP` | Control / 控制面 | Join a consumer group. / 加入消费组。 |
@@ -76,6 +76,8 @@ If `errorCode != NONE`, response body is omitted. This rule keeps error response
 | 7 | `OFFSET_COMMIT` | Control / 控制面 | Commit consumed offset. / 提交已消费 offset。 |
 | 8 | `OFFSET_FETCH` | Control / 控制面 | Fetch committed offset. / 拉取已提交 offset。 |
 | 9 | `REGISTER_BROKER` | Control / 控制面 | Register broker with controller. / 向 Controller 注册 Broker。 |
+| 10 | `REPLICA_FETCH` | Data / 数据面 | Follower replica pulls leader log bytes. / Follower 副本从 Leader 拉取日志字节。 |
+| 11 | `MARK_BROKER_OFFLINE` | Control / 控制面 | Controller marks a broker offline and elects replacement leaders. / Controller 将 Broker 标记离线并选举替代 Leader。 |
 
 ## 3. Serialization Rules / 序列化规则
 
@@ -320,6 +322,8 @@ erDiagram
     PARTITION {
       int partitionId
       int leaderBrokerId
+      list replicaBrokerIds
+      list isrBrokerIds
     }
 
     CONSUMER_GROUP {
@@ -459,7 +463,40 @@ CLI flags: `--fetch-transfer-mode=auto|heap` and `--fetch-transfer-timeout-ms`.
 
 CLI 参数：`--fetch-transfer-mode=auto|heap` 与 `--fetch-transfer-timeout-ms`。
 
-## 11. Design Tradeoffs / 设计取舍
+CLI 参数：`--fetch-transfer-mode=auto|heap` 与 `--fetch-transfer-timeout-ms`。
+
+## 11. V2.3 Replication / V2.3 副本机制
+
+V2.3 keeps wire protocol version 1 and extends metadata plus internal replica traffic:
+
+V2.3 保持线协议版本为 1，并扩展元数据与内部副本流量：
+
+- `CreateTopicRequest` adds `replicationFactor`;
+- `METADATA` partition entries expose `replicaBrokerIds` and `isrBrokerIds`;
+- followers pull leader bytes through `REPLICA_FETCH` and append locally without WAL;
+- leaders track ISR replica log-end offsets in `ReplicaStateManager`;
+- client `FETCH` and sendfile responses expose replication-aware high watermarks and omit records at or above that watermark;
+- `REPLICA_FETCH` still returns leader log bytes needed for catch-up even when the replication watermark is lower;
+- `MARK_BROKER_OFFLINE` removes a broker from ISR and elects the next ISR leader on the static controller.
+
+- `CreateTopicRequest` 增加 `replicationFactor`；
+- `METADATA` 分区项暴露 `replicaBrokerIds` 与 `isrBrokerIds`；
+- Follower 通过 `REPLICA_FETCH` 拉取 Leader 字节并在本地无 WAL 追加；
+- Leader 在 `ReplicaStateManager` 中跟踪 ISR 副本 log-end offset；
+- 客户端 `FETCH` 与 sendfile 响应暴露复制感知 high watermark，并省略不低于该 watermark 的记录；
+- 即使复制 watermark 较低，`REPLICA_FETCH` 仍返回 Follower 追平所需的 Leader 日志字节；
+- `MARK_BROKER_OFFLINE` 将 Broker 移出 ISR，并在静态 Controller 上选举下一个 ISR Leader；
+- `ReplicaStateManager.noteLeadership` records the leader log end at election time and applies an election grace period: before new writes, unreported ISR followers do not block reads of pre-election data; after new writes, strict replication HW semantics apply again;
+- `updateReplicaLeo` uses monotonic `Math.max`, so retried replica fetch requests cannot lower replication HW.
+
+- `ReplicaStateManager.noteLeadership` 在选举时记录 Leader log end，并应用选举宽限期：无新写入前，未上报的 ISR follower 不阻塞故障前数据读取；有新写入后恢复严格 replication HW 语义；
+- `updateReplicaLeo` 使用单调 `Math.max`，避免重试的副本拉取请求拉低 replication HW。
+
+Known limitations fixed in follow-up `2.3.1` are tracked in `docs/code-review-2026-07-17-v2.3-replication.md`.
+
+已知限制与 `2.3.1` 计划修复项见 `docs/code-review-2026-07-17-v2.3-replication.md`。
+
+## 12. Design Tradeoffs / 设计取舍
 
 | Decision / 决策 | Benefit / 收益 | Cost / 代价 |
 | --- | --- | --- |
@@ -470,7 +507,7 @@ CLI 参数：`--fetch-transfer-mode=auto|heap` 与 `--fetch-transfer-timeout-ms`
 | Synchronous client API / 同步客户端 API | Easy to use and test. / 易用且易测。 | Lower throughput than async batching. / 吞吐低于异步批量方案。 |
 | Sendfile FETCH path / sendfile FETCH 路径 | Removes payload copies on the Broker network write path. / 去掉 Broker 网络写路径上的 payload 复制。 | TLS and unsupported pipelines still use heap fallback. / TLS 与不支持的 pipeline 仍走 heap 回退。 |
 
-## 12. Professional Terms / 专业名词解释
+## 13. Professional Terms / 专业名词解释
 
 | Term / 术语 | 中文解释 | English explanation / 英文解释 |
 | --- | --- | --- |

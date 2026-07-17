@@ -154,7 +154,9 @@ The numeric baseline above and the closeout report are the source of truth for t
 | `mq-broker` | `BrokerConfigTest` | Unit / 单元测试 | Broker argument parsing and validation, including flush/checkpoint, segment, retention, compaction, maintenance, and fetch-transfer options. / Broker 参数解析与校验，包括刷盘、checkpoint、segment、保留策略、压缩、维护和 FETCH 传输选项。 |
 | `mq-broker` | `FetchTransferMetricsTest` | Unit / 单元测试 | Sendfile/heap/fallback/failure/timeout counters and immutable snapshots. / sendfile/heap/回退/失败/超时计数与不可变快照。 |
 | `mq-broker` | `MetadataStoreTest` | Unit / 单元测试 | Metadata safe writes, load validation, corrupt-file failure, and quarantine recovery. / 元数据安全写入、加载校验、损坏文件失败与隔离恢复。 |
-| `mq-broker` | `ClusterControllerTest` | Unit / 单元测试 | Topic creation, metadata, snapshot isolation. / Topic 创建、元数据、快照隔离。 |
+| `mq-broker` | `ClusterControllerTest` | Unit / 单元测试 | Topic creation, replica/ISR metadata, offline election, snapshot isolation. / Topic 创建、副本/ISR 元数据、离线选举、快照隔离。 |
+| `mq-broker` | `ReplicaStateManagerTest` | Unit / 单元测试 | ISR minimum high watermark math. / ISR 最小 high watermark 计算。 |
+| `mq-broker` | `ReplicationIntegrationTest` | Integration / 集成测试 | Follower catch-up, replication-aware client FETCH, leader failover, and `NOT_LEADER` redirects. / Follower 追平、复制感知客户端 FETCH、Leader 故障转移与 `NOT_LEADER` 重定向。 |
 | `mq-broker` | `GroupCoordinatorTest` | Unit / 单元测试 | Join/sync assignment, heartbeat, offset commit/fetch. / 加组、同步分配、心跳、offset 提交/拉取。 |
 | `mq-broker` | `EmbeddedBrokerChannelTest` | Component / 组件测试 | Handler behavior through Netty `EmbeddedChannel`. / 通过 Netty `EmbeddedChannel` 验证 handler 行为。 |
 | `mq-broker` | `FetchResponseWriterTest` | Component / 组件测试 | AUTO/HEAP selection, DefaultFileRegion outbound messages, unsupported fallbacks, and transfer-timeout lease release. / AUTO/HEAP 选择、DefaultFileRegion 出站消息、不支持回退，以及传输超时释放读租约。 |
@@ -194,10 +196,36 @@ V2.2 零拷贝 FETCH 收口记录见 `docs/test-report-2026-07-17-v2.2-read-perf
 Benchmark command / 基准命令：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-2.3.0-SNAPSHOT.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
+java -jar mq-demo/target/mq-demo-2.3.0.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
 ```
 
-### 7.5 Web Runtime Regression Coverage / Web Runtime 回归覆盖
+### 7.5 V2.3 Replication Closeout / V2.3 副本机制收口
+
+V2.3 adds partition replicas, follower `REPLICA_FETCH`, replication-aware client FETCH visibility, static-controller leader failover through `MARK_BROKER_OFFLINE`, election grace for post-failover reads, and monotonic replica LEO updates.
+
+V2.3 增加分区副本、Follower `REPLICA_FETCH`、复制感知的客户端 FETCH 可见性、通过 `MARK_BROKER_OFFLINE` 触发的静态 Controller Leader 故障转移、failover 后读取选举宽限期，以及单调副本 LEO 更新。
+
+Code-review findings and release split / 代码审查问题与发布拆分：
+
+| Document / 文档 | Purpose / 用途 |
+| --- | --- |
+| `docs/code-review-2026-07-17-v2.3-replication.md` | Records pre-fix issues, `2.3.0` P0 fixes, and `2.3.1` P1 backlog. / 记录修复前问题、`2.3.0` P0 修复与 `2.3.1` P1 待办。 |
+| `docs/test-report-2026-07-17-v2.3-replication.md` | Release verification evidence for `2.3.0`. / `2.3.0` 发布验证证据。 |
+
+| Test / 测试 | Covers / 覆盖 |
+| --- | --- |
+| `ReplicationIntegrationTest.clientFetchWaitsForReplicationHighWatermark` | Client FETCH blocked before replication completes / 复制完成前客户端 FETCH 被阻塞 |
+| `ReplicationIntegrationTest.clientFetchAfterFailoverWithoutWaitingForFollowerFetch` | Failover read grace / failover 后立即可读 |
+| `ReplicaStateManagerTest.staleReplicaFetchOffsetDoesNotLowerHighWatermark` | Monotonic LEO / 单调 LEO |
+| `FetchResponseWriterTest` sendfile/heap HW cap tests | Replication HW on both FETCH paths / 两条 FETCH 路径的 replication HW |
+
+Focused verification command / 聚焦验证命令：
+
+```powershell
+mvn -q -gs .mvn/settings.xml -s .mvn/settings.xml -pl mq-broker -am -Dtest=ClusterControllerTest,ReplicaStateManagerTest,ReplicationIntegrationTest,FetchResponseWriterTest -Dsurefire.failIfNoSpecifiedTests=false test
+```
+
+### 7.6 Web Runtime Regression Coverage / Web Runtime 回归覆盖
 
 The Web backend has dedicated regression tests for the three runtime risks fixed in the current version.
 

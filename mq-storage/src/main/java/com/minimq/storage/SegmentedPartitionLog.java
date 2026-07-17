@@ -99,13 +99,22 @@ public final class SegmentedPartitionLog implements PartitionLog, TransferablePa
 
     @Override
     public FetchPlan planFetch(long fromOffset, int maxBytes) {
+        long leaderHighWatermark;
+        synchronized (this) {
+            leaderHighWatermark = nextOffset;
+        }
+        return planFetch(fromOffset, maxBytes, leaderHighWatermark);
+    }
+
+    @Override
+    public FetchPlan planFetch(long fromOffset, int maxBytes, long exclusiveHighWatermark) {
         ReadSnapshot snapshot = acquireReadSnapshot();
         try {
             ensureOpen();
             final long fetchHighWatermark;
             final List<SegmentFile> segmentSnapshot;
             synchronized (this) {
-                fetchHighWatermark = nextOffset;
+                fetchHighWatermark = Math.min(nextOffset, exclusiveHighWatermark);
                 segmentSnapshot = List.copyOf(segments);
             }
             if (maxBytes <= 0) {

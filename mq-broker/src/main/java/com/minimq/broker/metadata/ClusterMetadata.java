@@ -28,6 +28,8 @@ public class ClusterMetadata {
     public static class PartitionEntry {
         public int partitionId;
         public int leaderBrokerId;
+        public List<Integer> replicaBrokerIds = new ArrayList<>();
+        public List<Integer> isrBrokerIds = new ArrayList<>();
     }
 
     public static class ConsumerGroupEntry {

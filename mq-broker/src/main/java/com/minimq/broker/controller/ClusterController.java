@@ -15,6 +15,7 @@ import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
 import com.minimq.protocol.message.ProtocolMessages.TopicMetadata;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.function.Function;
@@ -30,6 +31,7 @@ public class ClusterController {
     public ClusterController(MetadataStore metadataStore) {
         this.metadataStore = metadataStore;
         this.metadata = metadataStore.load();
+        normalizeMetadata();
     }
 
     // 控制器的公开方法统一加 synchronized，保证内存态元数据和落盘顺序一致。
@@ -43,9 +45,9 @@ public class ClusterController {
         return ErrorCode.NONE;
     }
 
-    // 当前版本采用简单轮询选择 leader，为后续副本和 ISR 元数据扩展保留入口。
     public synchronized ErrorCode createTopic(CreateTopicRequest request) {
-        if (request.topicName() == null || request.topicName().isBlank() || request.numPartitions() <= 0) {
+        if (request.topicName() == null || request.topicName().isBlank()
+                || request.numPartitions() <= 0 || request.replicationFactor() <= 0) {
             return ErrorCode.INVALID_REQUEST;
         }
         if (metadata.topics.containsKey(request.topicName())) {
@@ -55,7 +57,7 @@ public class ClusterController {
                 .filter(b -> b.online)
                 .sorted(Comparator.comparingInt(b -> b.brokerId))
                 .collect(Collectors.toList());
-        if (onlineBrokers.isEmpty()) {
+        if (onlineBrokers.isEmpty() || request.replicationFactor() > onlineBrokers.size()) {
             return ErrorCode.INVALID_REQUEST;
         }
         TopicEntry topic = new TopicEntry();
@@ -63,10 +65,48 @@ public class ClusterController {
         for (int i = 0; i < request.numPartitions(); i++) {
             PartitionEntry partition = new PartitionEntry();
             partition.partitionId = i;
-            partition.leaderBrokerId = onlineBrokers.get(i % onlineBrokers.size()).brokerId;
+            int firstReplicaIndex = i % onlineBrokers.size();
+            List<Integer> replicas = new ArrayList<>();
+            for (int replica = 0; replica < request.replicationFactor(); replica++) {
+                replicas.add(onlineBrokers.get((firstReplicaIndex + replica) % onlineBrokers.size()).brokerId);
+            }
+            partition.replicaBrokerIds = replicas;
+            partition.isrBrokerIds = new ArrayList<>(replicas);
+            partition.leaderBrokerId = replicas.get(0);
             topic.partitions.add(partition);
         }
         metadata.topics.put(request.topicName(), topic);
+        metadataStore.save(metadata);
+        return ErrorCode.NONE;
+    }
+
+    public synchronized ErrorCode markBrokerOffline(int brokerId) {
+        BrokerEntry broker = metadata.brokers.get(brokerId);
+        if (broker == null) {
+            return ErrorCode.INVALID_REQUEST;
+        }
+        for (TopicEntry topic : metadata.topics.values()) {
+            for (PartitionEntry partition : topic.partitions) {
+                normalizePartition(partition);
+                if (partition.leaderBrokerId == brokerId) {
+                    boolean hasReplacementLeader = partition.isrBrokerIds.stream()
+                            .anyMatch(id -> id != brokerId);
+                    if (!hasReplacementLeader) {
+                        return ErrorCode.INVALID_REQUEST;
+                    }
+                }
+            }
+        }
+        broker.online = false;
+        for (TopicEntry topic : metadata.topics.values()) {
+            for (PartitionEntry partition : topic.partitions) {
+                partition.isrBrokerIds.removeIf(id -> id == brokerId);
+                if (partition.leaderBrokerId == brokerId) {
+                    Collections.sort(partition.isrBrokerIds);
+                    partition.leaderBrokerId = partition.isrBrokerIds.get(0);
+                }
+            }
+        }
         metadataStore.save(metadata);
         return ErrorCode.NONE;
     }
@@ -84,7 +124,7 @@ public class ClusterController {
                 continue;
             }
             List<PartitionMetadata> partitions = topic.partitions.stream()
-                    .map(p -> new PartitionMetadata(p.partitionId, p.leaderBrokerId))
+                    .map(this::toPartitionMetadata)
                     .collect(Collectors.toList());
             topics.add(new TopicMetadata(topic.topicName, partitions));
         }
@@ -97,15 +137,35 @@ public class ClusterController {
     }
 
     public synchronized int getLeaderBrokerId(String topicName, int partitionId) {
-        TopicEntry topic = metadata.topics.get(topicName);
-        if (topic == null) {
-            return -1;
+        PartitionEntry partition = getPartitionEntry(topicName, partitionId);
+        return partition != null ? partition.leaderBrokerId : -1;
+    }
+
+    public synchronized List<Integer> getReplicaBrokerIds(String topicName, int partitionId) {
+        PartitionEntry partition = getPartitionEntry(topicName, partitionId);
+        if (partition == null) {
+            return List.of();
         }
-        return topic.partitions.stream()
-                .filter(p -> p.partitionId == partitionId)
-                .map(p -> p.leaderBrokerId)
-                .findFirst()
-                .orElse(-1);
+        normalizePartition(partition);
+        return List.copyOf(partition.replicaBrokerIds);
+    }
+
+    public synchronized List<Integer> getIsrBrokerIds(String topicName, int partitionId) {
+        PartitionEntry partition = getPartitionEntry(topicName, partitionId);
+        if (partition == null) {
+            return List.of();
+        }
+        normalizePartition(partition);
+        return List.copyOf(partition.isrBrokerIds);
+    }
+
+    public synchronized boolean isReplica(String topicName, int partitionId, int brokerId) {
+        return getReplicaBrokerIds(topicName, partitionId).contains(brokerId);
+    }
+
+    public synchronized BrokerEntry getBroker(int brokerId) {
+        BrokerEntry broker = metadata.brokers.get(brokerId);
+        return broker != null ? copyBroker(broker) : null;
     }
 
     public synchronized ClusterMetadata snapshot() {
@@ -114,13 +174,76 @@ public class ClusterController {
 
     public synchronized void replaceMetadata(ClusterMetadata metadata) {
         this.metadata = copyMetadata(metadata);
+        normalizeMetadata();
         metadataStore.save(this.metadata);
     }
 
     public synchronized <T> T updateMetadata(Function<ClusterMetadata, T> updater) {
         T result = updater.apply(metadata);
+        normalizeMetadata();
         metadataStore.save(metadata);
         return result;
+    }
+
+    private PartitionEntry getPartitionEntry(String topicName, int partitionId) {
+        TopicEntry topic = metadata.topics.get(topicName);
+        if (topic == null) {
+            return null;
+        }
+        return topic.partitions.stream()
+                .filter(partition -> partition.partitionId == partitionId)
+                .findFirst()
+                .orElse(null);
+    }
+
+    private PartitionMetadata toPartitionMetadata(PartitionEntry partition) {
+        normalizePartition(partition);
+        return new PartitionMetadata(
+                partition.partitionId,
+                partition.leaderBrokerId,
+                List.copyOf(partition.replicaBrokerIds),
+                List.copyOf(partition.isrBrokerIds));
+    }
+
+    private void normalizeMetadata() {
+        for (TopicEntry topic : metadata.topics.values()) {
+            for (PartitionEntry partition : topic.partitions) {
+                normalizePartition(partition);
+            }
+        }
+    }
+
+    private void normalizePartition(PartitionEntry partition) {
+        if (partition.replicaBrokerIds == null) {
+            partition.replicaBrokerIds = new ArrayList<>();
+        }
+        if (partition.isrBrokerIds == null) {
+            partition.isrBrokerIds = new ArrayList<>();
+        }
+        if (partition.replicaBrokerIds.isEmpty()) {
+            partition.replicaBrokerIds.add(partition.leaderBrokerId);
+        }
+        if (partition.isrBrokerIds.isEmpty()) {
+            for (int replicaId : partition.replicaBrokerIds) {
+                BrokerEntry replica = metadata.brokers.get(replicaId);
+                if (replica != null && replica.online) {
+                    partition.isrBrokerIds.add(replicaId);
+                }
+            }
+            if (partition.isrBrokerIds.isEmpty()) {
+                partition.isrBrokerIds.add(partition.leaderBrokerId);
+            }
+        }
+        partition.isrBrokerIds.removeIf(replicaId -> {
+            BrokerEntry replica = metadata.brokers.get(replicaId);
+            return replica == null || !replica.online;
+        });
+        if (!partition.replicaBrokerIds.contains(partition.leaderBrokerId)) {
+            partition.leaderBrokerId = partition.replicaBrokerIds.get(0);
+        }
+        if (!partition.isrBrokerIds.contains(partition.leaderBrokerId)) {
+            partition.isrBrokerIds.add(0, partition.leaderBrokerId);
+        }
     }
 
     // 返回快照时做深拷贝，避免调用方直接修改控制器内部状态。
@@ -148,6 +271,8 @@ public class ClusterController {
             PartitionEntry partitionCopy = new PartitionEntry();
             partitionCopy.partitionId = partition.partitionId;
             partitionCopy.leaderBrokerId = partition.leaderBrokerId;
+            partitionCopy.replicaBrokerIds = new ArrayList<>(partition.replicaBrokerIds);
+            partitionCopy.isrBrokerIds = new ArrayList<>(partition.isrBrokerIds);
             copy.partitions.add(partitionCopy);
         }
         return copy;

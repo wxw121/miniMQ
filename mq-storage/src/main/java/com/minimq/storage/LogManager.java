@@ -80,6 +80,12 @@ public class LogManager {
         return offset;
     }
 
+    public synchronized void replicateAt(String topic, int partitionId, long offset, byte[] key, byte[] value) {
+        ensureOpen();
+        PartitionLog log = getOrCreate(topic, partitionId);
+        log.appendAt(offset, key, value);
+    }
+
     public synchronized LogMaintenanceReport dryRunMaintenance() {
         ensureOpen();
         if (!config.maintenanceConfig().enabled()) {

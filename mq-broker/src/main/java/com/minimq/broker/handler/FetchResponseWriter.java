@@ -53,47 +53,52 @@ final class FetchResponseWriter {
     }
 
     boolean write(ChannelHandlerContext ctx, MqResponseHeader header,
-                  FetchRequest request, PartitionLog log) {
+                  FetchRequest request, PartitionLog log, long effectiveHighWatermark) {
         if (mode == FetchTransferMode.HEAP) {
             metrics.recordHeapMode();
-            writeHeap(ctx, header, request, log);
+            writeHeap(ctx, header, request, log, effectiveHighWatermark);
             return true;
         }
         if (!(log instanceof TransferablePartitionLog transferable)) {
             metrics.recordUnsupportedLog();
-            writeHeap(ctx, header, request, log);
+            writeHeap(ctx, header, request, log, effectiveHighWatermark);
             return true;
         }
         if (ctx.pipeline().get(SslHandler.class) != null) {
             metrics.recordTlsFallback();
-            writeHeap(ctx, header, request, log);
+            writeHeap(ctx, header, request, log, effectiveHighWatermark);
             return true;
         }
         if (!fileRegionSupported.test(ctx.channel())) {
             metrics.recordUnsupportedPipeline();
-            writeHeap(ctx, header, request, log);
+            writeHeap(ctx, header, request, log, effectiveHighWatermark);
             return true;
         }
-        writeSendfile(ctx, header, request, transferable);
+        writeSendfile(ctx, header, request, transferable, effectiveHighWatermark);
         return true;
     }
 
     private void writeHeap(ChannelHandlerContext ctx, MqResponseHeader header,
-                           FetchRequest request, PartitionLog log) {
+                           FetchRequest request, PartitionLog log, long effectiveHighWatermark) {
         List<Record> records = log.read(request.fetchOffset(), request.maxBytes());
         List<FetchedRecord> fetched = new ArrayList<>(records.size());
         for (Record record : records) {
+            if (record.offset() >= effectiveHighWatermark) {
+                break;
+            }
             fetched.add(new FetchedRecord(record.offset(), record.key(), record.value()));
         }
         FetchResponse response = new FetchResponse(
-                request.topicName(), request.partitionId(), log.highWatermark(), fetched);
+                request.topicName(), request.partitionId(), effectiveHighWatermark, fetched);
         ByteBuf frame = ProtocolSerdes.encodeResponse(header, response);
         ctx.writeAndFlush(frame);
     }
 
     private void writeSendfile(ChannelHandlerContext ctx, MqResponseHeader header,
-                               FetchRequest request, TransferablePartitionLog transferable) {
-        FetchPlan plan = transferable.planFetch(request.fetchOffset(), request.maxBytes());
+                               FetchRequest request, TransferablePartitionLog transferable,
+                               long effectiveHighWatermark) {
+        FetchPlan plan = transferable.planFetch(
+                request.fetchOffset(), request.maxBytes(), effectiveHighWatermark);
         TransferCleanup cleanup = new TransferCleanup(plan);
         List<DefaultFileRegion> regions = new ArrayList<>();
         try {
@@ -111,11 +116,12 @@ final class FetchResponseWriter {
                 }
             }
 
+            long responseHighWatermark = Math.min(plan.highWatermark(), effectiveHighWatermark);
             ByteBuf prefix = ProtocolSerdes.encodeFetchResponsePrefix(
                     header,
                     request.topicName(),
                     request.partitionId(),
-                    plan.highWatermark(),
+                    responseHighWatermark,
                     plan.recordCount(),
                     plan.recordBytes());
 
