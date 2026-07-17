@@ -9,7 +9,10 @@ public final class ProtocolMessages {
     private ProtocolMessages() {
     }
 
-    public record CreateTopicRequest(String topicName, int numPartitions) {
+    public record CreateTopicRequest(String topicName, int numPartitions, int replicationFactor) {
+        public CreateTopicRequest(String topicName, int numPartitions) {
+            this(topicName, numPartitions, 1);
+        }
     }
 
     public record CreateTopicResponse(String topicName) {
@@ -21,7 +24,14 @@ public final class ProtocolMessages {
     public record BrokerMetadata(int brokerId, String host, int port) {
     }
 
-    public record PartitionMetadata(int partitionId, int leaderBrokerId) {
+    public record PartitionMetadata(
+            int partitionId,
+            int leaderBrokerId,
+            List<Integer> replicaBrokerIds,
+            List<Integer> isrBrokerIds) {
+        public PartitionMetadata(int partitionId, int leaderBrokerId) {
+            this(partitionId, leaderBrokerId, List.of(leaderBrokerId), List.of(leaderBrokerId));
+        }
     }
 
     public record TopicMetadata(String topicName, List<PartitionMetadata> partitions) {
@@ -90,5 +100,26 @@ public final class ProtocolMessages {
     }
 
     public record RegisterBrokerResponse() {
+    }
+
+    public record ReplicaFetchRequest(
+            String topicName,
+            int partitionId,
+            int replicaBrokerId,
+            long fetchOffset,
+            int maxBytes) {
+    }
+
+    public record ReplicaFetchResponse(
+            String topicName,
+            int partitionId,
+            long highWatermark,
+            List<FetchedRecord> records) {
+    }
+
+    public record MarkBrokerOfflineRequest(int brokerId) {
+    }
+
+    public record MarkBrokerOfflineResponse() {
     }
 }

@@ -50,7 +50,7 @@ class FetchResponseWriterTest {
             FetchRequest request = new FetchRequest("orders", 0, 0, 1_024);
 
             try {
-                assertTrue(writer.write(ctx, header, request, log));
+                assertTrue(writer.write(ctx, header, request, log, log.highWatermark()));
                 channel.runPendingTasks();
                 Object first = channel.readOutbound();
                 Object second = channel.readOutbound();
@@ -81,7 +81,7 @@ class FetchResponseWriterTest {
             EmbeddedChannel channel = (EmbeddedChannel) ctx.channel();
             try {
                 assertTrue(writer.write(ctx, new MqResponseHeader(1, ErrorCode.NONE),
-                        new FetchRequest("orders", 0, 0, 1_024), log));
+                        new FetchRequest("orders", 0, 0, 1_024), log, log.highWatermark()));
                 channel.runPendingTasks();
                 Object outbound = channel.readOutbound();
                 try {
@@ -136,7 +136,7 @@ class FetchResponseWriterTest {
         EmbeddedChannel channel = (EmbeddedChannel) ctx.channel();
         try {
             assertTrue(writer.write(ctx, new MqResponseHeader(1, ErrorCode.NONE),
-                    new FetchRequest("orders", 0, 0, 1_024), stub));
+                    new FetchRequest("orders", 0, 0, 1_024), stub, stub.highWatermark()));
             channel.runPendingTasks();
             Object outbound = channel.readOutbound();
             try {
@@ -162,7 +162,7 @@ class FetchResponseWriterTest {
             EmbeddedChannel channel = (EmbeddedChannel) ctx.channel();
             try {
                 assertTrue(writer.write(ctx, new MqResponseHeader(1, ErrorCode.NONE),
-                        new FetchRequest("orders", 0, 0, 1_024), log));
+                        new FetchRequest("orders", 0, 0, 1_024), log, log.highWatermark()));
                 channel.runPendingTasks();
                 Object outbound = channel.readOutbound();
                 try {
@@ -199,7 +199,7 @@ class FetchResponseWriterTest {
             ChannelHandlerContext ctx = captureContext(channel);
 
             assertTrue(writer.write(ctx, new MqResponseHeader(1, ErrorCode.NONE),
-                    new FetchRequest("orders", 0, 0, 1_024), log));
+                    new FetchRequest("orders", 0, 0, 1_024), log, log.highWatermark()));
             channel.runPendingTasks();
 
             ExecutorService executor = Executors.newSingleThreadExecutor();

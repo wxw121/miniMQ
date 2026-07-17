@@ -75,7 +75,7 @@ public final class ProtocolSerdes {
     public static Object decodeRequestBody(short apiKey, ByteBuf payload) {
         return switch (apiKey) {
             case ApiKeys.CREATE_TOPIC -> new CreateTopicRequest(
-                    ByteBufSerde.readString(payload), payload.readInt());
+                    ByteBufSerde.readString(payload), payload.readInt(), payload.readInt());
             case ApiKeys.METADATA -> new MetadataRequest(ByteBufSerde.readString(payload));
             case ApiKeys.PRODUCE -> decodeProduceRequest(payload);
             case ApiKeys.FETCH -> new FetchRequest(
@@ -105,6 +105,13 @@ public final class ProtocolSerdes {
                     payload.readInt());
             case ApiKeys.REGISTER_BROKER -> new RegisterBrokerRequest(
                     payload.readInt(), ByteBufSerde.readString(payload), payload.readInt());
+            case ApiKeys.REPLICA_FETCH -> new ReplicaFetchRequest(
+                    ByteBufSerde.readString(payload),
+                    payload.readInt(),
+                    payload.readInt(),
+                    payload.readLong(),
+                    payload.readInt());
+            case ApiKeys.MARK_BROKER_OFFLINE -> new MarkBrokerOfflineRequest(payload.readInt());
             default -> throw new IllegalArgumentException("Unknown apiKey: " + apiKey);
         };
     }
@@ -129,6 +136,8 @@ public final class ProtocolSerdes {
             case ApiKeys.OFFSET_COMMIT -> new OffsetCommitResponse();
             case ApiKeys.OFFSET_FETCH -> new OffsetFetchResponse(payload.readLong());
             case ApiKeys.REGISTER_BROKER -> new RegisterBrokerResponse();
+            case ApiKeys.REPLICA_FETCH -> decodeReplicaFetchResponse(payload);
+            case ApiKeys.MARK_BROKER_OFFLINE -> new MarkBrokerOfflineResponse();
             default -> throw new IllegalArgumentException("Unknown apiKey: " + apiKey);
         };
     }
@@ -139,6 +148,7 @@ public final class ProtocolSerdes {
                 CreateTopicRequest req = (CreateTopicRequest) body;
                 ByteBufSerde.writeString(buf, req.topicName());
                 buf.writeInt(req.numPartitions());
+                buf.writeInt(req.replicationFactor());
             }
             case ApiKeys.METADATA -> ByteBufSerde.writeString(buf, ((MetadataRequest) body).topicName());
             case ApiKeys.PRODUCE -> writeProduceRequest(buf, (ProduceRequest) body);
@@ -186,6 +196,8 @@ public final class ProtocolSerdes {
                 ByteBufSerde.writeString(buf, req.host());
                 buf.writeInt(req.port());
             }
+            case ApiKeys.REPLICA_FETCH -> writeReplicaFetchRequest(buf, (ReplicaFetchRequest) body);
+            case ApiKeys.MARK_BROKER_OFFLINE -> buf.writeInt(((MarkBrokerOfflineRequest) body).brokerId());
             default -> throw new IllegalArgumentException("Unknown apiKey: " + apiKey);
         }
     }
@@ -210,6 +222,8 @@ public final class ProtocolSerdes {
             writeByteArrayWithShortPrefix(buf, res.assignment());
         } else if (body instanceof OffsetFetchResponse res) {
             buf.writeLong(res.offset());
+        } else if (body instanceof ReplicaFetchResponse res) {
+            writeReplicaFetchResponse(buf, res);
         }
     }
 
@@ -279,7 +293,11 @@ public final class ProtocolSerdes {
             List<PartitionMetadata> partitions = new ArrayList<>();
             for (int j = 0; j < partitionCount; j++) {
                 requireReadable(buf, Integer.BYTES * 2, "partition metadata");
-                partitions.add(new PartitionMetadata(buf.readInt(), buf.readInt()));
+                int partitionId = buf.readInt();
+                int leaderBrokerId = buf.readInt();
+                List<Integer> replicaBrokerIds = readBrokerIdList(buf, "replica brokers");
+                List<Integer> isrBrokerIds = readBrokerIdList(buf, "isr brokers");
+                partitions.add(new PartitionMetadata(partitionId, leaderBrokerId, replicaBrokerIds, isrBrokerIds));
             }
             topics.add(new TopicMetadata(topicName, partitions));
         }
@@ -300,8 +318,81 @@ public final class ProtocolSerdes {
             for (PartitionMetadata partition : topic.partitions()) {
                 buf.writeInt(partition.partitionId());
                 buf.writeInt(partition.leaderBrokerId());
+                writeBrokerIdList(buf, partition.replicaBrokerIds(), "replica brokers");
+                writeBrokerIdList(buf, partition.isrBrokerIds(), "isr brokers");
             }
         }
+    }
+
+    private static ReplicaFetchResponse decodeReplicaFetchResponse(ByteBuf buf) {
+        return decodeFetchLikeResponse(buf, ReplicaFetchResponse::new);
+    }
+
+    private static void writeReplicaFetchRequest(ByteBuf buf, ReplicaFetchRequest req) {
+        ByteBufSerde.writeString(buf, req.topicName());
+        buf.writeInt(req.partitionId());
+        buf.writeInt(req.replicaBrokerId());
+        buf.writeLong(req.fetchOffset());
+        buf.writeInt(req.maxBytes());
+    }
+
+    private static void writeReplicaFetchResponse(ByteBuf buf, ReplicaFetchResponse res) {
+        writeFetchLikeResponse(buf, res.topicName(), res.partitionId(), res.highWatermark(), res.records());
+    }
+
+    private static ReplicaFetchResponse decodeFetchLikeResponse(
+            ByteBuf buf,
+            FetchLikeResponseFactory<ReplicaFetchResponse> factory) {
+        String topic = ByteBufSerde.readString(buf);
+        requireReadable(buf, Integer.BYTES + Long.BYTES, "replica fetch response");
+        int partitionId = buf.readInt();
+        long highWatermark = buf.readLong();
+        int count = readItemCount(buf, "replica fetched records");
+        List<FetchedRecord> records = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            requireReadable(buf, Long.BYTES, "replica fetched record offset");
+            records.add(new FetchedRecord(buf.readLong(), ByteBufSerde.readBytes(buf), ByteBufSerde.readBytes(buf)));
+        }
+        return factory.create(topic, partitionId, highWatermark, records);
+    }
+
+    private static void writeFetchLikeResponse(
+            ByteBuf buf,
+            String topicName,
+            int partitionId,
+            long highWatermark,
+            List<FetchedRecord> records) {
+        ByteBufSerde.writeString(buf, topicName);
+        buf.writeInt(partitionId);
+        buf.writeLong(highWatermark);
+        writeItemCount(buf, records.size(), "replica fetched records");
+        for (FetchedRecord record : records) {
+            buf.writeLong(record.offset());
+            ByteBufSerde.writeBytes(buf, record.key());
+            ByteBufSerde.writeBytes(buf, record.value());
+        }
+    }
+
+    private static List<Integer> readBrokerIdList(ByteBuf buf, String fieldName) {
+        int count = readItemCount(buf, fieldName);
+        List<Integer> brokerIds = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            requireReadable(buf, Integer.BYTES, fieldName);
+            brokerIds.add(buf.readInt());
+        }
+        return brokerIds;
+    }
+
+    private static void writeBrokerIdList(ByteBuf buf, List<Integer> brokerIds, String fieldName) {
+        writeItemCount(buf, brokerIds.size(), fieldName);
+        for (int brokerId : brokerIds) {
+            buf.writeInt(brokerId);
+        }
+    }
+
+    @FunctionalInterface
+    private interface FetchLikeResponseFactory<T> {
+        T create(String topicName, int partitionId, long highWatermark, List<FetchedRecord> records);
     }
 
     private static FetchResponse decodeFetchResponse(ByteBuf buf) {

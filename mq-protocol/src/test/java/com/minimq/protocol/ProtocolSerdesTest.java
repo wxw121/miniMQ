@@ -31,7 +31,7 @@ class ProtocolSerdesTest {
     @Test
     void createTopicRoundTrip() {
         MqRequestHeader header = new MqRequestHeader(ApiKeys.CREATE_TOPIC, 42, "client-1");
-        CreateTopicRequest body = new CreateTopicRequest("orders", 3);
+        CreateTopicRequest body = new CreateTopicRequest("orders", 3, 2);
         var encoded = ProtocolSerdes.encodeRequest(header, body);
         encoded.readShort();
         encoded.readByte();
@@ -41,6 +41,7 @@ class ProtocolSerdesTest {
         var decodedBody = (CreateTopicRequest) ProtocolSerdes.decodeRequestBody(decodedHeader.apiKey(), payload);
         assertEquals("orders", decodedBody.topicName());
         assertEquals(3, decodedBody.numPartitions());
+        assertEquals(2, decodedBody.replicationFactor());
         encoded.release();
         payload.release();
     }
@@ -103,6 +104,8 @@ class ProtocolSerdesTest {
                 new RequestCase(ApiKeys.HEARTBEAT, new HeartbeatRequest("g1", "m1")),
                 new RequestCase(ApiKeys.OFFSET_COMMIT, new OffsetCommitRequest("g1", "orders", 1, 42L)),
                 new RequestCase(ApiKeys.OFFSET_FETCH, new OffsetFetchRequest("g1", "orders", 1)),
+                new RequestCase(ApiKeys.REPLICA_FETCH, new ReplicaFetchRequest("orders", 0, 1, 5L, 4096)),
+                new RequestCase(ApiKeys.MARK_BROKER_OFFLINE, new MarkBrokerOfflineRequest(2)),
                 new RequestCase(ApiKeys.REGISTER_BROKER, new RegisterBrokerRequest(1, "localhost", 9093)));
 
         for (RequestCase requestCase : cases) {
@@ -137,7 +140,10 @@ class ProtocolSerdesTest {
                 new ResponseCase(ApiKeys.HEARTBEAT, new HeartbeatResponse()),
                 new ResponseCase(ApiKeys.OFFSET_COMMIT, new OffsetCommitResponse()),
                 new ResponseCase(ApiKeys.OFFSET_FETCH, new OffsetFetchResponse(42L)),
-                new ResponseCase(ApiKeys.REGISTER_BROKER, new RegisterBrokerResponse()));
+                new ResponseCase(ApiKeys.REGISTER_BROKER, new RegisterBrokerResponse()),
+                new ResponseCase(ApiKeys.REPLICA_FETCH, new ReplicaFetchResponse("orders", 0, 12L,
+                        List.of(new FetchedRecord(11L, bytes("k"), bytes("v"))))),
+                new ResponseCase(ApiKeys.MARK_BROKER_OFFLINE, new MarkBrokerOfflineResponse()));
 
         for (ResponseCase responseCase : cases) {
             var frame = ProtocolSerdes.encodeResponse(new MqResponseHeader(9, ErrorCode.NONE), responseCase.body());
@@ -365,6 +371,12 @@ class ProtocolSerdesTest {
             assertArrayEquals(e.assignment(), ((SyncGroupResponse) actual).assignment());
         } else if (expected instanceof FetchResponse e) {
             FetchResponse a = (FetchResponse) actual;
+            assertEquals(e.topicName(), a.topicName());
+            assertEquals(e.partitionId(), a.partitionId());
+            assertEquals(e.highWatermark(), a.highWatermark());
+            assertFetchedRecordEquals(e.records().get(0), a.records().get(0));
+        } else if (expected instanceof ReplicaFetchResponse e) {
+            ReplicaFetchResponse a = (ReplicaFetchResponse) actual;
             assertEquals(e.topicName(), a.topicName());
             assertEquals(e.partitionId(), a.partitionId());
             assertEquals(e.highWatermark(), a.highWatermark());

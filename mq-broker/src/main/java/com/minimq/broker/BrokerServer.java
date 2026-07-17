@@ -3,6 +3,8 @@ package com.minimq.broker;
 import com.minimq.broker.controller.ClusterController;
 import com.minimq.broker.controller.GroupCoordinator;
 import com.minimq.broker.handler.MqRequestHandler;
+import com.minimq.broker.replication.ReplicaFetcher;
+import com.minimq.broker.replication.ReplicaStateManager;
 import com.minimq.broker.metadata.MetadataStore;
 import com.minimq.protocol.codec.MqDecoder;
 import com.minimq.protocol.codec.MqEncoder;
@@ -35,6 +37,8 @@ public class BrokerServer {
     private EventLoopGroup workerGroup;
     private ChannelFuture channelFuture;
     private PartitionManager partitionManager;
+    private ClusterController clusterController;
+    private ReplicaFetcher replicaFetcher;
 
     public BrokerServer(BrokerConfig config) {
         this.config = config;
@@ -44,10 +48,15 @@ public class BrokerServer {
         return fetchTransferMetrics.snapshot();
     }
 
+    public long localHighWatermark(String topic, int partition) {
+        return partitionManager.highWatermark(topic, partition);
+    }
+
     public void start() throws InterruptedException {
         MetadataStore metadataStore = new MetadataStore(config.dataDir(), config.recoverCorruptMetadata());
-        ClusterController clusterController = new ClusterController(metadataStore);
+        clusterController = new ClusterController(metadataStore);
         GroupCoordinator groupCoordinator = new GroupCoordinator(clusterController);
+        ReplicaStateManager replicaStateManager = new ReplicaStateManager();
         LogManager logManager = new LogManager(
                 config.dataDir(),
                 new LogManagerConfig(
@@ -67,6 +76,7 @@ public class BrokerServer {
                                 config.maintenanceWindowStartHour(),
                                 config.maintenanceWindowEndHour())));
         partitionManager = new PartitionManager(logManager);
+        replicaFetcher = new ReplicaFetcher(config, clusterController, partitionManager);
 
         if (config.controller()) {
             clusterController.registerBroker(new RegisterBrokerRequest(
@@ -90,12 +100,14 @@ public class BrokerServer {
                                         clusterController,
                                         groupCoordinator,
                                         partitionManager,
+                                        replicaStateManager,
                                         fetchTransferMetrics))
                                 .addLast(new MqEncoder());
                     }
                 });
 
         channelFuture = bootstrap.bind(config.host(), config.port()).sync();
+        replicaFetcher.start();
         log.info("Broker {} started on {}:{} controller={}", config.brokerId(), config.host(), config.port(),
                 config.controller());
     }
@@ -109,6 +121,9 @@ public class BrokerServer {
         }
         if (workerGroup != null) {
             workerGroup.shutdownGracefully().sync();
+        }
+        if (replicaFetcher != null) {
+            replicaFetcher.close();
         }
         if (partitionManager != null) {
             partitionManager.close();

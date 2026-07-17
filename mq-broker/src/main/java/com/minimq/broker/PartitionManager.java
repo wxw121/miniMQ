@@ -23,6 +23,14 @@ public class PartitionManager {
         return logManager.append(topic, partitionId, key, value);
     }
 
+    public void replicateAt(String topic, int partitionId, long offset, byte[] key, byte[] value) {
+        logManager.replicateAt(topic, partitionId, offset, key, value);
+    }
+
+    public long highWatermark(String topic, int partitionId) {
+        return logManager.getOrCreate(topic, partitionId).highWatermark();
+    }
+
     public void checkpoint() {
         logManager.checkpoint();
     }

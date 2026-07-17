@@ -6,7 +6,9 @@ import com.minimq.broker.MetadataSync;
 import com.minimq.broker.PartitionManager;
 import com.minimq.broker.controller.ClusterController;
 import com.minimq.broker.controller.GroupCoordinator;
+import com.minimq.broker.replication.ReplicaStateManager;
 import com.minimq.common.error.ErrorCode;
+import com.minimq.common.model.Record;
 import com.minimq.protocol.ApiKeys;
 import com.minimq.protocol.ProtocolSerdes;
 import com.minimq.protocol.message.MqRequestHeader;
@@ -20,6 +22,9 @@ import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Broker 请求处理器，将网络帧解码成业务请求，并按 API 类型路由到存储或控制器。
  */
@@ -29,6 +34,7 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     private final ClusterController clusterController;
     private final GroupCoordinator groupCoordinator;
     private final PartitionManager partitionManager;
+    private final ReplicaStateManager replicaStateManager;
     private final FetchResponseWriter fetchResponseWriter;
 
     public MqRequestHandler(
@@ -36,7 +42,7 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             ClusterController clusterController,
             GroupCoordinator groupCoordinator,
             PartitionManager partitionManager) {
-        this(config, clusterController, groupCoordinator, partitionManager, new FetchTransferMetrics());
+        this(config, clusterController, groupCoordinator, partitionManager, new ReplicaStateManager());
     }
 
     public MqRequestHandler(
@@ -44,11 +50,23 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             ClusterController clusterController,
             GroupCoordinator groupCoordinator,
             PartitionManager partitionManager,
+            ReplicaStateManager replicaStateManager) {
+        this(config, clusterController, groupCoordinator, partitionManager, replicaStateManager,
+                new FetchTransferMetrics());
+    }
+
+    public MqRequestHandler(
+            BrokerConfig config,
+            ClusterController clusterController,
+            GroupCoordinator groupCoordinator,
+            PartitionManager partitionManager,
+            ReplicaStateManager replicaStateManager,
             FetchTransferMetrics fetchTransferMetrics) {
         this.config = config;
         this.clusterController = clusterController;
         this.groupCoordinator = groupCoordinator;
         this.partitionManager = partitionManager;
+        this.replicaStateManager = replicaStateManager;
         this.fetchResponseWriter = new FetchResponseWriter(config, fetchTransferMetrics);
     }
 
@@ -81,6 +99,14 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                         responseBody = new RegisterBrokerResponse();
                     }
                 }
+                case ApiKeys.MARK_BROKER_OFFLINE -> {
+                    ensureController();
+                    errorCode = clusterController.markBrokerOffline(
+                            ((MarkBrokerOfflineRequest) requestBody).brokerId());
+                    if (errorCode == ErrorCode.NONE) {
+                        responseBody = new MarkBrokerOfflineResponse();
+                    }
+                }
                 case ApiKeys.PRODUCE -> {
                     ProduceRequest request = (ProduceRequest) requestBody;
                     errorCode = ensureLeader(request.topicName(), request.partitionId());
@@ -94,10 +120,20 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                     if (errorCode == ErrorCode.NONE) {
                         PartitionLog partitionLog =
                                 partitionManager.getOrCreate(request.topicName(), request.partitionId());
+                        long effectiveHighWatermark = effectiveHighWatermark(
+                                request.topicName(), request.partitionId(), partitionLog);
                         MqResponseHeader fetchHeader =
                                 new MqResponseHeader(header.correlationId(), ErrorCode.NONE);
-                        fetchResponseWriter.write(ctx, fetchHeader, request, partitionLog);
+                        fetchResponseWriter.write(
+                                ctx, fetchHeader, request, partitionLog, effectiveHighWatermark);
                         return;
+                    }
+                }
+                case ApiKeys.REPLICA_FETCH -> {
+                    ReplicaFetchRequest request = (ReplicaFetchRequest) requestBody;
+                    errorCode = handleReplicaFetch(request);
+                    if (errorCode == ErrorCode.NONE) {
+                        responseBody = buildReplicaFetchResponse(request);
                     }
                 }
                 case ApiKeys.JOIN_GROUP -> {
@@ -147,13 +183,71 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         ctx.close();
     }
 
-    // 写入前校验当前 Broker 是否仍为 leader，防止过期元数据把消息写到错误节点。
     private ProduceResponse handleProduce(ProduceRequest request) {
         long baseOffset = -1;
         for (ProduceRecord record : request.records()) {
             baseOffset = partitionManager.append(request.topicName(), request.partitionId(), record.key(), record.value());
         }
+        PartitionLog partitionLog = partitionManager.getOrCreate(request.topicName(), request.partitionId());
+        replicaStateManager.updateReplicaLeo(
+                request.topicName(),
+                request.partitionId(),
+                config.brokerId(),
+                partitionLog.highWatermark());
         return new ProduceResponse(request.topicName(), request.partitionId(), baseOffset);
+    }
+
+    private ErrorCode handleReplicaFetch(ReplicaFetchRequest request) {
+        ErrorCode leaderError = ensureLeader(request.topicName(), request.partitionId());
+        if (leaderError != ErrorCode.NONE) {
+            return leaderError;
+        }
+        if (request.replicaBrokerId() == config.brokerId()) {
+            return ErrorCode.INVALID_REQUEST;
+        }
+        if (!clusterController.isReplica(
+                request.topicName(), request.partitionId(), request.replicaBrokerId())) {
+            return ErrorCode.INVALID_REQUEST;
+        }
+        replicaStateManager.updateReplicaLeo(
+                request.topicName(),
+                request.partitionId(),
+                request.replicaBrokerId(),
+                request.fetchOffset());
+        return ErrorCode.NONE;
+    }
+
+    private ReplicaFetchResponse buildReplicaFetchResponse(ReplicaFetchRequest request) {
+        PartitionLog partitionLog = partitionManager.getOrCreate(request.topicName(), request.partitionId());
+        List<Record> records = partitionLog.read(request.fetchOffset(), request.maxBytes());
+        List<FetchedRecord> fetched = new ArrayList<>(records.size());
+        for (Record record : records) {
+            fetched.add(new FetchedRecord(record.offset(), record.key(), record.value()));
+        }
+        long leaderLogEndOffset = partitionLog.highWatermark();
+        long replicaLogEndOffset = request.fetchOffset() + fetched.size();
+        replicaStateManager.updateReplicaLeo(
+                request.topicName(),
+                request.partitionId(),
+                request.replicaBrokerId(),
+                replicaLogEndOffset);
+        long highWatermark = effectiveHighWatermark(
+                request.topicName(), request.partitionId(), partitionLog);
+        return new ReplicaFetchResponse(
+                request.topicName(),
+                request.partitionId(),
+                highWatermark,
+                fetched);
+    }
+
+    private long effectiveHighWatermark(String topicName, int partitionId, PartitionLog partitionLog) {
+        List<Integer> isrBrokerIds = clusterController.getIsrBrokerIds(topicName, partitionId);
+        return replicaStateManager.replicationHighWatermark(
+                topicName,
+                partitionId,
+                partitionLog.highWatermark(),
+                isrBrokerIds,
+                config.brokerId());
     }
 
     private ErrorCode ensureLeader(String topicName, int partitionId) {
@@ -177,6 +271,19 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             return partitionExists ? ErrorCode.INVALID_REQUEST : ErrorCode.UNKNOWN_PARTITION;
         }
         if (leaderId != config.brokerId()) {
+            if (!config.controller()
+                    && clusterController.isReplica(topicName, partitionId, config.brokerId())) {
+                try {
+                    MetadataSync.registerAndSync(config, clusterController);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return ErrorCode.INVALID_REQUEST;
+                }
+                leaderId = clusterController.getLeaderBrokerId(topicName, partitionId);
+                if (leaderId == config.brokerId()) {
+                    return ErrorCode.NONE;
+                }
+            }
             return ErrorCode.NOT_LEADER;
         }
         return ErrorCode.NONE;

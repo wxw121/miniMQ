@@ -10,6 +10,8 @@ import com.minimq.protocol.message.ProtocolMessages.PartitionMetadata;
 import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
 import com.minimq.protocol.message.ProtocolMessages.TopicMetadata;
 
+import java.util.ArrayList;
+
 /**
  * Broker 本地元数据缓存，接收 Controller 快照并提供线程安全读取入口。
  */
@@ -50,6 +52,8 @@ public final class MetadataSync {
                     PartitionEntry partitionEntry = new PartitionEntry();
                     partitionEntry.partitionId = partition.partitionId();
                     partitionEntry.leaderBrokerId = partition.leaderBrokerId();
+                    partitionEntry.replicaBrokerIds = new ArrayList<>(partition.replicaBrokerIds());
+                    partitionEntry.isrBrokerIds = new ArrayList<>(partition.isrBrokerIds());
                     entry.partitions.add(partitionEntry);
                 }
                 snapshot.topics.put(entry.topicName, entry);

@@ -5,9 +5,9 @@
 
 ## 1. Current State / 当前状态
 
-MiniMQ has released V2.0 storage recovery as `v2.0.0`, tagged V2.1.2 maintenance observability as `v2.1.2-maintenance-observability`, released V2.2 zero-copy FETCH sendfile as `v2.2.0-read-performance` on `2.2.0`, and opened V2.3 replication work on `2.3.0-SNAPSHOT`.
+MiniMQ has released V2.0 storage recovery as `v2.0.0`, tagged V2.1.2 maintenance observability as `v2.1.2-maintenance-observability`, released V2.2 zero-copy FETCH sendfile as `v2.2.0-read-performance` on `2.2.0`, and is implementing V2.3 replication on `2.3.0-SNAPSHOT`.
 
-MiniMQ 已将 V2.0 存储恢复以 `v2.0.0` 发布，已将 V2.1.2 维护可观测性打为 `v2.1.2-maintenance-observability`，已将 V2.2 零拷贝 FETCH sendfile 以 `v2.2.0-read-performance` 发布为 `2.2.0`，并在 `2.3.0-SNAPSHOT` 上开启 V2.3 副本机制开发。
+MiniMQ 已将 V2.0 存储恢复以 `v2.0.0` 发布，已将 V2.1.2 维护可观测性打为 `v2.1.2-maintenance-observability`，已将 V2.2 零拷贝 FETCH sendfile 以 `v2.2.0-read-performance` 发布为 `2.2.0`，并在 `2.3.0-SNAPSHOT` 上实现 V2.3 副本机制。
 
 The most important limitation is that the system is still single-replica and controller-static. This keeps the design compact, but it means broker failures can lose availability and data for affected partitions.
 
@@ -35,6 +35,7 @@ The most important limitation is that the system is still single-replica and con
 | P0 | Implemented: V2.1.1 retention, compaction, and read snapshots. / 已实现：V2.1.1 保留策略、压缩与读快照。 | Sealed segments can now be deleted by time/size policy or compacted by latest key while in-flight reads keep a stable segment view. / sealed segment 现在可以按时间/容量策略删除，也可以按最新 key 压缩，同时进行中的读取保持稳定 segment 视图。 | `RetentionPlannerTest`, `SegmentedPartitionLogRetentionTest`, `SegmentCompactorTest`, `SegmentedPartitionLogCompactionTest`, `SegmentedPartitionLogSnapshotTest`, and `LogManagerMaintenanceTest` cover policy selection, file cleanup, compaction semantics, read-snapshot protection, append-count maintenance, checkpointing, and replay after retained offsets. / 这些测试覆盖策略选择、文件清理、压缩语义、读快照保护、按 append 次数维护、checkpoint 和保留 offset 后的重放。 |
 | P0 | Implemented: V2.1.2 maintenance observability and controls. / 已实现：V2.1.2 维护可观测性与控制项。 | Operators can preview destructive maintenance, inspect counters, bound compaction bytes, use maintenance windows, and trigger maintenance manually. / 运维可以预览破坏性维护、查看计数器、限制压缩字节量、使用维护窗口并手动触发维护。 | `LogManagerMaintenanceTest`, `SegmentedPartitionLogCompactionTest`, and `BrokerConfigTest` cover dry-run reports, metrics, byte throttling, maintenance windows, and CLI parsing. / 这些测试覆盖 dry-run 报告、维护指标、字节限速、维护窗口和 CLI 解析。 |
 | P0 | Implemented: V2.2 zero-copy FETCH sendfile path. / 已实现：V2.2 零拷贝 FETCH sendfile 路径。 | Broker FETCH can transfer segmented-log bytes with Netty `DefaultFileRegion` while preserving heap fallback and reader-lease safety. / Broker FETCH 可用 Netty `DefaultFileRegion` 传输分段日志字节，同时保留 heap 回退和读租约安全。 | `SegmentedPartitionLogFetchPlanTest`, `FetchResponseWriterTest`, `ZeroCopyFetchIntegrationTest`, and `FetchBenchmarkTest` cover planning, writer selection, real TCP, and metrics. / 这些测试覆盖规划、writer 选择、真实 TCP 与指标。 |
+| P0 | Implemented: V2.3 replication foundation. / 已实现：V2.3 副本机制基础。 | Partitions now carry replica and ISR lists, followers pull with `REPLICA_FETCH`, leaders expose replication-aware high watermarks, and the controller can mark brokers offline to elect a new leader. / 分区现在带有 replica 与 ISR 列表，Follower 通过 `REPLICA_FETCH` 拉取，Leader 暴露复制感知的 high watermark，Controller 可标记 Broker 离线并选举新 Leader。 | `ClusterControllerTest`, `ReplicaStateManagerTest`, and `ReplicationIntegrationTest` cover metadata assignment, ISR high watermark math, follower catch-up, leader failover, and `NOT_LEADER` redirects. / 这些测试覆盖元数据分配、ISR high watermark 计算、Follower 追平、Leader 故障转移与 `NOT_LEADER` 重定向。 |
 
 ## 3. Version Roadmap / 版本路线图
 
@@ -258,6 +259,20 @@ Suggested implementation steps / 建议实现步骤：
 3. Add high watermark based on replicated offsets. / 基于副本同步 offset 计算 high watermark。
 4. Add leader election logic within static controller. / 在静态 Controller 中加入 leader 选举逻辑。
 5. Add tests for leader crash, follower promotion, and not-leader redirect behavior. / 增加 leader 崩溃、follower 提升、not-leader 重定向测试。
+
+Implemented scope / 已实现范围：
+
+1. Implemented: `ClusterMetadata` and `METADATA` responses expose `replicaBrokerIds` and `isrBrokerIds`; `CreateTopicRequest` accepts `replicationFactor`. / 已实现：`ClusterMetadata` 与 `METADATA` 响应暴露 `replicaBrokerIds` 与 `isrBrokerIds`；`CreateTopicRequest` 接受 `replicationFactor`。
+2. Implemented: `REPLICA_FETCH` lets follower brokers pull leader log bytes and append them locally without WAL. / 已实现：`REPLICA_FETCH` 让 Follower Broker 从 Leader 拉取日志字节并在本地无 WAL 追加。
+3. Implemented: `ReplicaStateManager` computes replication-aware high watermarks from ISR replica log-end offsets. / 已实现：`ReplicaStateManager` 根据 ISR 副本 log-end offset 计算复制感知的 high watermark。
+4. Implemented: `MARK_BROKER_OFFLINE` removes a broker from ISR and elects the next ISR leader on the static controller. / 已实现：`MARK_BROKER_OFFLINE` 将 Broker 移出 ISR，并在静态 Controller 上选举下一个 ISR Leader。
+5. Verified: `ClusterControllerTest`, `ReplicaStateManagerTest`, and `ReplicationIntegrationTest`. / 已验证：上述测试类。
+
+Out of scope for V2.3 / 本阶段不包含：
+
+1. Automatic broker failure detection or heartbeat leases. / 自动 Broker 故障检测或心跳 lease。
+2. Producer acknowledgement policies beyond replication-aware high watermarks. / 除复制感知 high watermark 之外的 Producer 确认策略。
+3. Replica fetch zero-copy or TLS transport. / 副本拉取零拷贝或 TLS 传输。
 
 ### 3.7 V3.0 Control Plane HA And Service Discovery / V3.0 控制面高可用与服务发现
 
