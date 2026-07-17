@@ -22,6 +22,8 @@ class DemoCliTest {
 
         assertTrue(noArgs.contains("Usage:"));
         assertTrue(unknown.contains("Usage:"));
+        assertTrue(noArgs.contains("benchmark-fetch"));
+        assertTrue(unknown.contains("benchmark-fetch"));
     }
 
     @Test
