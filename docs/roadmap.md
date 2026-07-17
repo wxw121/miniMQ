@@ -5,9 +5,9 @@
 
 ## 1. Current State / 当前状态
 
-MiniMQ has released V2.0 storage recovery as `v2.0.0`, tagged V2.1.2 maintenance observability as `v2.1.2-maintenance-observability`, and opened V2.2 zero-copy read performance on `2.2.0-SNAPSHOT`. V2.2 builds an end-to-end Broker FETCH sendfile path on the stable segmented-log, sparse-index, retention, and compaction foundation.
+MiniMQ has released V2.0 storage recovery as `v2.0.0`, tagged V2.1.2 maintenance observability as `v2.1.2-maintenance-observability`, and implemented V2.2 zero-copy FETCH sendfile on `2.2.0-SNAPSHOT`. V2.2 adds storage fetch plans, FETCH prefix encoding, Broker AUTO/HEAP transfer selection, transfer metrics, and an opt-in `benchmark-fetch` command.
 
-MiniMQ 已将 V2.0 存储恢复以 `v2.0.0` 发布，已将 V2.1.2 维护可观测性打为 `v2.1.2-maintenance-observability`，并在 `2.2.0-SNAPSHOT` 上开启 V2.2 零拷贝读取性能。V2.2 将在稳定的分段日志、稀疏索引、保留策略和压缩基础上实现端到端 Broker FETCH sendfile 路径。
+MiniMQ 已将 V2.0 存储恢复以 `v2.0.0` 发布，已将 V2.1.2 维护可观测性打为 `v2.1.2-maintenance-observability`，并在 `2.2.0-SNAPSHOT` 上实现 V2.2 零拷贝 FETCH sendfile。V2.2 增加存储层 FETCH 计划、FETCH 前缀编码、Broker AUTO/HEAP 传输选择、传输指标和可选 `benchmark-fetch` 命令。
 
 The most important limitation is that the system is still single-replica and controller-static. This keeps the design compact, but it means broker failures can lose availability and data for affected partitions.
 
@@ -34,6 +34,7 @@ The most important limitation is that the system is still single-replica and con
 | P0 | Implemented: V2.1.0 segmented log and sparse index. / 已实现：V2.1.0 分段日志与稀疏索引。 | Partition data now lives under `segments/{topic}-{partition}` with cataloged segment files and sparse offset indexes; old single files migrate on startup. / 分区数据现在位于 `segments/{topic}-{partition}`，包含 catalog 管理的 segment 文件和稀疏 offset 索引；旧单文件在启动时迁移。 | `SegmentedPartitionLogTest`, `SegmentFileTest`, `SparseOffsetIndexTest`, `SegmentCatalogStoreTest`, and `LogManagerSegmentRecoveryTest` cover rolling, reads, index rebuild, migration, staging cleanup, and corrupt recovery boundaries. / 这些测试覆盖滚动、读取、索引重建、迁移、staging 清理和损坏恢复边界。 |
 | P0 | Implemented: V2.1.1 retention, compaction, and read snapshots. / 已实现：V2.1.1 保留策略、压缩与读快照。 | Sealed segments can now be deleted by time/size policy or compacted by latest key while in-flight reads keep a stable segment view. / sealed segment 现在可以按时间/容量策略删除，也可以按最新 key 压缩，同时进行中的读取保持稳定 segment 视图。 | `RetentionPlannerTest`, `SegmentedPartitionLogRetentionTest`, `SegmentCompactorTest`, `SegmentedPartitionLogCompactionTest`, `SegmentedPartitionLogSnapshotTest`, and `LogManagerMaintenanceTest` cover policy selection, file cleanup, compaction semantics, read-snapshot protection, append-count maintenance, checkpointing, and replay after retained offsets. / 这些测试覆盖策略选择、文件清理、压缩语义、读快照保护、按 append 次数维护、checkpoint 和保留 offset 后的重放。 |
 | P0 | Implemented: V2.1.2 maintenance observability and controls. / 已实现：V2.1.2 维护可观测性与控制项。 | Operators can preview destructive maintenance, inspect counters, bound compaction bytes, use maintenance windows, and trigger maintenance manually. / 运维可以预览破坏性维护、查看计数器、限制压缩字节量、使用维护窗口并手动触发维护。 | `LogManagerMaintenanceTest`, `SegmentedPartitionLogCompactionTest`, and `BrokerConfigTest` cover dry-run reports, metrics, byte throttling, maintenance windows, and CLI parsing. / 这些测试覆盖 dry-run 报告、维护指标、字节限速、维护窗口和 CLI 解析。 |
+| P0 | Implemented: V2.2 zero-copy FETCH sendfile path. / 已实现：V2.2 零拷贝 FETCH sendfile 路径。 | Broker FETCH can transfer segmented-log bytes with Netty `DefaultFileRegion` while preserving heap fallback and reader-lease safety. / Broker FETCH 可用 Netty `DefaultFileRegion` 传输分段日志字节，同时保留 heap 回退和读租约安全。 | `SegmentedPartitionLogFetchPlanTest`, `FetchResponseWriterTest`, `ZeroCopyFetchIntegrationTest`, and `FetchBenchmarkTest` cover planning, writer selection, real TCP, and metrics. / 这些测试覆盖规划、writer 选择、真实 TCP 与指标。 |
 
 ## 3. Version Roadmap / 版本路线图
 
@@ -216,16 +217,23 @@ Retention 根据时间或大小删除旧数据。Compaction 保留每个 key 的
 
 ### 3.5 V2.2 Zero-Copy Read Performance / V2.2 零拷贝读取性能
 
-V2.2 should optimize reads only after segment and index formats are stable. Start with one path, measure it, and keep the existing heap-buffer path as a fallback.
+V2.2 implemented an end-to-end Broker FETCH sendfile path on the stable segmented-log, sparse-index, retention, and compaction foundation. The heap ByteBuf path remains the compatibility fallback.
 
-V2.2 应在 segment 与 index 格式稳定后再优化读取性能。建议先实现一种路径、可观测地验证收益，并保留现有堆内 buffer 路径作为回退。
+V2.2 已在稳定的分段日志、稀疏索引、保留策略和压缩基础上实现端到端 Broker FETCH sendfile 路径，并保留堆内 ByteBuf 作为兼容回退。
 
-Suggested order / 建议顺序：
+Implemented scope / 已实现范围：
 
-1. Add benchmark or integration timing for large fetch responses. / 为大批量拉取增加基准或集成耗时测试。
-2. Choose either `mmap` for indexed local reads or `FileChannel.transferTo` / sendfile for socket writes. / 先在 `mmap` 索引本地读取与 `FileChannel.transferTo` / sendfile socket 写入中二选一。
-3. Keep OS and JDK compatibility fallback to the current ByteBuf path. / 保留对操作系统与 JDK 兼容的当前 ByteBuf 回退路径。
-4. Document when zero-copy is enabled and when it is bypassed. / 记录零拷贝启用和绕过条件。
+1. Implemented: `PartitionLogRecordCodec.scan` and `FileRegionSlice` plan contiguous transferable ranges without materializing payloads. / 已实现：`PartitionLogRecordCodec.scan` 与 `FileRegionSlice` 在不实例化 payload 的前提下规划可传输区间。
+2. Implemented: `SegmentedPartitionLog.planFetch` uses sparse-index floors, metadata scanning, high-watermark snapshots, and reader leases. / 已实现：`SegmentedPartitionLog.planFetch` 使用稀疏索引定位、元数据扫描、high watermark 快照和读租约。
+3. Implemented: `ProtocolSerdes.encodeFetchResponsePrefix` accounts for trailing file-region bytes in the frame length. / 已实现：`ProtocolSerdes.encodeFetchResponsePrefix` 在帧长度中计入后续 file-region 字节。
+4. Implemented: `FetchResponseWriter` selects `AUTO`/`HEAP`, emits Netty `DefaultFileRegion` objects, times out stalled transfers, and records path metrics. / 已实现：`FetchResponseWriter` 选择 `AUTO`/`HEAP`，写出 Netty `DefaultFileRegion`，超时关闭停滞传输，并记录路径指标。
+5. Verified: `SegmentedPartitionLogFetchPlanTest`, `FetchResponseWriterTest`, `ZeroCopyFetchIntegrationTest`, `FetchBenchmarkTest`, and `docs/test-report-2026-07-17-v2.2-read-performance.md`. / 已验证：上述测试类与 V2.2 测试报告。
+
+Out of scope for V2.2 / 本阶段不包含：
+
+1. mmap indexed local reads. / mmap 索引本地读取。
+2. TLS zero-copy, Epoll, replication, and service discovery. / TLS 零拷贝、Epoll、副本与服务发现。
+3. Persistent metrics or a new admin protocol. / 持久化指标或新的管理协议。
 
 ### 3.6 V2.3 Replication / V2.3 副本机制
 
@@ -358,8 +366,8 @@ For a new agent session, the most productive next tasks are:
 对新 agent 会话，最建议继续做：
 
 1. Add an operator-facing maintenance API or CLI command that renders `LogMaintenanceReport` and `LogMaintenanceMetrics`. / 增加面向运维的维护 API 或 CLI 命令，用来输出 `LogMaintenanceReport` 和 `LogMaintenanceMetrics`。
-2. Decide whether V2.1.2 should be tagged as a milestone before moving to V2.2 read-performance work. / 在进入 V2.2 读取性能前，决定是否把 V2.1.2 打为里程碑 tag。
-3. Keep replicas, service discovery, circuit breaker, Epoll, and zero-copy in later productionization versions. / 副本、服务发现、熔断、Epoll 与零拷贝继续放在后续生产化版本。
+2. Decide whether V2.2 should be tagged as a milestone before moving to V2.3 replication work. / 在进入 V2.3 副本机制前，决定是否把 V2.2 打为里程碑 tag。
+3. Keep replicas, service discovery, circuit breaker, Epoll, and mmap in later productionization versions. / 副本、服务发现、熔断、Epoll 与 mmap 继续放在后续生产化版本。
 
 ## 6. Risk Register / 风险登记表
 

@@ -36,11 +36,12 @@ The current implementation focuses on a single-leader partition model. Broker 0 
 | Network framework / 网络框架 | Netty 4.1 |
 | Serialization / 序列化 | Custom binary protocol over Netty `ByteBuf` / 基于 Netty `ByteBuf` 的自定义二进制协议 |
 | Metadata persistence / 元数据持久化 | JSON via Jackson / 通过 Jackson 写入 JSON |
-| Storage / 存储 | WAL-backed segmented log with retention, compaction, dry-run reports, and maintenance metrics / 基于 WAL 的分段日志，支持保留策略、压缩、dry-run 报告和维护指标 |
+| Storage / 存储 | WAL-backed segmented log with retention, compaction, dry-run reports, maintenance metrics, and zero-copy FETCH sendfile / 基于 WAL 的分段日志，支持保留策略、压缩、dry-run 报告、维护指标和零拷贝 FETCH sendfile |
 | Tests / 测试 | JUnit 5 + Surefire |
 | Coverage / 覆盖率 | JaCoCo |
-| Latest milestone tag / 最新里程碑标签 | `v2.1.1-retention-compaction` |
+| Latest milestone tag / 最新里程碑标签 | `v2.1.2-maintenance-observability` |
 | Active development line / 当前开发主线 | V2.2 zero-copy read performance / V2.2 零拷贝读取性能 |
+| Latest evidence / 最新证据 | [V2.2 read performance test report](test-report-2026-07-17-v2.2-read-performance.md) / [V2.2 读取性能测试报告](test-report-2026-07-17-v2.2-read-performance.md) |
 
 ## 4. Module Map / 模块地图
 
@@ -104,6 +105,12 @@ Create, produce, and consume / 创建 Topic、生产消息、消费消息：
 java -jar mq-demo/target/mq-demo-2.2.0-SNAPSHOT.jar create-topic --brokers localhost:9092 --name orders --partitions 3
 java -jar mq-demo/target/mq-demo-2.2.0-SNAPSHOT.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
 java -jar mq-demo/target/mq-demo-2.2.0-SNAPSHOT.jar consume --brokers localhost:9092 --topic orders --group order-processors
+```
+
+Benchmark FETCH heap versus sendfile / 对比 HEAP 与 sendfile 的 FETCH 基准：
+
+```powershell
+java -jar mq-demo/target/mq-demo-2.2.0-SNAPSHOT.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
 ```
 
 ## 6. Glossary / 专业名词解释

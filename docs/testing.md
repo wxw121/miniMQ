@@ -58,33 +58,33 @@ Latest result / 最近结果：
 
 | Metric / 指标 | Value / 数值 |
 | --- | ---: |
-| Tests run / 测试总数 | 203 |
+| Tests run / 测试总数 | 232 |
 | Failures / 失败数 | 0 |
 | Errors / 错误数 | 0 |
 | Skipped / 跳过数 | 0 |
-| Overall line coverage / 总体行覆盖率 | 91.66% |
-| Overall instruction coverage / 总体指令覆盖率 | 92.60% |
-| Overall branch coverage / 总体分支覆盖率 | 80.87% |
-| Overall method coverage / 总体方法覆盖率 | 96.95% |
+| Overall line coverage / 总体行覆盖率 | 91.33% |
+| Overall instruction coverage / 总体指令覆盖率 | 92.54% |
+| Overall branch coverage / 总体分支覆盖率 | 80.23% |
+| Overall method coverage / 总体方法覆盖率 | 96.76% |
 | Overall class coverage / 总体类覆盖率 | 100.00% |
 
 ## 5. Coverage By Module / 模块覆盖率
 
 | Module / 模块 | Instruction / 指令 | Branch / 分支 | Line / 行 | Method / 方法 | Class / 类 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `mq-broker` | 94.31% | 78.21% | 92.38% | 94.59% | 100.00% |
-| `mq-client` | 92.26% | 76.52% | 90.06% | 92.68% | 100.00% |
+| `mq-broker` | 94.20% | 78.72% | 92.10% | 95.59% | 100.00% |
+| `mq-client` | 92.27% | 76.52% | 90.00% | 92.68% | 100.00% |
 | `mq-common` | 96.84% | 84.38% | 97.84% | 100.00% | 100.00% |
-| `mq-demo` | 95.06% | 74.56% | 92.14% | 95.16% | 100.00% |
-| `mq-protocol` | 92.55% | 79.53% | 91.88% | 100.00% | 100.00% |
-| `mq-storage` | 91.11% | 83.42% | 91.09% | 98.61% | 100.00% |
+| `mq-demo` | 95.64% | 75.50% | 93.14% | 96.15% | 100.00% |
+| `mq-protocol` | 92.51% | 78.83% | 91.71% | 100.00% | 100.00% |
+| `mq-storage` | 90.63% | 82.11% | 90.26% | 97.68% | 100.00% |
 
 ```mermaid
 xychart-beta
     title "Line Coverage By Module / 模块行覆盖率"
     x-axis ["broker/代理", "client/客户端", "common/公共", "demo/演示", "protocol/协议", "storage/存储"]
     y-axis "Line % / 行覆盖率 %" 0 --> 100
-    bar [92.38, 90.06, 97.84, 92.14, 91.88, 91.09]
+    bar [92.10, 90.00, 97.84, 93.14, 91.71, 90.26]
 ```
 
 ```mermaid
@@ -92,7 +92,7 @@ xychart-beta
     title "Overall Coverage / 总体覆盖率"
     x-axis ["Instruction/指令", "Branch/分支", "Line/行", "Method/方法", "Class/类"]
     y-axis "Coverage % / 覆盖率 %" 0 --> 100
-    bar [92.60, 80.87, 91.65, 96.95, 100.00]
+    bar [92.54, 80.23, 91.33, 96.76, 100.00]
 ```
 
 
@@ -136,7 +136,7 @@ The numeric baseline above and the closeout report are the source of truth for t
 | `mq-storage` | `FlushPolicyTest` | Unit / 单元测试 | Flush policy decisions and invalid storage config. / 刷盘策略判断与非法存储配置。 |
 | `mq-storage` | `LogManagerFlushPolicyTest` | Unit / 单元测试 | Append-count checkpoint cadence, explicit checkpoint refresh, concurrent append offsets, and close behavior. / 按 append 次数触发 checkpoint、显式 checkpoint 刷新、并发 append offset 与关闭行为。 |
 | `mq-storage` | `SegmentedLogConfigTest` | Unit / 单元测试 | Segment size and sparse-index interval validation. / Segment 大小与稀疏索引间隔校验。 |
-| `mq-storage` | `PartitionLogRecordCodecTest` | Unit / 单元测试 | Shared partition-record framing, invalid offsets, invalid lengths, and incomplete payloads. / 共享分区记录帧格式、非法 offset、非法长度与不完整 payload。 |
+| `mq-storage` | `PartitionLogRecordCodecTest` | Unit / 单元测试 | Shared partition-record framing, metadata-only scanning, invalid offsets/lengths, incomplete payloads, and `FileRegionSlice` validation. / 共享分区记录帧格式、仅元数据扫描、非法 offset/长度、不完整 payload 与 `FileRegionSlice` 校验。 |
 | `mq-storage` | `SparseOffsetIndexTest` | Unit / 单元测试 | Sparse index lookup, reload, replacement, invalid entries, closed behavior, and corrupt index rejection. / 稀疏索引查找、重载、替换、非法条目、关闭行为与损坏索引拒绝。 |
 | `mq-storage` | `SegmentCatalogStoreTest` | Unit / 单元测试 | Segment catalog safe write/load, missing/corrupt catalog handling, and descriptor validation. / Segment catalog 安全写入/加载、缺失/损坏 catalog 处理和 descriptor 校验。 |
 | `mq-storage` | `SegmentFileTest` | Unit / 单元测试 | Segment file append/read budgets, corrupt index rebuild, missing logs, non-monotonic offsets, and closed behavior. / Segment 文件追加、读取预算、损坏索引重建、缺失日志、非单调 offset 与关闭行为。 |
@@ -149,20 +149,25 @@ The numeric baseline above and the closeout report are the source of truth for t
 | `mq-storage` | `SegmentedPartitionLogCompactionTest` | Unit / 单元测试 | Sealed-only compaction, atomic catalog publication, interrupted replacement recovery, cleaned-file cleanup, and offset-hole reads. / 仅对 sealed segment 压缩、原子 catalog 发布、中断替换恢复、cleaned 文件清理和 offset 空洞读取。 |
 | `mq-storage` | `SegmentedPartitionLogSnapshotTest` | Unit / 单元测试 | Concurrent read safety, reader-aware maintenance skips, retry after readers drain, and startup cleanup for interrupted maintenance files. / 并发读取安全、reader 感知维护跳过、reader 退出后的重试，以及中断维护文件的启动清理。 |
 | `mq-storage` | `LogManagerMaintenanceTest` | Unit / 单元测试 | Accurate dry-run ordering, action/byte/offset reports, metrics, reader skips, UTC windows, manual execution, checkpointing, and WAL replay after retention or compaction holes. / 精确 dry-run 顺序、动作/字节/offset 报告、指标、reader 跳过、UTC 窗口、手动执行、checkpoint，以及 retention 或 compaction 空洞后的 WAL replay。 |
-| `mq-protocol` | `ProtocolSerdesTest` | Unit / 单元测试 | Request/response round trips, malformed collection counts, frame limits, encoder. / 请求/响应往返、畸形集合 count、帧限制和编码器。 |
-| `mq-broker` | `BrokerConfigTest` | Unit / 单元测试 | Broker argument parsing and validation, including flush/checkpoint, segment, retention, compaction, and maintenance options. / Broker 参数解析与校验，包括刷盘、checkpoint、segment、保留策略、压缩和维护选项。 |
+| `mq-storage` | `SegmentedPartitionLogFetchPlanTest` | Unit / 单元测试 | Cross-segment fetch plans, high-watermark snapshots, reader-lease retention deferral, compaction holes, and exact byte budgets. / 跨 segment FETCH 计划、high watermark 快照、读租约推迟 retention、compaction 空洞和精确字节预算。 |
+| `mq-protocol` | `ProtocolSerdesTest` | Unit / 单元测试 | Request/response round trips, FETCH prefix equivalence, malformed collection counts, frame limits, encoder. / 请求/响应往返、FETCH 前缀等价、畸形集合 count、帧限制和编码器。 |
+| `mq-broker` | `BrokerConfigTest` | Unit / 单元测试 | Broker argument parsing and validation, including flush/checkpoint, segment, retention, compaction, maintenance, and fetch-transfer options. / Broker 参数解析与校验，包括刷盘、checkpoint、segment、保留策略、压缩、维护和 FETCH 传输选项。 |
+| `mq-broker` | `FetchTransferMetricsTest` | Unit / 单元测试 | Sendfile/heap/fallback/failure/timeout counters and immutable snapshots. / sendfile/heap/回退/失败/超时计数与不可变快照。 |
 | `mq-broker` | `MetadataStoreTest` | Unit / 单元测试 | Metadata safe writes, load validation, corrupt-file failure, and quarantine recovery. / 元数据安全写入、加载校验、损坏文件失败与隔离恢复。 |
 | `mq-broker` | `ClusterControllerTest` | Unit / 单元测试 | Topic creation, metadata, snapshot isolation. / Topic 创建、元数据、快照隔离。 |
 | `mq-broker` | `GroupCoordinatorTest` | Unit / 单元测试 | Join/sync assignment, heartbeat, offset commit/fetch. / 加组、同步分配、心跳、offset 提交/拉取。 |
 | `mq-broker` | `EmbeddedBrokerChannelTest` | Component / 组件测试 | Handler behavior through Netty `EmbeddedChannel`. / 通过 Netty `EmbeddedChannel` 验证 handler 行为。 |
+| `mq-broker` | `FetchResponseWriterTest` | Component / 组件测试 | AUTO/HEAP selection, DefaultFileRegion outbound messages, unsupported fallbacks, and transfer-timeout lease release. / AUTO/HEAP 选择、DefaultFileRegion 出站消息、不支持回退，以及传输超时释放读租约。 |
 | `mq-broker` | `ProduceFetchIntegrationTest` | Integration / 集成测试 | Real broker produce/fetch and not-leader behavior. / 真实 Broker 生产、拉取与非 leader 行为。 |
+| `mq-broker` | `ZeroCopyFetchIntegrationTest` | Integration / 集成测试 | Real loopback TCP AUTO sendfile FETCH, HEAP equivalence, and transfer metrics. / 真实回环 TCP AUTO sendfile FETCH、HEAP 等价与传输指标。 |
 | `mq-broker` | `TcpSmokeTest` | Smoke / 冒烟测试 | Basic TCP request/response without noisy stdout. / 无冗余 stdout 的基础 TCP 请求/响应。 |
 | `mq-broker` | `BrokerShutdownTest` | Integration / 集成测试 | Broker stop/start resource cleanup on the same port. / Broker 在同一端口停止、重启与资源释放。 |
 | `mq-client` | `ClientValidationTest` | Unit / 单元测试 | Bootstrap validation and unconnected close. / bootstrap 校验与未连接关闭。 |
 | `mq-client` | `NetworkClientRetryTest` | Unit / 单元测试 | Connect retry attempt budget and fixed backoff validation. / 连接重试次数预算与固定退避参数校验。 |
 | `mq-client` | `ProducerIntegrationTest` | Integration / 集成测试 | Producer offsets increase across sends. / Producer 多次发送后 offset 递增。 |
 | `mq-client` | `ConsumerIntegrationTest` | Integration / 集成测试 | Consumer poll and commit behavior. / Consumer poll 与提交行为。 |
-| `mq-demo` | `DemoCliTest` | Component/Integration / 组件/集成测试 | CLI validation and create/produce/consume path. / CLI 校验与创建/生产/消费链路。 |
+| `mq-demo` | `DemoCliTest` | Component/Integration / 组件/集成测试 | CLI validation, benchmark-fetch usage text, and create/produce/consume path. / CLI 校验、benchmark-fetch 用法文本与创建/生产/消费链路。 |
+| `mq-demo` | `FetchBenchmarkTest` | Unit / 单元测试 | Benchmark argument parsing and latency percentile summarization. / 基准参数解析与延迟百分位汇总。 |
 | `mq-demo` | `MiniMqE2ETest` | E2E / 端到端测试 | Three-broker cluster with two consumers. / 三节点 Broker 集群与两个 Consumer。 |
 | `mq-demo` | `MiniMqWebAppTest` | Web integration / Web 集成测试 | Static assets, real Web flow, mock fallback, HTTP errors, runtime reuse, concurrent request isolation, stale runtime rebuild, and LRU runtime eviction. / 静态资源、真实 Web 主流程、mock fallback、HTTP 错误、runtime 复用、并发请求隔离、旧 runtime 重建和 LRU runtime 淘汰。 |
 
@@ -181,7 +186,18 @@ V2.1.0 分段日志收口记录见 `docs/test-report-2026-07-15-v2.1.0-segmented
 The V2.1.1 retention and compaction closeout is recorded in `docs/test-report-2026-07-15-v2.1.1-retention-compaction.md`.
 V2.1.1 保留策略与压缩收口记录见 `docs/test-report-2026-07-15-v2.1.1-retention-compaction.md`。
 
-### 7.4 Web Runtime Regression Coverage / Web Runtime 回归覆盖
+### 7.4 V2.2 Read Performance Closeout / V2.2 读取性能收口
+
+The V2.2 zero-copy FETCH closeout is recorded in `docs/test-report-2026-07-17-v2.2-read-performance.md`.
+V2.2 零拷贝 FETCH 收口记录见 `docs/test-report-2026-07-17-v2.2-read-performance.md`。
+
+Benchmark command / 基准命令：
+
+```powershell
+java -jar mq-demo/target/mq-demo-2.2.0-SNAPSHOT.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
+```
+
+### 7.5 Web Runtime Regression Coverage / Web Runtime 回归覆盖
 
 The Web backend has dedicated regression tests for the three runtime risks fixed in the current version.
 

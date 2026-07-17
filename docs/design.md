@@ -431,7 +431,35 @@ Malformed request bodies are handled inside `MqRequestHandler` so that, when the
 
 畸形请求 body 会在 `MqRequestHandler` 内部处理；只要 header 能成功解析，Broker 会带着原始 `correlationId` 返回 `INVALID_REQUEST`。
 
-## 10. Design Tradeoffs / 设计取舍
+## 10. V2.2 Zero-Copy FETCH / V2.2 零拷贝 FETCH
+
+V2.2 keeps the wire protocol at version 1 and adds an optional sendfile path for successful FETCH responses:
+
+V2.2 保持线协议版本为 1，并为成功的 FETCH 响应增加可选 sendfile 路径：
+
+- segmented logs expose stable `FetchPlan` file slices;
+- sparse indexes choose the floor position;
+- the Broker emits a prefix followed by `DefaultFileRegion` objects;
+- plans hold reader leases through asynchronous writes;
+- retention/compaction return `SKIPPED_READERS` while a transfer is active;
+- `AUTO` falls back before write for `HEAP` mode, unsupported logs/pipelines, or TLS;
+- failures after prefix queueing close the channel;
+- transfer timeout defaults to 30 seconds.
+
+- 分段日志暴露稳定的 `FetchPlan` 文件区间；
+- 稀疏索引选择 floor 位置；
+- Broker 先写前缀，再写 `DefaultFileRegion`；
+- 计划在异步写期间持有读租约；
+- 传输进行中 retention/compaction 返回 `SKIPPED_READERS`；
+- `AUTO` 仅在写前对 `HEAP`、不支持的日志/pipeline 或 TLS 回退；
+- 前缀入队后的失败会关闭 channel；
+- 传输超时默认 30 秒。
+
+CLI flags: `--fetch-transfer-mode=auto|heap` and `--fetch-transfer-timeout-ms`.
+
+CLI 参数：`--fetch-transfer-mode=auto|heap` 与 `--fetch-transfer-timeout-ms`。
+
+## 11. Design Tradeoffs / 设计取舍
 
 | Decision / 决策 | Benefit / 收益 | Cost / 代价 |
 | --- | --- | --- |
@@ -440,8 +468,9 @@ Malformed request bodies are handled inside `MqRequestHandler` so that, when the
 | JSON metadata store / JSON 元数据存储 | Human-readable and easy for demos. / 人类可读，适合演示。 | Not a scalable metadata log. / 不是可扩展的元数据日志。 |
 | Static controller role / 静态 Controller 角色 | Simple bootstrapping. / 启动流程简单。 | No controller high availability. / 没有 Controller 高可用。 |
 | Synchronous client API / 同步客户端 API | Easy to use and test. / 易用且易测。 | Lower throughput than async batching. / 吞吐低于异步批量方案。 |
+| Sendfile FETCH path / sendfile FETCH 路径 | Removes payload copies on the Broker network write path. / 去掉 Broker 网络写路径上的 payload 复制。 | TLS and unsupported pipelines still use heap fallback. / TLS 与不支持的 pipeline 仍走 heap 回退。 |
 
-## 11. Professional Terms / 专业名词解释
+## 12. Professional Terms / 专业名词解释
 
 | Term / 术语 | 中文解释 | English explanation / 英文解释 |
 | --- | --- | --- |
@@ -453,3 +482,5 @@ Malformed request bodies are handled inside `MqRequestHandler` so that, when the
 | Rebalance | 消费组成员变化时重新分配分区。 | Reassigning partitions when group membership changes. |
 | Retention | 根据时间或大小删除旧日志。 | Deleting old log data by time or size. |
 | Compaction | 保留每个 key 最新值的日志压缩策略。 | Keeping the latest value per key in a log. |
+| Zero-copy / sendfile | 尽量避免用户态拷贝，把文件字节直接发到 socket。 | Avoiding userspace copies by transferring file bytes directly to a socket. |
+| File region | 一段可零拷贝发送的文件区间描述。 | A transferable description of a contiguous file byte range. |

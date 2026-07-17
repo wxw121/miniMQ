@@ -109,4 +109,16 @@ class PartitionLogRecordCodecTest {
         assertThrows(IllegalArgumentException.class, () -> new FileRegionSlice(path, 0, 0));
         assertThrows(NullPointerException.class, () -> new FileRegionSlice(null, 0, 1));
     }
+
+    @Test
+    void scannerRejectsInvalidPositionsAndNegativeOffsets(@TempDir Path dir) throws Exception {
+        Path path = dir.resolve("bad-offset.log");
+        try (FileChannel channel = FileChannel.open(path, CREATE, READ, WRITE)) {
+            channel.write(ByteBuffer.allocate(Long.BYTES).putLong(-3).flip());
+            long fileSize = channel.size();
+            assertThrows(IOException.class, () -> PartitionLogRecordCodec.scan(channel, 0, fileSize));
+            assertThrows(IOException.class, () -> PartitionLogRecordCodec.scan(channel, -1, fileSize));
+            assertThrows(IOException.class, () -> PartitionLogRecordCodec.scan(channel, fileSize + 1, fileSize));
+        }
+    }
 }

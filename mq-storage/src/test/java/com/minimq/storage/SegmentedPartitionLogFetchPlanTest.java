@@ -11,6 +11,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SegmentedPartitionLogFetchPlanTest {
@@ -117,6 +118,38 @@ class SegmentedPartitionLogFetchPlanTest {
                     .map(com.minimq.common.model.Record::offset).toList();
             try (FetchPlan retainedPlan = log.planFetch(0, 1_024)) {
                 assertEquals(retainedHeap, decodeOffsets(retainedPlan));
+            }
+        }
+    }
+
+    @Test
+    void fetchPlanRejectsNegativeConstructorValues() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new FetchPlan(-1, 0, 0, List.of(), () -> { }));
+        assertThrows(IllegalArgumentException.class,
+                () -> new FetchPlan(0, -1, 0, List.of(), () -> { }));
+        assertThrows(IllegalArgumentException.class,
+                () -> new FetchPlan(0, 0, -1, List.of(), () -> { }));
+    }
+
+    @Test
+    void planFetchOnClosedLogFailsAndReleasesLease(@TempDir Path dir) throws Exception {
+        SegmentedPartitionLog log = new SegmentedPartitionLog(dir, new SegmentedLogConfig(1_024, 1));
+        log.append("k".getBytes(), "v".getBytes());
+        log.close();
+        assertThrows(IllegalStateException.class, () -> log.planFetch(0, 1_024));
+    }
+
+    @Test
+    void planSkipsOffsetsBeyondCapturedHighWatermarkAndPastSegmentEnd(@TempDir Path dir) throws Exception {
+        try (SegmentedPartitionLog log = new SegmentedPartitionLog(dir, new SegmentedLogConfig(1_024, 1))) {
+            log.append("k0".getBytes(), "v0".getBytes());
+            try (FetchPlan pastEnd = log.planFetch(10, 1_024);
+                 FetchPlan atHw = log.planFetch(1, 1_024)) {
+                assertEquals(0, pastEnd.recordCount());
+                assertTrue(pastEnd.slices().isEmpty());
+                assertEquals(0, atHw.recordCount());
+                assertTrue(atHw.slices().isEmpty());
             }
         }
     }
