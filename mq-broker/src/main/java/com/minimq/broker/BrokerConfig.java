@@ -28,10 +28,14 @@ public record BrokerConfig(
         long compactionMaxBytes,
         int maintenanceWindowStartHour,
         int maintenanceWindowEndHour,
-        int maintenanceEveryNAppends) {
+        int maintenanceEveryNAppends,
+        FetchTransferMode fetchTransferMode,
+        long fetchTransferTimeoutMs) {
 
     public static final int DEFAULT_COMPACTION_MAX_SEGMENTS = 4;
     public static final int MAINTENANCE_WINDOW_DISABLED = -1;
+    public static final FetchTransferMode DEFAULT_FETCH_TRANSFER_MODE = FetchTransferMode.AUTO;
+    public static final long DEFAULT_FETCH_TRANSFER_TIMEOUT_MS = 30_000;
 
     public BrokerConfig(
             int brokerId,
@@ -62,7 +66,9 @@ public record BrokerConfig(
                 0,
                 MAINTENANCE_WINDOW_DISABLED,
                 MAINTENANCE_WINDOW_DISABLED,
-                0);
+                0,
+                DEFAULT_FETCH_TRANSFER_MODE,
+                DEFAULT_FETCH_TRANSFER_TIMEOUT_MS);
     }
 
     public static BrokerConfig parse(String[] args) {
@@ -88,6 +94,8 @@ public record BrokerConfig(
         int maintenanceWindowStartHour = MAINTENANCE_WINDOW_DISABLED;
         int maintenanceWindowEndHour = MAINTENANCE_WINDOW_DISABLED;
         int maintenanceEveryNAppends = 0;
+        FetchTransferMode fetchTransferMode = DEFAULT_FETCH_TRANSFER_MODE;
+        long fetchTransferTimeoutMs = DEFAULT_FETCH_TRANSFER_TIMEOUT_MS;
 
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
@@ -133,6 +141,12 @@ public record BrokerConfig(
                         parseNonNegativeInt(
                                 value(args, ++i, "--maintenance-every-n-appends"),
                                 "--maintenance-every-n-appends");
+                case "--fetch-transfer-mode" -> fetchTransferMode =
+                        FetchTransferMode.parse(value(args, ++i, "--fetch-transfer-mode"));
+                case "--fetch-transfer-timeout-ms" -> fetchTransferTimeoutMs =
+                        parsePositiveLong(
+                                value(args, ++i, "--fetch-transfer-timeout-ms"),
+                                "--fetch-transfer-timeout-ms");
                 case "--controller-addr" -> {
                     String[] parts = value(args, ++i, "--controller-addr").split(":", 2);
                     if (parts.length != 2 || parts[0].isBlank() || parts[1].isBlank()) {
@@ -165,7 +179,9 @@ public record BrokerConfig(
                 compactionMaxBytes,
                 maintenanceWindowStartHour,
                 maintenanceWindowEndHour,
-                maintenanceEveryNAppends);
+                maintenanceEveryNAppends,
+                fetchTransferMode,
+                fetchTransferTimeoutMs);
     }
 
     private static String value(String[] args, int index, String name) {
