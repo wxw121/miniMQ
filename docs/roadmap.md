@@ -5,9 +5,9 @@
 
 ## 1. Current State / 当前状态
 
-MiniMQ has released V2.0 storage recovery as `v2.0.0`, tagged V2.1.2 maintenance observability as `v2.1.2-maintenance-observability`, and implemented V2.2 zero-copy FETCH sendfile on `2.2.0-SNAPSHOT`. V2.2 adds storage fetch plans, FETCH prefix encoding, Broker AUTO/HEAP transfer selection, transfer metrics, and an opt-in `benchmark-fetch` command.
+MiniMQ has released V2.0 storage recovery as `v2.0.0`, tagged V2.1.2 maintenance observability as `v2.1.2-maintenance-observability`, and released V2.2 zero-copy FETCH sendfile as `v2.2.0-read-performance` on `2.2.0`. V2.2 adds storage fetch plans, FETCH prefix encoding, Broker AUTO/HEAP transfer selection, transfer metrics, and an opt-in `benchmark-fetch` command.
 
-MiniMQ 已将 V2.0 存储恢复以 `v2.0.0` 发布，已将 V2.1.2 维护可观测性打为 `v2.1.2-maintenance-observability`，并在 `2.2.0-SNAPSHOT` 上实现 V2.2 零拷贝 FETCH sendfile。V2.2 增加存储层 FETCH 计划、FETCH 前缀编码、Broker AUTO/HEAP 传输选择、传输指标和可选 `benchmark-fetch` 命令。
+MiniMQ 已将 V2.0 存储恢复以 `v2.0.0` 发布，已将 V2.1.2 维护可观测性打为 `v2.1.2-maintenance-observability`，并已将 V2.2 零拷贝 FETCH sendfile 以 `v2.2.0-read-performance` 发布为 `2.2.0`。V2.2 增加存储层 FETCH 计划、FETCH 前缀编码、Broker AUTO/HEAP 传输选择、传输指标和可选 `benchmark-fetch` 命令。
 
 The most important limitation is that the system is still single-replica and controller-static. This keeps the design compact, but it means broker failures can lose availability and data for affected partitions.
 
@@ -366,7 +366,7 @@ For a new agent session, the most productive next tasks are:
 对新 agent 会话，最建议继续做：
 
 1. Add an operator-facing maintenance API or CLI command that renders `LogMaintenanceReport` and `LogMaintenanceMetrics`. / 增加面向运维的维护 API 或 CLI 命令，用来输出 `LogMaintenanceReport` 和 `LogMaintenanceMetrics`。
-2. Decide whether V2.2 should be tagged as a milestone before moving to V2.3 replication work. / 在进入 V2.3 副本机制前，决定是否把 V2.2 打为里程碑 tag。
+2. Completed: V2.2 tagged as `v2.2.0-read-performance` before V2.3 replication work. / 已完成：在进入 V2.3 副本机制前，将 V2.2 打为 `v2.2.0-read-performance` 里程碑 tag。
 3. Keep replicas, service discovery, circuit breaker, Epoll, and mmap in later productionization versions. / 副本、服务发现、熔断、Epoll 与 mmap 继续放在后续生产化版本。
 
 ## 6. Risk Register / 风险登记表

@@ -9,7 +9,7 @@
 | JDK | OpenJDK 21.0.10 |
 | Maven | 3.8.7 |
 | Branch | `dev/v2.2-read-performance` |
-| Project version | `2.2.0-SNAPSHOT` |
+| Project version | `2.2.0` |
 
 ## Implemented Scope
 
@@ -55,7 +55,7 @@ Result: `BUILD SUCCESS`, 232 tests, 0 failures, 0 errors, 0 skipped. Overall lin
 ## Benchmark Command And Parameters
 
 ```powershell
-java -jar mq-demo/target/mq-demo-2.2.0-SNAPSHOT.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
+java -jar mq-demo/target/mq-demo-2.2.0.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
 ```
 
 Parameters: 256 records, 32 KiB values, 8 MiB fetch budget, 10 warmups, 50 measured iterations, 1 MiB segments.

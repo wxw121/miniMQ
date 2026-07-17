@@ -1,6 +1,6 @@
 ﻿# MiniMQ Project Context Index / 项目上下文索引
 
-> Last updated / 最后更新：2026-07-09
+> Last updated / 最后更新：2026-07-17
 > Audience / 适用对象（英文）：new agents, new contributors, reviewers, interview readers
 > 适用对象：新 agent 会话、新贡献者、代码审查者、面试/作品集读者
 
@@ -31,7 +31,7 @@ The current implementation focuses on a single-leader partition model. Broker 0 
 | Item / 项目 | Value / 值 |
 | --- | --- |
 | Language / 语言 | Java 17 |
-| Project version / 项目版本 | 2.2.0-SNAPSHOT |
+| Project version / 项目版本 | 2.2.0 |
 | Build tool / 构建工具 | Maven multi-module project / Maven 多模块项目 |
 | Network framework / 网络框架 | Netty 4.1 |
 | Serialization / 序列化 | Custom binary protocol over Netty `ByteBuf` / 基于 Netty `ByteBuf` 的自定义二进制协议 |
@@ -39,8 +39,8 @@ The current implementation focuses on a single-leader partition model. Broker 0 
 | Storage / 存储 | WAL-backed segmented log with retention, compaction, dry-run reports, maintenance metrics, and zero-copy FETCH sendfile / 基于 WAL 的分段日志，支持保留策略、压缩、dry-run 报告、维护指标和零拷贝 FETCH sendfile |
 | Tests / 测试 | JUnit 5 + Surefire |
 | Coverage / 覆盖率 | JaCoCo |
-| Latest milestone tag / 最新里程碑标签 | `v2.1.2-maintenance-observability` |
-| Active development line / 当前开发主线 | V2.2 zero-copy read performance / V2.2 零拷贝读取性能 |
+| Latest milestone tag / 最新里程碑标签 | `v2.2.0-read-performance` |
+| Active development line / 当前开发主线 | V2.3 replication / V2.3 副本机制 |
 | Latest evidence / 最新证据 | [V2.2 read performance test report](test-report-2026-07-17-v2.2-read-performance.md) / [V2.2 读取性能测试报告](test-report-2026-07-17-v2.2-read-performance.md) |
 
 ## 4. Module Map / 模块地图
@@ -94,23 +94,23 @@ mq-demo/target/site/jacoco/index.html
 Start a three-broker demo cluster / 启动三节点 Broker 演示集群：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-2.2.0-SNAPSHOT.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller
-java -jar mq-demo/target/mq-demo-2.2.0-SNAPSHOT.jar broker --broker-id 1 --port 9093 --data-dir ./data/broker-1 --controller-addr localhost:9092
-java -jar mq-demo/target/mq-demo-2.2.0-SNAPSHOT.jar broker --broker-id 2 --port 9094 --data-dir ./data/broker-2 --controller-addr localhost:9092
+java -jar mq-demo/target/mq-demo-2.2.0.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller
+java -jar mq-demo/target/mq-demo-2.2.0.jar broker --broker-id 1 --port 9093 --data-dir ./data/broker-1 --controller-addr localhost:9092
+java -jar mq-demo/target/mq-demo-2.2.0.jar broker --broker-id 2 --port 9094 --data-dir ./data/broker-2 --controller-addr localhost:9092
 ```
 
 Create, produce, and consume / 创建 Topic、生产消息、消费消息：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-2.2.0-SNAPSHOT.jar create-topic --brokers localhost:9092 --name orders --partitions 3
-java -jar mq-demo/target/mq-demo-2.2.0-SNAPSHOT.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
-java -jar mq-demo/target/mq-demo-2.2.0-SNAPSHOT.jar consume --brokers localhost:9092 --topic orders --group order-processors
+java -jar mq-demo/target/mq-demo-2.2.0.jar create-topic --brokers localhost:9092 --name orders --partitions 3
+java -jar mq-demo/target/mq-demo-2.2.0.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
+java -jar mq-demo/target/mq-demo-2.2.0.jar consume --brokers localhost:9092 --topic orders --group order-processors
 ```
 
 Benchmark FETCH heap versus sendfile / 对比 HEAP 与 sendfile 的 FETCH 基准：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-2.2.0-SNAPSHOT.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
+java -jar mq-demo/target/mq-demo-2.2.0.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
 ```
 
 ## 6. Glossary / 专业名词解释

@@ -194,7 +194,7 @@ V2.2 零拷贝 FETCH 收口记录见 `docs/test-report-2026-07-17-v2.2-read-perf
 Benchmark command / 基准命令：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-2.2.0-SNAPSHOT.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
+java -jar mq-demo/target/mq-demo-2.2.0.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
 ```
 
 ### 7.5 Web Runtime Regression Coverage / Web Runtime 回归覆盖
