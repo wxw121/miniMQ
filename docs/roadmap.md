@@ -5,9 +5,9 @@
 
 ## 1. Current State / 当前状态
 
-MiniMQ has released V2.0 storage recovery as `v2.0.0`, tagged the V2.1.1 retention/compaction milestone as `v2.1.1-retention-compaction`, and opened V2.1.2 maintenance observability on `2.1.2-SNAPSHOT`. V2.1.2 adds dry-run maintenance reports, maintenance counters, compaction byte throttling, maintenance windows, and manual maintenance entrypoints.
+MiniMQ has released V2.0 storage recovery as `v2.0.0`, tagged V2.1.2 maintenance observability as `v2.1.2-maintenance-observability`, and opened V2.2 zero-copy read performance on `2.2.0-SNAPSHOT`. V2.2 builds an end-to-end Broker FETCH sendfile path on the stable segmented-log, sparse-index, retention, and compaction foundation.
 
-MiniMQ 已将 V2.0 存储恢复以 `v2.0.0` 发布，已将 V2.1.1 保留策略/压缩里程碑打为 `v2.1.1-retention-compaction`，并在 `2.1.2-SNAPSHOT` 上开启 V2.1.2 维护可观测性。V2.1.2 增加 dry-run 维护报告、维护计数器、压缩字节限速、维护窗口和手动维护入口。
+MiniMQ 已将 V2.0 存储恢复以 `v2.0.0` 发布，已将 V2.1.2 维护可观测性打为 `v2.1.2-maintenance-observability`，并在 `2.2.0-SNAPSHOT` 上开启 V2.2 零拷贝读取性能。V2.2 将在稳定的分段日志、稀疏索引、保留策略和压缩基础上实现端到端 Broker FETCH sendfile 路径。
 
 The most important limitation is that the system is still single-replica and controller-static. This keeps the design compact, but it means broker failures can lose availability and data for affected partitions.
 
