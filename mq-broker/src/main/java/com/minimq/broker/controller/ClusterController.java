@@ -31,7 +31,7 @@ public class ClusterController {
     public ClusterController(MetadataStore metadataStore) {
         this.metadataStore = metadataStore;
         this.metadata = metadataStore.load();
-        normalizeMetadata(this.metadata);
+        normalizeMetadata();
     }
 
     // 控制器的公开方法统一加 synchronized，保证内存态元数据和落盘顺序一致。
@@ -85,15 +85,23 @@ public class ClusterController {
         if (broker == null) {
             return ErrorCode.INVALID_REQUEST;
         }
-        broker.online = false;
         for (TopicEntry topic : metadata.topics.values()) {
             for (PartitionEntry partition : topic.partitions) {
                 normalizePartition(partition);
-                partition.isrBrokerIds.removeIf(id -> id == brokerId);
                 if (partition.leaderBrokerId == brokerId) {
-                    if (partition.isrBrokerIds.isEmpty()) {
+                    boolean hasReplacementLeader = partition.isrBrokerIds.stream()
+                            .anyMatch(id -> id != brokerId);
+                    if (!hasReplacementLeader) {
                         return ErrorCode.INVALID_REQUEST;
                     }
+                }
+            }
+        }
+        broker.online = false;
+        for (TopicEntry topic : metadata.topics.values()) {
+            for (PartitionEntry partition : topic.partitions) {
+                partition.isrBrokerIds.removeIf(id -> id == brokerId);
+                if (partition.leaderBrokerId == brokerId) {
                     Collections.sort(partition.isrBrokerIds);
                     partition.leaderBrokerId = partition.isrBrokerIds.get(0);
                 }
@@ -166,13 +174,13 @@ public class ClusterController {
 
     public synchronized void replaceMetadata(ClusterMetadata metadata) {
         this.metadata = copyMetadata(metadata);
-        normalizeMetadata(this.metadata);
+        normalizeMetadata();
         metadataStore.save(this.metadata);
     }
 
     public synchronized <T> T updateMetadata(Function<ClusterMetadata, T> updater) {
         T result = updater.apply(metadata);
-        normalizeMetadata(metadata);
+        normalizeMetadata();
         metadataStore.save(metadata);
         return result;
     }
@@ -197,7 +205,7 @@ public class ClusterController {
                 List.copyOf(partition.isrBrokerIds));
     }
 
-    private static void normalizeMetadata(ClusterMetadata metadata) {
+    private void normalizeMetadata() {
         for (TopicEntry topic : metadata.topics.values()) {
             for (PartitionEntry partition : topic.partitions) {
                 normalizePartition(partition);
@@ -205,7 +213,7 @@ public class ClusterController {
         }
     }
 
-    private static void normalizePartition(PartitionEntry partition) {
+    private void normalizePartition(PartitionEntry partition) {
         if (partition.replicaBrokerIds == null) {
             partition.replicaBrokerIds = new ArrayList<>();
         }
@@ -216,8 +224,20 @@ public class ClusterController {
             partition.replicaBrokerIds.add(partition.leaderBrokerId);
         }
         if (partition.isrBrokerIds.isEmpty()) {
-            partition.isrBrokerIds.addAll(partition.replicaBrokerIds);
+            for (int replicaId : partition.replicaBrokerIds) {
+                BrokerEntry replica = metadata.brokers.get(replicaId);
+                if (replica != null && replica.online) {
+                    partition.isrBrokerIds.add(replicaId);
+                }
+            }
+            if (partition.isrBrokerIds.isEmpty()) {
+                partition.isrBrokerIds.add(partition.leaderBrokerId);
+            }
         }
+        partition.isrBrokerIds.removeIf(replicaId -> {
+            BrokerEntry replica = metadata.brokers.get(replicaId);
+            return replica == null || !replica.online;
+        });
         if (!partition.replicaBrokerIds.contains(partition.leaderBrokerId)) {
             partition.leaderBrokerId = partition.replicaBrokerIds.get(0);
         }

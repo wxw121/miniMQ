@@ -83,6 +83,32 @@ class ClusterControllerTest {
     }
 
     @Test
+    void markBrokerOfflineRejectsLastIsrLeaderWithoutMutatingState() {
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.createTopic(new com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest(
+                "orders", 1, 1));
+
+        assertEquals(ErrorCode.INVALID_REQUEST, controller.markBrokerOffline(0));
+        assertTrue(controller.getBroker(0).online);
+        assertEquals(0, controller.getLeaderBrokerId("orders", 0));
+    }
+
+    @Test
+    void normalizeDoesNotRestoreOfflineReplicaToIsr() {
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
+        controller.createTopic(new com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest(
+                "orders", 1, 2));
+
+        assertEquals(ErrorCode.NONE, controller.markBrokerOffline(1));
+        assertEquals(List.of(0), controller.getIsrBrokerIds("orders", 0));
+        controller.metadata(new MetadataRequest("orders"));
+        assertEquals(List.of(0), controller.getIsrBrokerIds("orders", 0));
+    }
+
+    @Test
     void snapshotDoesNotExposeMutableMetadata() {
         ClusterController controller = new ClusterController(new MetadataStore(tempDir));
         controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));

@@ -154,7 +154,9 @@ The numeric baseline above and the closeout report are the source of truth for t
 | `mq-broker` | `BrokerConfigTest` | Unit / 单元测试 | Broker argument parsing and validation, including flush/checkpoint, segment, retention, compaction, maintenance, and fetch-transfer options. / Broker 参数解析与校验，包括刷盘、checkpoint、segment、保留策略、压缩、维护和 FETCH 传输选项。 |
 | `mq-broker` | `FetchTransferMetricsTest` | Unit / 单元测试 | Sendfile/heap/fallback/failure/timeout counters and immutable snapshots. / sendfile/heap/回退/失败/超时计数与不可变快照。 |
 | `mq-broker` | `MetadataStoreTest` | Unit / 单元测试 | Metadata safe writes, load validation, corrupt-file failure, and quarantine recovery. / 元数据安全写入、加载校验、损坏文件失败与隔离恢复。 |
-| `mq-broker` | `ClusterControllerTest` | Unit / 单元测试 | Topic creation, metadata, snapshot isolation. / Topic 创建、元数据、快照隔离。 |
+| `mq-broker` | `ClusterControllerTest` | Unit / 单元测试 | Topic creation, replica/ISR metadata, offline election, snapshot isolation. / Topic 创建、副本/ISR 元数据、离线选举、快照隔离。 |
+| `mq-broker` | `ReplicaStateManagerTest` | Unit / 单元测试 | ISR minimum high watermark math. / ISR 最小 high watermark 计算。 |
+| `mq-broker` | `ReplicationIntegrationTest` | Integration / 集成测试 | Follower catch-up, replication-aware client FETCH, leader failover, and `NOT_LEADER` redirects. / Follower 追平、复制感知客户端 FETCH、Leader 故障转移与 `NOT_LEADER` 重定向。 |
 | `mq-broker` | `GroupCoordinatorTest` | Unit / 单元测试 | Join/sync assignment, heartbeat, offset commit/fetch. / 加组、同步分配、心跳、offset 提交/拉取。 |
 | `mq-broker` | `EmbeddedBrokerChannelTest` | Component / 组件测试 | Handler behavior through Netty `EmbeddedChannel`. / 通过 Netty `EmbeddedChannel` 验证 handler 行为。 |
 | `mq-broker` | `FetchResponseWriterTest` | Component / 组件测试 | AUTO/HEAP selection, DefaultFileRegion outbound messages, unsupported fallbacks, and transfer-timeout lease release. / AUTO/HEAP 选择、DefaultFileRegion 出站消息、不支持回退，以及传输超时释放读租约。 |
@@ -197,7 +199,19 @@ Benchmark command / 基准命令：
 java -jar mq-demo/target/mq-demo-2.3.0-SNAPSHOT.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
 ```
 
-### 7.5 Web Runtime Regression Coverage / Web Runtime 回归覆盖
+### 7.5 V2.3 Replication Closeout / V2.3 副本机制收口
+
+V2.3 adds partition replicas, follower `REPLICA_FETCH`, replication-aware client FETCH visibility, and static-controller leader failover through `MARK_BROKER_OFFLINE`.
+
+V2.3 增加分区副本、Follower `REPLICA_FETCH`、复制感知的客户端 FETCH 可见性，以及通过 `MARK_BROKER_OFFLINE` 触发的静态 Controller Leader 故障转移。
+
+Focused verification command / 聚焦验证命令：
+
+```powershell
+mvn -q -gs .mvn/settings.xml -s .mvn/settings.xml -pl mq-broker -am -Dtest=ClusterControllerTest,ReplicaStateManagerTest,ReplicationIntegrationTest,FetchResponseWriterTest -Dsurefire.failIfNoSpecifiedTests=false test
+```
+
+### 7.6 Web Runtime Regression Coverage / Web Runtime 回归覆盖
 
 The Web backend has dedicated regression tests for the three runtime risks fixed in the current version.
 

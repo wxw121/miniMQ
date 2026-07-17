@@ -83,6 +83,9 @@ final class FetchResponseWriter {
         List<Record> records = log.read(request.fetchOffset(), request.maxBytes());
         List<FetchedRecord> fetched = new ArrayList<>(records.size());
         for (Record record : records) {
+            if (record.offset() >= effectiveHighWatermark) {
+                break;
+            }
             fetched.add(new FetchedRecord(record.offset(), record.key(), record.value()));
         }
         FetchResponse response = new FetchResponse(
@@ -94,7 +97,8 @@ final class FetchResponseWriter {
     private void writeSendfile(ChannelHandlerContext ctx, MqResponseHeader header,
                                FetchRequest request, TransferablePartitionLog transferable,
                                long effectiveHighWatermark) {
-        FetchPlan plan = transferable.planFetch(request.fetchOffset(), request.maxBytes());
+        FetchPlan plan = transferable.planFetch(
+                request.fetchOffset(), request.maxBytes(), effectiveHighWatermark);
         TransferCleanup cleanup = new TransferCleanup(plan);
         List<DefaultFileRegion> regions = new ArrayList<>();
         try {
@@ -112,11 +116,12 @@ final class FetchResponseWriter {
                 }
             }
 
+            long responseHighWatermark = Math.min(plan.highWatermark(), effectiveHighWatermark);
             ByteBuf prefix = ProtocolSerdes.encodeFetchResponsePrefix(
                     header,
                     request.topicName(),
                     request.partitionId(),
-                    Math.min(plan.highWatermark(), effectiveHighWatermark),
+                    responseHighWatermark,
                     plan.recordCount(),
                     plan.recordBytes());
 

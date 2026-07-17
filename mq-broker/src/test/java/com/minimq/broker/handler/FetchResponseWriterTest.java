@@ -2,10 +2,14 @@ package com.minimq.broker.handler;
 
 import com.minimq.broker.FetchTransferMetrics;
 import com.minimq.broker.FetchTransferMode;
+import com.minimq.common.error.ErrorCode;
 import com.minimq.common.model.Record;
+import com.minimq.protocol.ApiKeys;
+import com.minimq.protocol.codec.ByteBufSerde;
+import com.minimq.protocol.codec.MqDecoder;
 import com.minimq.protocol.message.MqResponseHeader;
 import com.minimq.protocol.message.ProtocolMessages.FetchRequest;
-import com.minimq.common.error.ErrorCode;
+import com.minimq.protocol.message.ProtocolMessages.FetchResponse;
 import com.minimq.storage.PartitionLog;
 import com.minimq.storage.SegmentedLogConfig;
 import com.minimq.storage.SegmentedPartitionLog;
@@ -68,6 +72,82 @@ class FetchResponseWriterTest {
                 channel.finishAndReleaseAll();
             }
         }
+    }
+
+    @Test
+    void heapModeCapsRecordsAtReplicationHighWatermark(@TempDir Path dir) throws Exception {
+        try (SegmentedPartitionLog log = new SegmentedPartitionLog(dir, new SegmentedLogConfig(1_024, 1))) {
+            log.append("k".getBytes(), "value".getBytes());
+            FetchResponseWriter writer = new FetchResponseWriter(
+                    FetchTransferMode.HEAP, 30_000, new FetchTransferMetrics(), channel -> true);
+            ChannelHandlerContext ctx = captureContext(new EmbeddedChannel());
+            EmbeddedChannel channel = (EmbeddedChannel) ctx.channel();
+            try {
+                assertTrue(writer.write(
+                        ctx,
+                        new MqResponseHeader(1, ErrorCode.NONE),
+                        new FetchRequest("orders", 0, 0, 1_024),
+                        log,
+                        0L));
+                channel.runPendingTasks();
+                Object outbound = channel.readOutbound();
+                try {
+                    assertInstanceOf(ByteBuf.class, outbound);
+                    ByteBuf payload = unwrapResponsePayload((ByteBuf) outbound);
+                    MqDecoder.DecodedResponse decoded =
+                            MqDecoder.decodeResponse(payload, ApiKeys.FETCH);
+                    FetchResponse response = (FetchResponse) decoded.body();
+                    assertEquals(0L, response.highWatermark());
+                    assertEquals(0, response.records().size());
+                } finally {
+                    ReferenceCountUtil.release(outbound);
+                }
+            } finally {
+                channel.finishAndReleaseAll();
+            }
+        }
+    }
+
+    @Test
+    void autoModeCapsSendfilePlanAtReplicationHighWatermark(@TempDir Path dir) throws Exception {
+        try (SegmentedPartitionLog log = new SegmentedPartitionLog(dir, new SegmentedLogConfig(1_024, 1))) {
+            log.append("k".getBytes(), "value".getBytes());
+            FetchResponseWriter writer = new FetchResponseWriter(
+                    FetchTransferMode.AUTO, 30_000, new FetchTransferMetrics(), channel -> true);
+            ChannelHandlerContext ctx = captureContext(new EmbeddedChannel());
+            EmbeddedChannel channel = (EmbeddedChannel) ctx.channel();
+            try {
+                assertTrue(writer.write(
+                        ctx,
+                        new MqResponseHeader(1, ErrorCode.NONE),
+                        new FetchRequest("orders", 0, 0, 1_024),
+                        log,
+                        0L));
+                channel.runPendingTasks();
+                Object outbound = channel.readOutbound();
+                try {
+                    assertInstanceOf(ByteBuf.class, outbound);
+                    ByteBuf payload = unwrapResponsePayload((ByteBuf) outbound);
+                    assertEquals(1, payload.readInt());
+                    assertEquals((short) 0, payload.readShort());
+                    ByteBufSerde.readString(payload);
+                    payload.readInt();
+                    assertEquals(0L, payload.readLong());
+                    assertEquals(0, payload.readInt());
+                } finally {
+                    ReferenceCountUtil.release(outbound);
+                }
+            } finally {
+                channel.finishAndReleaseAll();
+            }
+        }
+    }
+
+    private static ByteBuf unwrapResponsePayload(ByteBuf frame) {
+        frame.readShort();
+        frame.readByte();
+        int length = frame.readInt();
+        return frame.readRetainedSlice(length);
     }
 
     @Test

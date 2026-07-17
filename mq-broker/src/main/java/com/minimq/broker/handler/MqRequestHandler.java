@@ -219,24 +219,26 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
     private ReplicaFetchResponse buildReplicaFetchResponse(ReplicaFetchRequest request) {
         PartitionLog partitionLog = partitionManager.getOrCreate(request.topicName(), request.partitionId());
+        long leaderHighWatermark = partitionLog.highWatermark();
         List<Record> records = partitionLog.read(request.fetchOffset(), request.maxBytes());
         List<FetchedRecord> fetched = new ArrayList<>(records.size());
         for (Record record : records) {
+            if (record.offset() >= leaderHighWatermark) {
+                break;
+            }
             fetched.add(new FetchedRecord(record.offset(), record.key(), record.value()));
         }
-        long leaderLogEndOffset = partitionLog.highWatermark();
-        long replicaLogEndOffset = request.fetchOffset() + fetched.size();
         replicaStateManager.updateReplicaLeo(
                 request.topicName(),
                 request.partitionId(),
                 request.replicaBrokerId(),
-                replicaLogEndOffset);
-        long highWatermark = effectiveHighWatermark(
+                request.fetchOffset() + fetched.size());
+        long replicationHighWatermark = effectiveHighWatermark(
                 request.topicName(), request.partitionId(), partitionLog);
         return new ReplicaFetchResponse(
                 request.topicName(),
                 request.partitionId(),
-                highWatermark,
+                replicationHighWatermark,
                 fetched);
     }
 
