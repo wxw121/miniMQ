@@ -209,11 +209,6 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 request.topicName(), request.partitionId(), request.replicaBrokerId())) {
             return ErrorCode.INVALID_REQUEST;
         }
-        replicaStateManager.updateReplicaLeo(
-                request.topicName(),
-                request.partitionId(),
-                request.replicaBrokerId(),
-                request.fetchOffset());
         return ErrorCode.NONE;
     }
 
@@ -283,12 +278,22 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 }
                 leaderId = clusterController.getLeaderBrokerId(topicName, partitionId);
                 if (leaderId == config.brokerId()) {
+                    noteLeadership(topicName, partitionId);
                     return ErrorCode.NONE;
                 }
             }
             return ErrorCode.NOT_LEADER;
         }
+        noteLeadership(topicName, partitionId);
         return ErrorCode.NONE;
+    }
+
+    private void noteLeadership(String topicName, int partitionId) {
+        replicaStateManager.noteLeadership(
+                topicName,
+                partitionId,
+                config.brokerId(),
+                partitionManager.highWatermark(topicName, partitionId));
     }
 
     private void ensureController() {

@@ -70,6 +70,40 @@ class ReplicationIntegrationTest {
     }
 
     @Test
+    void clientFetchAfterFailoverWithoutWaitingForFollowerFetch() throws Exception {
+        Path dir0 = BrokerTestHarness.newDataDir("failover-immediate-fetch-leader");
+        Path dir1 = BrokerTestHarness.newDataDir("failover-immediate-fetch-follower");
+        Path dir2 = BrokerTestHarness.newDataDir("failover-immediate-fetch-follower-2");
+        try (BrokerTestHarness controller = BrokerTestHarness.startController(dir0);
+             BrokerTestHarness broker1 = BrokerTestHarness.startFollower(1, dir1, "127.0.0.1", controller.port());
+             BrokerTestHarness broker2 = BrokerTestHarness.startFollower(2, dir2, "127.0.0.1", controller.port());
+             TestNetworkClient admin = new TestNetworkClient()) {
+            admin.connect("127.0.0.1", controller.port());
+            registerBrokers(admin, controller, broker1, broker2);
+            createTopic(admin, "orders", 1, 3);
+
+            TestNetworkClient leaderClient = new TestNetworkClient();
+            leaderClient.connect("127.0.0.1", controller.port());
+            produce(leaderClient, "orders", 0, "before-failover");
+            waitForFollowerReplication(broker1, "orders", 0, 1);
+            waitForFollowerReplication(broker2, "orders", 0, 1);
+
+            MqDecoder.DecodedResponse offline = admin.send(
+                    ApiKeys.MARK_BROKER_OFFLINE, new MarkBrokerOfflineRequest(0));
+            assertEquals(ErrorCode.NONE, offline.header().errorCode());
+
+            TestNetworkClient newLeaderClient = new TestNetworkClient();
+            newLeaderClient.connect("127.0.0.1", broker1.port());
+            MqDecoder.DecodedResponse fetchResponse = newLeaderClient.send(
+                    ApiKeys.FETCH, new FetchRequest("orders", 0, 0, 1024 * 1024));
+            assertEquals(ErrorCode.NONE, fetchResponse.header().errorCode());
+            FetchResponse fetch = (FetchResponse) fetchResponse.body();
+            assertEquals(1, fetch.records().size());
+            assertEquals(1L, fetch.highWatermark());
+        }
+    }
+
+    @Test
     void leaderFailoverAllowsProduceOnPromotedFollower() throws Exception {
         Path dir0 = BrokerTestHarness.newDataDir("failover-leader");
         Path dir1 = BrokerTestHarness.newDataDir("failover-follower");
