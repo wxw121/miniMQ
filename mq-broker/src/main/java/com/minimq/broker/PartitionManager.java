@@ -1,5 +1,7 @@
 package com.minimq.broker;
 
+import com.minimq.storage.LogMaintenanceMetrics;
+import com.minimq.storage.LogMaintenanceReport;
 import com.minimq.storage.LogManager;
 import com.minimq.storage.PartitionLog;
 
@@ -23,6 +25,18 @@ public class PartitionManager {
 
     public void checkpoint() {
         logManager.checkpoint();
+    }
+
+    public LogMaintenanceReport dryRunMaintenance() {
+        return logManager.dryRunMaintenance();
+    }
+
+    public LogMaintenanceReport maintain() {
+        return logManager.maintain();
+    }
+
+    public LogMaintenanceMetrics maintenanceMetrics() {
+        return logManager.maintenanceMetrics();
     }
 
     public void close() {

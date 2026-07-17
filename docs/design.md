@@ -97,9 +97,9 @@ flowchart TB
 
 ## 4. Storage Design / 存储设计
 
-`FilePartitionLog` stores records in a binary append-only file. Each append writes the next offset and the key/value byte arrays.
+`LogManager` now stores active topic-partitions with `SegmentedPartitionLog`. A partition is represented by a segment directory, a catalog file, ordered `.log` segment files, and sparse `.index` files. `FilePartitionLog` remains as the legacy single-file layout used for migration compatibility and focused recovery tests.
 
-`FilePartitionLog` 使用二进制追加写文件保存消息。每次 append 会写入下一条 offset 和 key/value 字节数组。
+`LogManager` 现在使用 `SegmentedPartitionLog` 存储活跃 Topic-Partition。一个分区由 segment 目录、catalog 文件、有序 `.log` segment 文件和稀疏 `.index` 文件组成。`FilePartitionLog` 保留为旧单文件布局，用于迁移兼容和聚焦恢复测试。
 
 ### 4.1 Record Layout / 记录格式
 
@@ -117,13 +117,9 @@ flowchart TB
 | `valueLen` | `-1` for null value, `0` for empty value, positive for byte length. / `-1` 表示 null value，`0` 表示空 value，正数表示字节长度。 |
 | `value` | Optional value bytes. / 可选 value 字节。 |
 
-The log recovers `nextOffset` by scanning the file from the beginning and setting `nextOffset = lastOffset + 1`. This is simple but O(file size). A future segmented design should store checkpoints or sparse indexes.
+V2.1.0 recovers a segmented partition by loading `catalog.json`, opening each listed segment in offset order, rebuilding sparse indexes when needed, truncating only an incomplete active segment tail, and rejecting structural corruption such as non-monotonic offsets or incomplete tails in sealed segments. If an old `{topic}-{partition}.log` file exists, `LogManager` migrates it once into the new segment directory and cleans interrupted `.migrating` staging directories before retrying.
 
-日志启动时通过从头扫描文件恢复 `nextOffset`，最终设置为 `lastOffset + 1`。这种方式简单但复杂度是 O(file size)。未来分段日志应引入 checkpoint 或稀疏索引。
-
-V1.3 corruption recovery keeps the current single-file layout but makes startup safer. During log scanning, the reader should accept complete valid records, stop at the first incomplete tail record, truncate that damaged tail, and recover `nextOffset` from the last valid offset. Structural corruption such as negative key/value lengths, impossible payload sizes, or non-monotonic offsets should produce a clear storage exception instead of continuing with ambiguous data.
-
-V1.3 损坏恢复阶段仍保留当前单文件布局，但要让启动更安全。日志扫描时应接受完整有效记录；遇到尾部半条记录时停止扫描、截断损坏尾部，并用最后一条有效 offset 恢复 `nextOffset`。如果出现负 key/value 长度、异常 payload 大小、offset 非单调等结构性损坏，应抛出清晰的存储异常，而不是继续加载含糊数据。
+V2.1.0 通过加载 `catalog.json` 恢复分段分区，按 offset 顺序打开每个 segment，必要时重建稀疏索引，只截断活跃 segment 的尾部半条记录，并拒绝非单调 offset、sealed segment 尾部半条记录等结构性损坏。如果发现旧 `{topic}-{partition}.log` 文件，`LogManager` 会一次性迁移到新的 segment 目录，并在重试前清理中断遗留的 `.migrating` staging 目录。
 
 ### 4.2 Write Safety / 写入安全
 
@@ -133,9 +129,9 @@ The implementation uses a `writeFully(ByteBuffer)` loop because `FileChannel.wri
 
 ### 4.3 V2.0 WAL, Checkpoint, And Flush Policy / V2.0 WAL、Checkpoint 与刷盘策略
 
-V2.0 starts the storage recovery foundation. The main change is to separate durable write intent from the current single-file partition-log layout. The WAL is not a replacement for segmented logs; it is the ordered recovery source used before V2.1 introduces segments, indexes, retention, and compaction.
+V2.0 starts the storage recovery foundation. The main change is to separate durable write intent from the legacy single-file partition-log layout. The WAL is not a replacement for segmented logs; it remains the ordered recovery source replayed into the V2.1 segmented layout. V2.1.1 now applies retention and compaction on sealed segments after replay has restored the partition logs.
 
-V2.0 启动存储恢复基础。核心变化是把持久化写入意图与当前单文件分区日志布局拆开。WAL 不替代分段日志；它是在 V2.1 引入 segment、索引、保留和压缩前使用的有序恢复来源。
+V2.0 启动存储恢复基础。核心变化是把持久化写入意图与旧单文件分区日志布局拆开。WAL 不替代分段日志；它仍是有序恢复来源，会重放到 V2.1 分段布局中。V2.1.1 会在重放恢复分区日志之后，对 sealed segment 执行保留策略与压缩。
 
 #### WAL Contract / WAL 契约
 
@@ -219,6 +215,69 @@ Broker CLI 参数暴露 V2.0 策略，同时不改变现有默认行为：
 | `--flush-policy interval-ms --flush-interval-ms N` | Force when at least `N` milliseconds have elapsed since the last flush. / 距上次刷盘至少经过 `N` 毫秒后刷盘。 |
 | `--flush-policy manual-on-close` | Do not flush during append; explicit checkpoint or broker shutdown still flushes before saving checkpoint. / append 期间不主动刷盘；显式 checkpoint 或 Broker 关闭仍会在保存 checkpoint 前刷盘。 |
 | `--checkpoint-every-n-appends N` | Save a recovery checkpoint after every `N` successful appends; `0` disables append-count checkpointing. / 每 `N` 次成功 append 后保存恢复 checkpoint；`0` 表示关闭按次数 checkpoint。 |
+| `--segment-max-bytes N` | Roll the active segment after it would exceed `N` bytes; default comes from `SegmentedLogConfig`. / 活跃 segment 追加后将超过 `N` 字节时滚动；默认值来自 `SegmentedLogConfig`。 |
+| `--sparse-index-interval-records N` | Add one sparse index entry every `N` records per segment. / 每个 segment 内每 `N` 条记录写入一个稀疏索引项。 |
+| `--retention-ms N` | Delete sealed segments whose last update is older than `N` milliseconds; `0` disables time-based retention. / 删除最后更新时间早于 `N` 毫秒的 sealed segment；`0` 关闭按时间保留。 |
+| `--retention-bytes N` | Keep total sealed-segment bytes under `N` when possible while preserving the active segment. / 在尽量保留活跃 segment 的前提下，将 sealed segment 总字节数控制在 `N` 以内。 |
+| `--compaction-enabled` | Enable sealed-segment compaction. / 启用 sealed segment 压缩。 |
+| `--compaction-max-segments N` | Bound one compaction run to at most `N` sealed segments. / 单次压缩最多处理 `N` 个 sealed segment。 |
+| `--compaction-max-bytes N` | Bound one compaction run to at most `N` original segment bytes; `0` disables the byte cap. / 单次压缩最多处理 `N` 字节的原始 segment；`0` 表示不按字节限速。 |
+| `--maintenance-window-start-hour H` | UTC hour when append-triggered maintenance may start; use with end hour. / 允许按 append 触发维护开始的 UTC 小时，需要与结束小时一起使用。 |
+| `--maintenance-window-end-hour H` | UTC hour when append-triggered maintenance stops; equal start/end means all day. / 按 append 触发维护停止的 UTC 小时；开始和结束相等表示全天允许。 |
+| `--maintenance-every-n-appends N` | Run log maintenance after every `N` appends; `0` keeps maintenance manual. / 每 `N` 次 append 后触发日志维护；`0` 保持手动维护。 |
+
+### 4.4 V2.1.0 Segmented Log And Sparse Index / V2.1.0 分段日志与稀疏索引
+
+The V2.1.0 layout is:
+
+V2.1.0 布局为：
+
+```text
+{dataDir}/
+  segments/
+    {topic}-{partition}/
+      catalog.json
+      00000000000000000000.log
+      00000000000000000000.index
+      00000000000000000042.log
+      00000000000000000042.index
+```
+
+`catalog.json` records the active segment base offset, log start offset, generation, and ordered segment descriptors. Segment log files reuse the record format above. Sparse index files contain fixed-width `(offset, filePosition)` entries and are rebuilt from segment logs if missing or corrupt. V2.1.0 intentionally stops at segment rolling, sparse indexes, migration, and startup recovery.
+
+`catalog.json` 记录活跃 segment base offset、log start offset、generation 和有序 segment descriptor。Segment log 文件复用上面的记录格式。稀疏索引文件保存固定宽度的 `(offset, filePosition)` 条目；缺失或损坏时会从 segment log 重建。V2.1.0 有意只收敛到 segment 滚动、稀疏索引、迁移和启动恢复。
+
+### 4.5 V2.1.1 Retention, Compaction, And Read Snapshots / V2.1.1 保留策略、压缩与读快照
+
+V2.1.1 adds `LogMaintenanceConfig`, `RetentionPolicy`, and `CompactionPolicy` around the segmented layout. Retention deletes only fully sealed segments, never the active segment, and advances `logStartOffset` through an atomic catalog update after old files are moved to cleanup paths. Time-based and size-based retention can be enabled independently.
+
+V2.1.1 在分段布局外增加 `LogMaintenanceConfig`、`RetentionPolicy` 和 `CompactionPolicy`。保留策略只删除完整 sealed segment，不删除活跃 segment，并在旧文件移动到清理路径后通过原子 catalog 更新推进 `logStartOffset`。按时间和按容量保留可以独立启用。
+
+Compaction also runs only on sealed segments. It rewrites a bounded set of sealed segments into cleaned segment files, keeps the latest value for each non-null key, preserves null-key records, and allows offset holes because compacted logs retain logical offsets instead of rewriting them. The compacted catalog is published atomically, and startup cleanup removes interrupted `.cleaned`, `.obsolete`, and temporary catalog files before opening traffic.
+
+压缩同样只作用于 sealed segment。它会把有界数量的 sealed segment 重写为 cleaned segment 文件，保留每个非 null key 的最新值，保留 null-key 记录，并允许 offset 空洞，因为压缩后的日志保留逻辑 offset 而不是重新编号。压缩后的 catalog 原子发布；启动清理会在开放流量前移除中断遗留的 `.cleaned`、`.obsolete` 和临时 catalog 文件。
+
+Readers use active read snapshots during maintenance. Segment files scheduled for deletion wait until in-flight reads exit, so a fetch that started before retention or compaction sees a consistent segment view. WAL replay skips records below the catalog `logStartOffset`, preventing retained-away offsets from being resurrected during broker restart.
+
+读取路径在维护期间使用活跃读快照。计划删除的 segment 文件会等待正在进行的读取退出，因此保留策略或压缩开始前发起的 fetch 能看到一致的 segment 视图。WAL replay 会跳过低于 catalog `logStartOffset` 的记录，避免 Broker 重启时把已经按保留策略删除的 offset 重新恢复出来。
+
+### 4.6 V2.1.2 Maintenance Observability And Controls / V2.1.2 维护可观测性与控制
+
+V2.1.2 exposes maintenance before and after it mutates files. `LogManager.dryRunMaintenance()` returns a `LogMaintenanceReport` that lists each planned `RETENTION_DELETE`, `COMPACTION_REWRITE`, or `COMPACTION_DELETE` action with partition, segment base offset, first/last affected offset, and original segment bytes. Preview and execution share the same retention-then-compaction order, so compaction is planned only over segments that survive simulated retention. Dry-runs do not save catalogs, rewrite segments, delete files, or checkpoint.
+
+V2.1.2 会在维护修改文件之前和之后暴露维护信息。`LogManager.dryRunMaintenance()` 返回 `LogMaintenanceReport`，列出每个计划中的 `RETENTION_DELETE`、`COMPACTION_REWRITE` 或 `COMPACTION_DELETE` 动作，包括分区、segment base offset、受影响的首尾 offset 和原始 segment 字节数。预览与真实执行共享“先 retention、后 compaction”的顺序，因此 compaction 只会基于模拟 retention 后仍存活的 segment 规划。Dry-run 不会保存 catalog、重写 segment、删除文件或写 checkpoint。
+
+`LogMaintenanceMetrics` is an in-memory snapshot of maintenance activity: real run count, dry-run count, deleted bytes/segments, compacted bytes/segments, maintenance attempts skipped by active readers, cleanup failures, and last real run status. Dry-run does not replace the last real status. `PartitionManager` forwards dry-run, manual maintenance, and metrics methods so a future broker admin API can expose them without reaching into storage internals.
+
+`LogMaintenanceMetrics` 是内存中的维护活动快照，包含真实执行次数、dry-run 次数、删除字节/segment、压缩字节/segment、因活跃 reader 跳过的维护尝试数、清理失败和最近一次真实运行状态。Dry-run 不会覆盖最近真实状态。`PartitionManager` 转发 dry-run、手动维护和指标方法，便于后续 Broker 管理 API 暴露这些能力，而不需要直接访问存储内部实现。
+
+Compaction throttling now has two dimensions: `maxSegmentsPerRun` and `maxBytesPerRun`. The byte cap selects a prefix of sealed segments only while their original bytes stay within the configured budget. Append-triggered maintenance can also be limited to a UTC hour window; manual `maintain()` calls intentionally bypass that window so operators can force a controlled run.
+
+压缩限速现在有两个维度：`maxSegmentsPerRun` 和 `maxBytesPerRun`。字节上限只会在原始 segment 字节数不超过预算时选择 sealed segment 前缀。按 append 触发的维护也可以限制在 UTC 小时窗口内；手动 `maintain()` 会有意绕过该窗口，方便运维执行受控维护。
+
+Real maintenance attempts reader quiescence before compaction planning reads segment contents. If a read snapshot is active, the pass returns `SKIPPED_READERS` without changing files or catalogs; otherwise new reads wait until the bounded pass finishes. Window start/end CLI options must be configured together.
+
+真实维护会在 compaction 规划读取 segment 内容前尝试获取 reader quiescence。存在活跃读快照时，本次维护返回 `SKIPPED_READERS`，且不修改文件或 catalog；获取成功后，新读取会等待受单次预算约束的维护结束。CLI 的维护窗口 start/end 参数必须成对配置。
 
 ## 5. Metadata Design / 元数据设计
 
@@ -377,7 +436,7 @@ Malformed request bodies are handled inside `MqRequestHandler` so that, when the
 | Decision / 决策 | Benefit / 收益 | Cost / 代价 |
 | --- | --- | --- |
 | Custom binary protocol / 自定义二进制协议 | Easy to inspect low-level messaging behavior. / 便于观察底层消息行为。 | More validation and compatibility work than JSON/HTTP. / 比 JSON/HTTP 需要更多校验和兼容性工作。 |
-| Single local log file per partition / 每分区一个本地日志文件 | Very easy to understand and test. / 非常易于理解和测试。 | No retention, compaction, or fast sparse indexing. / 没有保留策略、压缩或快速稀疏索引。 |
+| Segmented local log per partition / 每分区本地分段日志 | Supports sparse indexing, faster recovery boundaries, whole-segment retention, sealed-segment compaction, dry-run reports, and maintenance metrics. / 支持稀疏索引、更清晰的恢复边界、整段保留删除、sealed segment 压缩、dry-run 报告和维护指标。 | External operator APIs still need to render maintenance reports and metrics. / 仍需要外部运维 API 输出维护报告与指标。 |
 | JSON metadata store / JSON 元数据存储 | Human-readable and easy for demos. / 人类可读，适合演示。 | Not a scalable metadata log. / 不是可扩展的元数据日志。 |
 | Static controller role / 静态 Controller 角色 | Simple bootstrapping. / 启动流程简单。 | No controller high availability. / 没有 Controller 高可用。 |
 | Synchronous client API / 同步客户端 API | Easy to use and test. / 易用且易测。 | Lower throughput than async batching. / 吞吐低于异步批量方案。 |

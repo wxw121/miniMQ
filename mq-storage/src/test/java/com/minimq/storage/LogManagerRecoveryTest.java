@@ -32,16 +32,20 @@ class LogManagerRecoveryTest {
 
     @Test
     void replaysFromWalWhenPartitionLogFallsBehindCheckpoint(@TempDir Path dir) throws Exception {
-        LogManager manager = new LogManager(dir);
+        LogManagerConfig config = new LogManagerConfig(
+                FlushPolicy.always(), 0, new SegmentedLogConfig(1, 1));
+        LogManager manager = new LogManager(dir, config);
         manager.append("orders", 0, "k0".getBytes(), "v0".getBytes());
         manager.append("orders", 0, "k1".getBytes(), "v1".getBytes());
         manager.checkpoint();
+        manager.close();
 
-        Files.write(dir.resolve("orders-0.log"), new byte[0],
+        Files.write(dir.resolve("segments").resolve("orders-0").resolve("00000000000000000001.log"),
+                new byte[0],
                 StandardOpenOption.TRUNCATE_EXISTING,
                 StandardOpenOption.WRITE);
 
-        LogManager recovered = new LogManager(dir);
+        LogManager recovered = new LogManager(dir, config);
 
         List<Record> records = recovered.getOrCreate("orders", 0).read(0, 1024 * 1024);
         assertEquals(2, records.size());

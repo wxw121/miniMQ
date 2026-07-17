@@ -46,7 +46,7 @@ flowchart TB
 | Module | Responsibility / 职责 | Key classes / 关键类 |
 | --- | --- | --- |
 | `mq-common` | Shared domain objects, error codes, Murmur2 partitioning, range assignment, assignment serialization. / 公共领域对象、错误码、Murmur2 分区、Range 分配、分配结果序列化。 | `ErrorCode`, `Record`, `Murmur2Partitioner`, `RangeAssignor`, `AssignmentSerde` |
-| `mq-storage` | Local append-only partition log. / 本地追加写分区日志。 | `PartitionLog`, `FilePartitionLog`, `LogManager` |
+| `mq-storage` | Local append-only partition log with WAL-backed segmented storage, retention, and sealed-segment compaction. / 基于 WAL 的本地追加写分段分区日志、保留策略和 sealed segment 压缩。 | `PartitionLog`, `SegmentedPartitionLog`, `SegmentFile`, `SparseOffsetIndex`, `LogManager` |
 | `mq-protocol` | Binary frame format, request/response headers, API messages, Netty decoder/encoder. / 二进制帧格式、请求/响应头、API 消息、Netty 编解码器。 | `MqFrame`, `ProtocolSerdes`, `MqDecoder`, `MqEncoder`, `ProtocolMessages` |
 | `mq-broker` | Server runtime, metadata controller, group coordinator, request handling, metadata sync. / 服务端运行时、元数据 Controller、消费组协调器、请求处理、元数据同步。 | `BrokerServer`, `MqRequestHandler`, `ClusterController`, `GroupCoordinator`, `MetadataSync` |
 | `mq-client` | Producer and Consumer SDK. / 生产者和消费者 SDK。 | `NetworkClient`, `Producer`, `Consumer` |
@@ -151,36 +151,53 @@ MiniMQ 可以从概念上拆成两个面：
 | Control plane / 控制面 | `CREATE_TOPIC`, `METADATA`, `JOIN_GROUP`, `SYNC_GROUP`, `HEARTBEAT`, `OFFSET_COMMIT`, `OFFSET_FETCH`, `REGISTER_BROKER` | Handles metadata, group membership, assignments, offsets, and broker registration. / 处理元数据、组成员、分配、offset 和 Broker 注册。 |
 | Data plane / 数据面 | `PRODUCE`, `FETCH` | Handles record writes and reads against partition logs. / 处理分区日志上的消息写入与读取。 |
 
-The controller broker currently serves all control-plane APIs. Data-plane APIs are served by the leader broker of each partition. This is a clean split for readers: controller code lives mainly in `ClusterController` and `GroupCoordinator`; data access flows through `MqRequestHandler`, `PartitionManager`, `LogManager`, and `FilePartitionLog`.
+The controller broker currently serves all control-plane APIs. Data-plane APIs are served by the leader broker of each partition. This is a clean split for readers: controller code lives mainly in `ClusterController` and `GroupCoordinator`; data access flows through `MqRequestHandler`, `PartitionManager`, `LogManager`, the independent WAL/checkpoint layer, and `SegmentedPartitionLog`.
 
-Controller Broker 当前承载所有控制面 API。数据面 API 则由对应分区的 Leader Broker 承载。对读代码的人来说，这条边界很清楚：控制面主要在 `ClusterController` 与 `GroupCoordinator`，数据面主要经过 `MqRequestHandler`、`PartitionManager`、`LogManager`、`FilePartitionLog`。
+Controller Broker 当前承载所有控制面 API。数据面 API 则由对应分区的 Leader Broker 承载。对读代码的人来说，这条边界很清楚：控制面主要在 `ClusterController` 与 `GroupCoordinator`，数据面主要经过 `MqRequestHandler`、`PartitionManager`、`LogManager`、独立 WAL/checkpoint 层和 `SegmentedPartitionLog`。
 
 ## 6. Storage Architecture / 存储架构
 
-Each topic-partition has one local log file named:
+Each topic-partition now has one segmented directory under the broker data directory:
 
-每个 Topic-Partition 对应一个本地日志文件：
+每个 Topic-Partition 现在对应 broker 数据目录下的一个分段目录：
 
 ```text
-{dataDir}/{topic}-{partitionId}.log
+{dataDir}/segments/{topic}-{partitionId}/
+  catalog.json
+  00000000000000000000.log
+  00000000000000000000.index
+  00000000000000000128.log
+  00000000000000000128.index
 ```
 
-The broker does not keep segment files yet. It writes all records for one partition into a single append-only file. This is simple and good for understanding offset recovery. V1.3 recovery hardening now detects corrupt metadata files, validates metadata shape before applying it, quarantines corrupt metadata only when explicitly enabled, and truncates incomplete partition-log tails while rejecting structural log corruption. V2 should then introduce WAL/checkpoints and segmented logs to support deletion, compaction, and faster recovery.
+`LogManager` still accepts old single-file `{topic}-{partitionId}.log` data during startup and migrates it into the segmented directory. WAL replay and checkpoint validation run before request handling, so the broker opens request traffic only after the partition logs have caught up or been replayed idempotently.
 
-当前还没有 Segment 文件，一个分区的所有消息都写入同一个 append-only 文件。这有利于理解 offset 恢复。V1.3 恢复加固现在已支持识别损坏元数据文件、应用前校验元数据结构、仅在显式启用时隔离损坏元数据，以及截断分区日志尾部半条记录并拒绝结构性日志损坏。随后 V2 再引入 WAL/checkpoint 和日志分段，以支持删除、压缩和更快恢复。
+`LogManager` 在启动时仍会接受旧单文件 `{topic}-{partitionId}.log` 数据，并迁移到分段目录。WAL 重放和 checkpoint 校验会在开放请求处理之前完成，因此 Broker 只有在分区日志追上或完成幂等重放后才对外处理流量。
+
+V2.1.1 maintenance runs after recovery on the same segmented catalog. Retention removes only sealed segments by age or total sealed bytes, compaction rewrites only sealed segments by latest key, and read snapshots delay physical deletion until in-flight fetches leave their segment view. WAL replay skips records below `logStartOffset`, so retained-away offsets are not restored on restart.
+
+V2.1.1 日志维护在恢复完成后基于同一份分段 catalog 执行。保留策略只按时间或 sealed segment 总字节数删除 sealed segment，压缩只按最新 key 重写 sealed segment，读快照会延迟物理删除直到正在进行的 fetch 离开自己的 segment 视图。WAL replay 会跳过低于 `logStartOffset` 的记录，因此已被保留策略移除的 offset 不会在重启时恢复。
+
+V2.1.2 adds one shared retention-then-compaction plan for preview and execution. Dry-run reports segment actions, original log bytes, and offset ranges without mutation. Real maintenance attempts reader quiescence before scanning compaction inputs; an active read snapshot returns `SKIPPED_READERS` immediately, while a successful acquisition blocks new reads only for the bounded planning and mutation interval. `PartitionManager` exposes Java entrypoints for manual execution, preview, and in-memory metric snapshots.
+
+V2.1.2 为预览和真实执行增加统一的“先 retention、后 compaction”规划。Dry-run 会报告 segment 动作、原始日志字节数和 offset 范围，但不修改数据。真实维护会在扫描 compaction 输入前尝试获取 reader quiescence；存在活跃读快照时立即返回 `SKIPPED_READERS`，成功获取后只在受单次预算约束的规划与修改期间阻止新读取。`PartitionManager` 暴露手动执行、预览和内存指标快照的 Java 入口。
 
 ```mermaid
 flowchart LR
     handler[MqRequestHandler<br/>请求处理器]
     pm[PartitionManager<br/>分区管理器]
     lm[LogManager<br/>日志管理器]
-    fpl[FilePartitionLog<br/>文件分区日志]
-    file[(orders-0.log<br/>分区日志文件)]
+    wal[WriteAheadLog<br/>预写日志]
+    spl[SegmentedPartitionLog<br/>分段分区日志]
+    catalog[(catalog.json<br/>分段目录)]
+    seg[(00000000000000000000.log/.index<br/>segment 与稀疏索引)]
 
     handler --> pm
     pm --> lm
-    lm --> fpl
-    fpl --> file
+    lm --> wal
+    lm --> spl
+    spl --> catalog
+    spl --> seg
 ```
 
 ## 7. Deployment Shape / 部署形态
@@ -202,7 +219,7 @@ MiniMQ 可以通过 `mq-demo` 打出的 fat jar 启动。第一个 Broker 通常
 3. Metadata is persisted as one JSON document. This is easy to inspect but not a scalable metadata log; V1.3 adds corrupt-file validation, safe write, and quarantine behavior before V2 introduces a stronger metadata log. / 元数据以单个 JSON 文档持久化，易读但不是可扩展的元数据日志；V1.3 已增加损坏文件校验、安全写入和隔离行为，V2 再引入更强的元数据日志。
 4. Consumer group rebalancing is simplified. There is no full Kafka-style rebalance protocol, session management, or cooperative assignment. / 消费组再均衡经过简化，还没有完整 Kafka 风格的 rebalance 协议、会话管理或协作式分配。
 5. The client SDK now supports fixed-backoff connection retry, configurable request timeout, typed client exceptions, topic-level metadata cache invalidation, and a fixed retry budget of one metadata refresh retry for Producer/Consumer data-plane requests after `NOT_LEADER`. Full replication-aware failover and controller HA are still future work. / 客户端 SDK 现在支持固定退避连接重试、可配置请求超时、类型化客户端异常、Topic 级元数据缓存失效，以及 Producer/Consumer 数据面请求遇到 `NOT_LEADER` 后刷新元数据重试一次的固定预算。完整的副本感知故障转移和 Controller 高可用仍是后续工作。
-6. The append-only log has no retention, compaction, or segment rolling. V1.3 recovers from truncated tail records in the current file format; V2 should add WAL/checkpoints and segments. / 追加写日志还没有保留策略、压缩或分段滚动。V1.3 已能在当前文件格式下恢复尾部截断记录；V2 再增加 WAL/checkpoint 与分段。
+6. V2.1.2 adds dry-run reports, in-memory maintenance metrics, reader-aware skips, compaction byte/segment budgets, UTC maintenance windows, and Java manual entrypoints. A directly operator-facing admin API or CLI remains future work. / V2.1.2 已增加 dry-run 报告、内存维护指标、reader 感知跳过、compaction 字节/segment 预算、UTC 维护窗口和 Java 手动入口。直接面向运维的管理 API 或 CLI 仍是后续工作。
 
 ## 9. Architecture Glossary / 架构名词表
 

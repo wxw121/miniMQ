@@ -79,6 +79,23 @@ class CheckpointStoreTest {
     }
 
     @Test
+    void rejectsInvalidCheckpointObjectsDuringSave(@TempDir Path dir) {
+        CheckpointStore store = new CheckpointStore(dir);
+
+        assertThrows(IllegalArgumentException.class, () -> store.save(null));
+
+        RecoveryCheckpoint negativeWalPosition = new RecoveryCheckpoint();
+        negativeWalPosition.walPosition = -1;
+        negativeWalPosition.partitionHighWatermarks = Map.of();
+        assertThrows(IllegalArgumentException.class, () -> store.save(negativeWalPosition));
+
+        RecoveryCheckpoint missingHighWatermarks = new RecoveryCheckpoint();
+        missingHighWatermarks.walPosition = 1;
+        missingHighWatermarks.partitionHighWatermarks = null;
+        assertThrows(IllegalArgumentException.class, () -> store.save(missingHighWatermarks));
+    }
+
+    @Test
     void buildsPartitionKey() {
         assertEquals("orders-3", RecoveryCheckpoint.partitionKey("orders", 3));
     }

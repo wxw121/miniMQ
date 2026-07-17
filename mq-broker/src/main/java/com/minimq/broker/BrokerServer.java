@@ -9,6 +9,10 @@ import com.minimq.protocol.codec.MqEncoder;
 import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
 import com.minimq.storage.LogManagerConfig;
 import com.minimq.storage.LogManager;
+import com.minimq.storage.CompactionPolicy;
+import com.minimq.storage.LogMaintenanceConfig;
+import com.minimq.storage.RetentionPolicy;
+import com.minimq.storage.SegmentedLogConfig;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelInitializer;
@@ -41,7 +45,22 @@ public class BrokerServer {
         GroupCoordinator groupCoordinator = new GroupCoordinator(clusterController);
         LogManager logManager = new LogManager(
                 config.dataDir(),
-                new LogManagerConfig(config.flushPolicy(), config.checkpointEveryNAppends()));
+                new LogManagerConfig(
+                        config.flushPolicy(),
+                        config.checkpointEveryNAppends(),
+                        new SegmentedLogConfig(
+                                config.segmentMaxBytes(),
+                                config.sparseIndexIntervalRecords()),
+                        LogMaintenanceConfig.of(
+                                RetentionPolicy.of(config.retentionMs(), config.retentionBytes()),
+                                config.compactionEnabled()
+                                        ? CompactionPolicy.enabled(
+                                                config.compactionMaxSegments(),
+                                                config.compactionMaxBytes())
+                                        : CompactionPolicy.disabled(),
+                                config.maintenanceEveryNAppends(),
+                                config.maintenanceWindowStartHour(),
+                                config.maintenanceWindowEndHour())));
         partitionManager = new PartitionManager(logManager);
 
         if (config.controller()) {
