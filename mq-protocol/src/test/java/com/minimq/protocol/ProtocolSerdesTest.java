@@ -7,6 +7,7 @@ import com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest;
 import com.minimq.protocol.message.ProtocolMessages.ProduceRequest;
 import com.minimq.protocol.message.ProtocolMessages.ProduceRecord;
 import com.minimq.common.error.ErrorCode;
+import com.minimq.protocol.codec.ByteBufSerde;
 import com.minimq.protocol.codec.MqDecoder;
 import com.minimq.protocol.codec.MqEncoder;
 import io.netty.buffer.ByteBuf;
@@ -166,6 +167,39 @@ class ProtocolSerdesTest {
             payload.release();
             frame.release();
         }
+    }
+
+    @Test
+    void fetchPrefixPlusRecordBytesEqualsHeapFrame() {
+        byte[] key = bytes("k");
+        byte[] value = bytes("value");
+        MqResponseHeader header = new MqResponseHeader(7, ErrorCode.NONE);
+        FetchResponse response = new FetchResponse(
+                "orders", 0, 9, List.of(new FetchedRecord(3, key, value)));
+        ByteBuf heap = ProtocolSerdes.encodeResponse(header, response);
+        ByteBuf recordBytes = Unpooled.buffer();
+        recordBytes.writeLong(3);
+        ByteBufSerde.writeBytes(recordBytes, key);
+        ByteBufSerde.writeBytes(recordBytes, value);
+        ByteBuf prefix = ProtocolSerdes.encodeFetchResponsePrefix(
+                header, "orders", 0, 9, 1, recordBytes.readableBytes());
+        ByteBuf combined = Unpooled.wrappedUnmodifiableBuffer(prefix, recordBytes);
+        try {
+            assertEquals(heap, combined);
+        } finally {
+            heap.release();
+            combined.release();
+        }
+    }
+
+    @Test
+    void fetchPrefixRejectsInvalidCountsAndFrameOverflow() {
+        MqResponseHeader header = new MqResponseHeader(1, ErrorCode.NONE);
+        assertThrows(IllegalArgumentException.class,
+                () -> ProtocolSerdes.encodeFetchResponsePrefix(header, "orders", 0, 0, -1, 0));
+        assertThrows(IllegalArgumentException.class,
+                () -> ProtocolSerdes.encodeFetchResponsePrefix(
+                        header, "orders", 0, 0, 0, MqFrame.MAX_FRAME_BYTES));
     }
 
     @Test

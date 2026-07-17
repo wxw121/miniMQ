@@ -30,6 +30,7 @@ public class BrokerServer {
     private static final Logger log = LoggerFactory.getLogger(BrokerServer.class);
 
     private final BrokerConfig config;
+    private final FetchTransferMetrics fetchTransferMetrics = new FetchTransferMetrics();
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
     private ChannelFuture channelFuture;
@@ -37,6 +38,10 @@ public class BrokerServer {
 
     public BrokerServer(BrokerConfig config) {
         this.config = config;
+    }
+
+    public FetchTransferMetricsSnapshot fetchTransferMetrics() {
+        return fetchTransferMetrics.snapshot();
     }
 
     public void start() throws InterruptedException {
@@ -81,7 +86,11 @@ public class BrokerServer {
                         ch.pipeline()
                                 .addLast(new MqDecoder())
                                 .addLast(new MqRequestHandler(
-                                        config, clusterController, groupCoordinator, partitionManager))
+                                        config,
+                                        clusterController,
+                                        groupCoordinator,
+                                        partitionManager,
+                                        fetchTransferMetrics))
                                 .addLast(new MqEncoder());
                     }
                 });

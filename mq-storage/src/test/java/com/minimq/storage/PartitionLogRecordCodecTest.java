@@ -6,6 +6,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -63,5 +64,61 @@ class PartitionLogRecordCodecTest {
 
         assertThrows(IllegalArgumentException.class,
                 () -> PartitionLogRecordCodec.encodedSize(-1, null, null));
+    }
+
+    @Test
+    void scansRecordMetadataWithoutMaterializingPayload(@TempDir Path dir) throws Exception {
+        Path path = dir.resolve("segment.log");
+        byte[] key = "key".getBytes(StandardCharsets.UTF_8);
+        byte[] value = "value".getBytes(StandardCharsets.UTF_8);
+        try (FileChannel channel = FileChannel.open(path, CREATE, READ, WRITE)) {
+            PartitionLogRecordCodec.write(channel, 7, key, value);
+            long fileSize = channel.size();
+
+            PartitionLogRecordCodec.ScannedRecord scanned =
+                    PartitionLogRecordCodec.scan(channel, 0, fileSize);
+
+            assertEquals(7, scanned.offset());
+            assertEquals(0, scanned.startPosition());
+            assertEquals(fileSize, scanned.nextPosition());
+            assertEquals(fileSize, scanned.encodedBytes());
+            assertEquals(fileSize, channel.position());
+        }
+    }
+
+    @Test
+    void scannerRejectsTheSameInvalidLengthsAsFullDecode(@TempDir Path dir) throws Exception {
+        Path path = dir.resolve("corrupt.log");
+        ByteBuffer invalid = ByteBuffer.allocate(Long.BYTES + Integer.BYTES);
+        invalid.putLong(0);
+        invalid.putInt(-2);
+        Files.write(path, invalid.array());
+
+        try (FileChannel channel = FileChannel.open(path, READ, WRITE)) {
+            long fileSize = channel.size();
+            assertThrows(IOException.class,
+                    () -> PartitionLogRecordCodec.scan(channel, 0, fileSize));
+        }
+    }
+
+    @Test
+    void fileRegionSliceRejectsInvalidRanges(@TempDir Path dir) {
+        Path path = dir.resolve("segment.log");
+
+        assertThrows(IllegalArgumentException.class, () -> new FileRegionSlice(path, -1, 1));
+        assertThrows(IllegalArgumentException.class, () -> new FileRegionSlice(path, 0, 0));
+        assertThrows(NullPointerException.class, () -> new FileRegionSlice(null, 0, 1));
+    }
+
+    @Test
+    void scannerRejectsInvalidPositionsAndNegativeOffsets(@TempDir Path dir) throws Exception {
+        Path path = dir.resolve("bad-offset.log");
+        try (FileChannel channel = FileChannel.open(path, CREATE, READ, WRITE)) {
+            channel.write(ByteBuffer.allocate(Long.BYTES).putLong(-3).flip());
+            long fileSize = channel.size();
+            assertThrows(IOException.class, () -> PartitionLogRecordCodec.scan(channel, 0, fileSize));
+            assertThrows(IOException.class, () -> PartitionLogRecordCodec.scan(channel, -1, fileSize));
+            assertThrows(IOException.class, () -> PartitionLogRecordCodec.scan(channel, fileSize + 1, fileSize));
+        }
     }
 }

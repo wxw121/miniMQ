@@ -46,6 +46,23 @@ final class PartitionLogRecordCodec {
                 Math.toIntExact(nextPosition - startPosition));
     }
 
+    static ScannedRecord scan(FileChannel channel, long startPosition, long fileSize) throws IOException {
+        if (startPosition < 0 || startPosition > fileSize) {
+            throw new IOException("Invalid partition log position " + startPosition);
+        }
+        channel.position(startPosition);
+        long offset = readLong(channel, fileSize);
+        if (offset < 0) {
+            throw new IOException("Corrupt partition log at byte " + startPosition
+                    + ": negative offset " + offset);
+        }
+        skipField(channel, fileSize, "key", startPosition);
+        skipField(channel, fileSize, "value", startPosition);
+        long nextPosition = channel.position();
+        return new ScannedRecord(offset, startPosition, nextPosition,
+                Math.toIntExact(nextPosition - startPosition));
+    }
+
     private static void writeLong(FileChannel channel, long value) throws IOException {
         ByteBuffer buffer = ByteBuffer.allocate(Long.BYTES);
         buffer.putLong(value);
@@ -82,16 +99,34 @@ final class PartitionLogRecordCodec {
         ByteBuffer lengthBuffer = ByteBuffer.allocate(Integer.BYTES);
         readFully(channel, lengthBuffer, fileSize);
         int length = lengthBuffer.getInt(0);
-        if (length < NULL_LENGTH || length > MAX_FIELD_LENGTH) {
-            throw new IOException("Corrupt partition log at byte " + recordStart
-                    + ": invalid " + fieldName + " length " + length);
-        }
+        validateFieldLength(length, fieldName, recordStart);
         if (length == NULL_LENGTH) {
             return null;
         }
         ByteBuffer payload = ByteBuffer.allocate(length);
         readFully(channel, payload, fileSize);
         return payload.array();
+    }
+
+    private static void skipField(
+            FileChannel channel, long fileSize, String fieldName, long recordStart) throws IOException {
+        ByteBuffer lengthBuffer = ByteBuffer.allocate(Integer.BYTES);
+        readFully(channel, lengthBuffer, fileSize);
+        int length = lengthBuffer.getInt(0);
+        validateFieldLength(length, fieldName, recordStart);
+        if (length > 0) {
+            if (fileSize - channel.position() < length) {
+                throw new IncompleteRecordException();
+            }
+            channel.position(channel.position() + length);
+        }
+    }
+
+    private static void validateFieldLength(int length, String fieldName, long recordStart) throws IOException {
+        if (length < NULL_LENGTH || length > MAX_FIELD_LENGTH) {
+            throw new IOException("Corrupt partition log at byte " + recordStart
+                    + ": invalid " + fieldName + " length " + length);
+        }
     }
 
     private static void writeFully(FileChannel channel, ByteBuffer buffer) throws IOException {
@@ -129,6 +164,9 @@ final class PartitionLogRecordCodec {
     }
 
     record DecodedRecord(Record record, long startPosition, long nextPosition, int encodedBytes) {
+    }
+
+    record ScannedRecord(long offset, long startPosition, long nextPosition, int encodedBytes) {
     }
 
     static final class IncompleteRecordException extends IOException {

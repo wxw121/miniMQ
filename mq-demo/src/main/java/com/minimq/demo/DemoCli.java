@@ -29,6 +29,7 @@ public final class DemoCli {
             case "create-topic" -> createTopic(args);
             case "produce" -> produce(args);
             case "consume" -> consume(args);
+            case "benchmark-fetch" -> FetchBenchmark.run(args, System.out);
             default -> printUsage();
         }
     }
@@ -122,6 +123,7 @@ public final class DemoCli {
                   java -jar mq-demo.jar create-topic --brokers localhost:9092 --name orders --partitions 3
                   java -jar mq-demo.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
                   java -jar mq-demo.jar consume --brokers localhost:9092 --topic orders --group demo-group
+                  java -jar mq-demo.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
                 """);
     }
 }

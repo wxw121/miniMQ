@@ -34,7 +34,9 @@ class BrokerConfigTest {
                 "--compaction-max-bytes", "8192",
                 "--maintenance-window-start-hour", "9",
                 "--maintenance-window-end-hour", "17",
-                "--maintenance-every-n-appends", "12"
+                "--maintenance-every-n-appends", "12",
+                "--fetch-transfer-mode", "heap",
+                "--fetch-transfer-timeout-ms", "2500"
         });
 
         assertEquals(2, config.brokerId());
@@ -57,6 +59,15 @@ class BrokerConfigTest {
         assertEquals(9, config.maintenanceWindowStartHour());
         assertEquals(17, config.maintenanceWindowEndHour());
         assertEquals(12, config.maintenanceEveryNAppends());
+        assertEquals(FetchTransferMode.HEAP, config.fetchTransferMode());
+        assertEquals(2_500, config.fetchTransferTimeoutMs());
+    }
+
+    @Test
+    void defaultsFetchTransferToAutoWithThirtySecondTimeout() {
+        BrokerConfig config = new BrokerConfig(0, "localhost", 9092, Path.of("./data"), true, "localhost", 9092, false);
+        assertEquals(FetchTransferMode.AUTO, config.fetchTransferMode());
+        assertEquals(30_000, config.fetchTransferTimeoutMs());
     }
 
     @Test
@@ -96,5 +107,11 @@ class BrokerConfigTest {
                 () -> BrokerConfig.parse(new String[] {"--maintenance-window-end-hour", "17"}));
         assertThrows(IllegalArgumentException.class,
                 () -> BrokerConfig.parse(new String[] {"--maintenance-every-n-appends", "-1"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> BrokerConfig.parse(new String[] {"--fetch-transfer-mode", "mmap"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> BrokerConfig.parse(new String[] {"--fetch-transfer-timeout-ms", "0"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> BrokerConfig.parse(new String[] {"--fetch-transfer-timeout-ms", "-1"}));
     }
 }

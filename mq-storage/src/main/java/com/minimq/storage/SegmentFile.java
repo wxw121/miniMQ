@@ -189,6 +189,48 @@ final class SegmentFile implements AutoCloseable {
         return records;
     }
 
+    record PlannedRead(int recordCount, int recordBytes, FileRegionSlice slice) {
+    }
+
+    synchronized PlannedRead planRead(
+            long fromOffset, int maxBytes, long highWatermark, boolean allowOversizedFirst) throws IOException {
+        ensureOpen();
+        if (maxBytes <= 0 || !hasRecords() || firstOffset >= highWatermark || lastOffset < fromOffset) {
+            return new PlannedRead(0, 0, null);
+        }
+        long fileSize = logChannel.size();
+        long position = index.floorPosition(fromOffset);
+        long sliceStart = -1;
+        long sliceEnd = -1;
+        int recordCount = 0;
+        int recordBytes = 0;
+        while (position < fileSize) {
+            PartitionLogRecordCodec.ScannedRecord scanned =
+                    PartitionLogRecordCodec.scan(logChannel, position, fileSize);
+            position = scanned.nextPosition();
+            if (scanned.offset() >= highWatermark) {
+                break;
+            }
+            if (scanned.offset() < fromOffset) {
+                continue;
+            }
+            if (recordBytes + scanned.encodedBytes() > maxBytes
+                    && (recordCount > 0 || !allowOversizedFirst)) {
+                break;
+            }
+            if (sliceStart < 0) {
+                sliceStart = scanned.startPosition();
+            }
+            sliceEnd = scanned.nextPosition();
+            recordCount++;
+            recordBytes += scanned.encodedBytes();
+        }
+        FileRegionSlice slice = recordCount == 0
+                ? null
+                : new FileRegionSlice(logPath, sliceStart, sliceEnd - sliceStart);
+        return new PlannedRead(recordCount, recordBytes, slice);
+    }
+
     synchronized Record recordAt(long offset) throws IOException {
         for (Record record : read(offset, Integer.MAX_VALUE)) {
             if (record.offset() == offset) {

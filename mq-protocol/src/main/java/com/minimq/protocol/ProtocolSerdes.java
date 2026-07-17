@@ -40,6 +40,29 @@ public final class ProtocolSerdes {
         return wrapFrame(payload);
     }
 
+    public static ByteBuf encodeFetchResponsePrefix(
+            MqResponseHeader header,
+            String topicName,
+            int partitionId,
+            long highWatermark,
+            int recordCount,
+            int recordBytes) {
+        if (header.errorCode() != ErrorCode.NONE) {
+            throw new IllegalArgumentException("fetch prefix requires a successful response header");
+        }
+        if (recordCount < 0 || recordCount > MAX_COLLECTION_ITEMS || recordBytes < 0) {
+            throw new IllegalArgumentException("invalid fetch prefix record count or bytes");
+        }
+        ByteBuf payload = Unpooled.buffer();
+        payload.writeInt(header.correlationId());
+        payload.writeShort(header.errorCode().code);
+        ByteBufSerde.writeString(payload, topicName);
+        payload.writeInt(partitionId);
+        payload.writeLong(highWatermark);
+        writeItemCount(payload, recordCount, "fetched records");
+        return wrapFrame(payload, recordBytes);
+    }
+
     public static MqRequestHeader decodeRequestHeader(ByteBuf payload) {
         requireReadable(payload, Short.BYTES + Integer.BYTES, "request header");
         short apiKey = payload.readShort();
@@ -191,12 +214,22 @@ public final class ProtocolSerdes {
     }
 
     private static ByteBuf wrapFrame(ByteBuf payload) {
-        int length = payload.readableBytes();
-        if (length > MqFrame.MAX_FRAME_BYTES) {
+        return wrapFrame(payload, 0);
+    }
+
+    private static ByteBuf wrapFrame(ByteBuf payload, int trailingBytes) {
+        final int length;
+        try {
+            length = Math.addExact(payload.readableBytes(), trailingBytes);
+        } catch (ArithmeticException overflow) {
+            payload.release();
+            throw new IllegalArgumentException("Frame length overflow", overflow);
+        }
+        if (trailingBytes < 0 || length > MqFrame.MAX_FRAME_BYTES) {
             payload.release();
             throw new IllegalArgumentException("Frame is too large: " + length);
         }
-        ByteBuf frame = Unpooled.buffer(2 + 1 + 4 + length);
+        ByteBuf frame = Unpooled.buffer(2 + 1 + 4 + payload.readableBytes());
         frame.writeShort(MqFrame.MAGIC);
         frame.writeByte(MqFrame.VERSION);
         frame.writeInt(length);

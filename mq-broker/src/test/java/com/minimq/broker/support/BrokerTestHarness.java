@@ -2,11 +2,14 @@ package com.minimq.broker.support;
 
 import com.minimq.broker.BrokerConfig;
 import com.minimq.broker.BrokerServer;
+import com.minimq.broker.FetchTransferMetricsSnapshot;
 
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 
 public final class BrokerTestHarness implements AutoCloseable {
     private final BrokerServer server;
@@ -17,18 +20,30 @@ public final class BrokerTestHarness implements AutoCloseable {
         this.config = config;
     }
 
-    public static BrokerTestHarness startController(Path dataDir) throws Exception {
-        BrokerConfig config = controllerConfig(0, dataDir);
+    public static BrokerTestHarness start(BrokerConfig config) throws Exception {
         BrokerServer server = new BrokerServer(config);
         server.start();
         Thread.sleep(300);
         return new BrokerTestHarness(server, config);
     }
 
+    public static BrokerTestHarness startController(Path dataDir) throws Exception {
+        return start(controllerConfig(0, dataDir));
+    }
+
     public static BrokerConfig controllerConfig(int brokerId, Path dataDir) throws IOException {
-        int port = freePort();
-        return new BrokerConfig(
-                brokerId, "127.0.0.1", port, dataDir, true, "127.0.0.1", port, false);
+        return controllerConfig(brokerId, dataDir, new String[0]);
+    }
+
+    public static BrokerConfig controllerConfig(int brokerId, Path dataDir, String... extraArgs) throws IOException {
+        List<String> args = new ArrayList<>(List.of(
+                "--broker-id", Integer.toString(brokerId),
+                "--host", "127.0.0.1",
+                "--port", Integer.toString(freePort()),
+                "--data-dir", dataDir.toString(),
+                "--controller"));
+        args.addAll(List.of(extraArgs));
+        return BrokerConfig.parse(args.toArray(String[]::new));
     }
 
     public static BrokerTestHarness startFollower(
@@ -36,10 +51,7 @@ public final class BrokerTestHarness implements AutoCloseable {
         int port = freePort();
         BrokerConfig config = new BrokerConfig(
                 brokerId, "127.0.0.1", port, dataDir, false, controllerHost, controllerPort, false);
-        BrokerServer server = new BrokerServer(config);
-        server.start();
-        Thread.sleep(200);
-        return new BrokerTestHarness(server, config);
+        return start(config);
     }
 
     public String bootstrapServers() {
@@ -52,6 +64,10 @@ public final class BrokerTestHarness implements AutoCloseable {
 
     public int brokerId() {
         return config.brokerId();
+    }
+
+    public FetchTransferMetricsSnapshot fetchTransferMetrics() {
+        return server.fetchTransferMetrics();
     }
 
     @Override
