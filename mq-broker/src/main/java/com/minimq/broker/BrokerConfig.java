@@ -25,9 +25,13 @@ public record BrokerConfig(
         long retentionBytes,
         boolean compactionEnabled,
         int compactionMaxSegments,
+        long compactionMaxBytes,
+        int maintenanceWindowStartHour,
+        int maintenanceWindowEndHour,
         int maintenanceEveryNAppends) {
 
     public static final int DEFAULT_COMPACTION_MAX_SEGMENTS = 4;
+    public static final int MAINTENANCE_WINDOW_DISABLED = -1;
 
     public BrokerConfig(
             int brokerId,
@@ -55,6 +59,9 @@ public record BrokerConfig(
                 0,
                 false,
                 DEFAULT_COMPACTION_MAX_SEGMENTS,
+                0,
+                MAINTENANCE_WINDOW_DISABLED,
+                MAINTENANCE_WINDOW_DISABLED,
                 0);
     }
 
@@ -77,6 +84,9 @@ public record BrokerConfig(
         long retentionBytes = 0;
         boolean compactionEnabled = false;
         int compactionMaxSegments = DEFAULT_COMPACTION_MAX_SEGMENTS;
+        long compactionMaxBytes = 0;
+        int maintenanceWindowStartHour = MAINTENANCE_WINDOW_DISABLED;
+        int maintenanceWindowEndHour = MAINTENANCE_WINDOW_DISABLED;
         int maintenanceEveryNAppends = 0;
 
         for (int i = 0; i < args.length; i++) {
@@ -109,6 +119,16 @@ public record BrokerConfig(
                 case "--compaction-enabled" -> compactionEnabled = true;
                 case "--compaction-max-segments" -> compactionMaxSegments =
                         parsePositiveInt(value(args, ++i, "--compaction-max-segments"), "--compaction-max-segments");
+                case "--compaction-max-bytes" -> compactionMaxBytes =
+                        parseNonNegativeLong(value(args, ++i, "--compaction-max-bytes"), "--compaction-max-bytes");
+                case "--maintenance-window-start-hour" -> maintenanceWindowStartHour =
+                        parseMaintenanceWindowHour(
+                                value(args, ++i, "--maintenance-window-start-hour"),
+                                "--maintenance-window-start-hour");
+                case "--maintenance-window-end-hour" -> maintenanceWindowEndHour =
+                        parseMaintenanceWindowHour(
+                                value(args, ++i, "--maintenance-window-end-hour"),
+                                "--maintenance-window-end-hour");
                 case "--maintenance-every-n-appends" -> maintenanceEveryNAppends =
                         parseNonNegativeInt(
                                 value(args, ++i, "--maintenance-every-n-appends"),
@@ -124,6 +144,7 @@ public record BrokerConfig(
                 default -> throw new IllegalArgumentException("Unknown argument: " + args[i]);
             }
         }
+        validateMaintenanceWindowPair(maintenanceWindowStartHour, maintenanceWindowEndHour);
         return new BrokerConfig(
                 brokerId,
                 host,
@@ -141,6 +162,9 @@ public record BrokerConfig(
                 retentionBytes,
                 compactionEnabled,
                 compactionMaxSegments,
+                compactionMaxBytes,
+                maintenanceWindowStartHour,
+                maintenanceWindowEndHour,
                 maintenanceEveryNAppends);
     }
 
@@ -191,5 +215,22 @@ public record BrokerConfig(
             throw new IllegalArgumentException(name + " must be non-negative");
         }
         return parsed;
+    }
+
+    private static int parseMaintenanceWindowHour(String value, String name) {
+        int parsed = Integer.parseInt(value);
+        if (parsed < 0 || parsed > 23) {
+            throw new IllegalArgumentException(name + " must be between 0 and 23");
+        }
+        return parsed;
+    }
+
+    private static void validateMaintenanceWindowPair(int startHour, int endHour) {
+        boolean startDisabled = startHour == MAINTENANCE_WINDOW_DISABLED;
+        boolean endDisabled = endHour == MAINTENANCE_WINDOW_DISABLED;
+        if (startDisabled != endDisabled) {
+            throw new IllegalArgumentException(
+                    "--maintenance-window-start-hour and --maintenance-window-end-hour must be configured together");
+        }
     }
 }

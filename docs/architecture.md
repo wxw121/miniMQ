@@ -178,6 +178,10 @@ V2.1.1 maintenance runs after recovery on the same segmented catalog. Retention 
 
 V2.1.1 日志维护在恢复完成后基于同一份分段 catalog 执行。保留策略只按时间或 sealed segment 总字节数删除 sealed segment，压缩只按最新 key 重写 sealed segment，读快照会延迟物理删除直到正在进行的 fetch 离开自己的 segment 视图。WAL replay 会跳过低于 `logStartOffset` 的记录，因此已被保留策略移除的 offset 不会在重启时恢复。
 
+V2.1.2 adds one shared retention-then-compaction plan for preview and execution. Dry-run reports segment actions, original log bytes, and offset ranges without mutation. Real maintenance attempts reader quiescence before scanning compaction inputs; an active read snapshot returns `SKIPPED_READERS` immediately, while a successful acquisition blocks new reads only for the bounded planning and mutation interval. `PartitionManager` exposes Java entrypoints for manual execution, preview, and in-memory metric snapshots.
+
+V2.1.2 为预览和真实执行增加统一的“先 retention、后 compaction”规划。Dry-run 会报告 segment 动作、原始日志字节数和 offset 范围，但不修改数据。真实维护会在扫描 compaction 输入前尝试获取 reader quiescence；存在活跃读快照时立即返回 `SKIPPED_READERS`，成功获取后只在受单次预算约束的规划与修改期间阻止新读取。`PartitionManager` 暴露手动执行、预览和内存指标快照的 Java 入口。
+
 ```mermaid
 flowchart LR
     handler[MqRequestHandler<br/>请求处理器]
@@ -215,7 +219,7 @@ MiniMQ 可以通过 `mq-demo` 打出的 fat jar 启动。第一个 Broker 通常
 3. Metadata is persisted as one JSON document. This is easy to inspect but not a scalable metadata log; V1.3 adds corrupt-file validation, safe write, and quarantine behavior before V2 introduces a stronger metadata log. / 元数据以单个 JSON 文档持久化，易读但不是可扩展的元数据日志；V1.3 已增加损坏文件校验、安全写入和隔离行为，V2 再引入更强的元数据日志。
 4. Consumer group rebalancing is simplified. There is no full Kafka-style rebalance protocol, session management, or cooperative assignment. / 消费组再均衡经过简化，还没有完整 Kafka 风格的 rebalance 协议、会话管理或协作式分配。
 5. The client SDK now supports fixed-backoff connection retry, configurable request timeout, typed client exceptions, topic-level metadata cache invalidation, and a fixed retry budget of one metadata refresh retry for Producer/Consumer data-plane requests after `NOT_LEADER`. Full replication-aware failover and controller HA are still future work. / 客户端 SDK 现在支持固定退避连接重试、可配置请求超时、类型化客户端异常、Topic 级元数据缓存失效，以及 Producer/Consumer 数据面请求遇到 `NOT_LEADER` 后刷新元数据重试一次的固定预算。完整的副本感知故障转移和 Controller 高可用仍是后续工作。
-6. V2.1.1 has segment rolling, sparse indexes, WAL replay, checkpoint validation, legacy single-file migration, sealed-segment retention, sealed-segment compaction, and read-snapshot deletion protection. Operational dry-run reports and maintenance metrics remain future hardening work. / V2.1.1 已具备 segment 滚动、稀疏索引、WAL 重放、checkpoint 校验、旧单文件迁移、sealed segment 保留策略、sealed segment 压缩和读快照删除保护。dry-run 报告与维护指标仍是后续加固工作。
+6. V2.1.2 adds dry-run reports, in-memory maintenance metrics, reader-aware skips, compaction byte/segment budgets, UTC maintenance windows, and Java manual entrypoints. A directly operator-facing admin API or CLI remains future work. / V2.1.2 已增加 dry-run 报告、内存维护指标、reader 感知跳过、compaction 字节/segment 预算、UTC 维护窗口和 Java 手动入口。直接面向运维的管理 API 或 CLI 仍是后续工作。
 
 ## 9. Architecture Glossary / 架构名词表
 

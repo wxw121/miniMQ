@@ -27,6 +27,15 @@ public class LogManager {
     private final Set<Path> pendingLegacyCleanup = new HashSet<>();
     private long successfulAppends;
     private long lastFlushEpochMs;
+    private long maintenanceRuns;
+    private long maintenanceDryRuns;
+    private long maintenanceDeletedBytes;
+    private long maintenanceDeletedSegments;
+    private long maintenanceCompactedBytes;
+    private long maintenanceCompactedSegments;
+    private long maintenanceSkippedDueToReaders;
+    private long maintenanceCleanupFailures;
+    private MaintenanceStatus lastMaintenanceStatus = MaintenanceStatus.NEVER_RUN;
     private boolean closed;
 
     public LogManager(Path dataDir) {
@@ -71,18 +80,116 @@ public class LogManager {
         return offset;
     }
 
-    public synchronized void maintain() {
+    public synchronized LogMaintenanceReport dryRunMaintenance() {
         ensureOpen();
         if (!config.maintenanceConfig().enabled()) {
-            return;
+            LogMaintenanceReport report = LogMaintenanceReport.skipped(true, MaintenanceStatus.SKIPPED_DISABLED);
+            recordDryRun();
+            return report;
         }
-        for (PartitionLog log : logs.values()) {
-            if (log instanceof SegmentedPartitionLog segmented) {
-                segmented.applyRetention(config.maintenanceConfig().retentionPolicy(), clock.millis());
-                segmented.applyCompaction(config.maintenanceConfig().compactionPolicy());
+        List<LogMaintenanceReport> reports = new ArrayList<>();
+        for (Map.Entry<String, PartitionLog> entry : logs.entrySet()) {
+            if (entry.getValue() instanceof SegmentedPartitionLog segmented) {
+                reports.add(segmented.previewMaintenance(
+                        entry.getKey(),
+                        config.maintenanceConfig().retentionPolicy(),
+                        config.maintenanceConfig().compactionPolicy(),
+                        clock.millis()));
             }
         }
-        saveCheckpoint();
+        LogMaintenanceReport report = aggregateReport(true, reports);
+        recordDryRun();
+        return report;
+    }
+
+    public synchronized LogMaintenanceReport maintain() {
+        ensureOpen();
+        if (!config.maintenanceConfig().enabled()) {
+            LogMaintenanceReport report = LogMaintenanceReport.skipped(false, MaintenanceStatus.SKIPPED_DISABLED);
+            lastMaintenanceStatus = report.status();
+            return report;
+        }
+        maintenanceRuns++;
+        try {
+            List<LogMaintenanceReport> reports = new ArrayList<>();
+            for (Map.Entry<String, PartitionLog> entry : logs.entrySet()) {
+                if (entry.getValue() instanceof SegmentedPartitionLog segmented) {
+                    reports.add(segmented.applyMaintenanceWithReport(
+                            entry.getKey(),
+                            config.maintenanceConfig().retentionPolicy(),
+                            config.maintenanceConfig().compactionPolicy(),
+                            clock.millis()));
+                }
+            }
+            LogMaintenanceReport report = aggregateReport(false, reports);
+            recordRun(report);
+            saveCheckpoint();
+            return report;
+        } catch (RuntimeException failure) {
+            maintenanceCleanupFailures++;
+            lastMaintenanceStatus = MaintenanceStatus.FAILED;
+            throw failure;
+        }
+    }
+
+    public synchronized LogMaintenanceMetrics maintenanceMetrics() {
+        return new LogMaintenanceMetrics(
+                maintenanceRuns,
+                maintenanceDryRuns,
+                maintenanceDeletedBytes,
+                maintenanceDeletedSegments,
+                maintenanceCompactedBytes,
+                maintenanceCompactedSegments,
+                maintenanceSkippedDueToReaders,
+                maintenanceCleanupFailures,
+                lastMaintenanceStatus);
+    }
+
+    private LogMaintenanceReport aggregateReport(boolean dryRun, List<LogMaintenanceReport> reports) {
+        List<MaintenanceSegmentReport> segmentReports = new ArrayList<>();
+        long skippedDueToReaders = 0;
+        long cleanupFailures = 0;
+        for (LogMaintenanceReport report : reports) {
+            segmentReports.addAll(report.segmentReports());
+            skippedDueToReaders += report.skippedDueToReaders();
+            cleanupFailures += report.cleanupFailures();
+        }
+        segmentReports.sort(Comparator
+                .comparing(MaintenanceSegmentReport::partition)
+                .thenComparingLong(MaintenanceSegmentReport::baseOffset)
+                .thenComparing(report -> report.action().name()));
+        boolean skippedReaders = reports.stream()
+                .anyMatch(report -> report.status() == MaintenanceStatus.SKIPPED_READERS);
+        MaintenanceStatus status = !segmentReports.isEmpty()
+                ? MaintenanceStatus.SUCCESS
+                : skippedReaders ? MaintenanceStatus.SKIPPED_READERS : MaintenanceStatus.NOOP;
+        return new LogMaintenanceReport(dryRun, status, segmentReports, skippedDueToReaders, cleanupFailures);
+    }
+
+    private void recordDryRun() {
+        maintenanceDryRuns++;
+    }
+
+    private void recordRun(LogMaintenanceReport report) {
+        maintenanceDeletedBytes += report.deletedBytes();
+        maintenanceDeletedSegments += report.deletedSegments();
+        maintenanceCompactedBytes += report.compactedBytes();
+        maintenanceCompactedSegments += report.compactedSegments();
+        maintenanceSkippedDueToReaders += report.skippedDueToReaders();
+        maintenanceCleanupFailures += report.cleanupFailures();
+        lastMaintenanceStatus = report.status();
+    }
+
+    private void recordWindowSkip() {
+        lastMaintenanceStatus = MaintenanceStatus.SKIPPED_WINDOW;
+    }
+
+    private void maintenanceAfterAppendIfNeeded() {
+        if (config.maintenanceConfig().shouldRunAfterAppend(successfulAppends, clock)) {
+            maintain();
+        } else if (config.maintenanceConfig().shouldSkipAfterAppendForWindow(successfulAppends, clock)) {
+            recordWindowSkip();
+        }
     }
 
     public synchronized void checkpoint() {
@@ -160,12 +267,6 @@ public class LogManager {
     private void checkpointAfterAppendIfNeeded() {
         if (config.shouldCheckpointAfterAppend(successfulAppends)) {
             saveCheckpoint();
-        }
-    }
-
-    private void maintenanceAfterAppendIfNeeded() {
-        if (config.maintenanceConfig().shouldRunAfterAppend(successfulAppends)) {
-            maintain();
         }
     }
 

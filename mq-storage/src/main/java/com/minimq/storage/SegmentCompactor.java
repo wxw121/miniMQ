@@ -22,7 +22,7 @@ final class SegmentCompactor {
             return List.of();
         }
         int sealedCount = orderedSegments.size() - 1;
-        int selectedCount = Math.min(policy.maxSegmentsPerRun(), sealedCount);
+        int selectedCount = selectedCount(orderedSegments, policy, sealedCount);
         if (selectedCount <= 0) {
             return List.of();
         }
@@ -60,6 +60,27 @@ final class SegmentCompactor {
             replacements.add(reversed.get(i));
         }
         return List.copyOf(replacements);
+    }
+
+    private static int selectedCount(
+            List<SegmentFile> orderedSegments,
+            CompactionPolicy policy,
+            int sealedCount) {
+        int maxSegments = Math.min(policy.maxSegmentsPerRun(), sealedCount);
+        if (policy.maxBytesPerRun() == 0) {
+            return maxSegments;
+        }
+        int selectedCount = 0;
+        long selectedBytes = 0;
+        for (int i = 0; i < maxSegments; i++) {
+            long nextSize = orderedSegments.get(i).size();
+            if (selectedBytes + nextSize > policy.maxBytesPerRun()) {
+                break;
+            }
+            selectedBytes += nextSize;
+            selectedCount++;
+        }
+        return selectedCount;
     }
 
     private static List<Record> readAll(SegmentFile segment) throws IOException {

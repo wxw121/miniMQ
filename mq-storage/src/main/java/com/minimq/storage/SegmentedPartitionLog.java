@@ -127,9 +127,90 @@ public final class SegmentedPartitionLog implements PartitionLog {
         }
     }
 
+    synchronized LogMaintenanceReport previewMaintenance(
+            String partition,
+            RetentionPolicy retentionPolicy,
+            CompactionPolicy compactionPolicy,
+            long nowEpochMs) {
+        ensureOpen();
+        try {
+            MaintenancePlan plan = planMaintenance(
+                    partition,
+                    retentionPolicy,
+                    compactionPolicy,
+                    nowEpochMs);
+            return new LogMaintenanceReport(
+                    true,
+                    plan.reports().isEmpty() ? MaintenanceStatus.NOOP : MaintenanceStatus.SUCCESS,
+                    plan.reports(),
+                    0,
+                    0);
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to preview segmented log maintenance " + partitionDir, e);
+        }
+    }
+
+    synchronized LogMaintenanceReport applyMaintenanceWithReport(
+            String partition,
+            RetentionPolicy retentionPolicy,
+            CompactionPolicy compactionPolicy,
+            long nowEpochMs) {
+        ensureOpen();
+        if (!tryBeginReaderQuiescence()) {
+            return new LogMaintenanceReport(
+                    false,
+                    MaintenanceStatus.SKIPPED_READERS,
+                    List.of(),
+                    1,
+                    0);
+        }
+        try {
+            MaintenancePlan plan = planMaintenance(
+                    partition,
+                    retentionPolicy,
+                    compactionPolicy,
+                    nowEpochMs);
+            if (plan.reports().isEmpty()) {
+                return new LogMaintenanceReport(false, MaintenanceStatus.NOOP, List.of(), 0, 0);
+            }
+            applyRetentionPlan(plan.retentionBases());
+            applyCompactionPlan(plan.compactionReplacements());
+            return new LogMaintenanceReport(false, MaintenanceStatus.SUCCESS, plan.reports(), 0, 0);
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to maintain segmented log " + partitionDir, e);
+        } finally {
+            endReaderQuiescence();
+        }
+    }
+
     synchronized void applyRetention(RetentionPolicy policy, long nowEpochMs) {
+        applyRetentionWithReport(partitionName(), policy, nowEpochMs);
+    }
+
+    synchronized LogMaintenanceReport applyRetentionWithReport(String partition, RetentionPolicy policy, long nowEpochMs) {
         ensureOpen();
         List<Long> basesToDelete = RetentionPlanner.segmentsToDelete(segmentMetadata(), policy, nowEpochMs);
+        if (basesToDelete.isEmpty()) {
+            return new LogMaintenanceReport(false, MaintenanceStatus.NOOP, List.of(), 0, 0);
+        }
+        List<MaintenanceSegmentReport> reports = retentionReports(partition, basesToDelete);
+        if (!tryBeginReaderQuiescence()) {
+            return new LogMaintenanceReport(
+                    false,
+                    MaintenanceStatus.SKIPPED_READERS,
+                    List.of(),
+                    1,
+                    0);
+        }
+        try {
+            applyRetentionPlan(basesToDelete);
+        } finally {
+            endReaderQuiescence();
+        }
+        return new LogMaintenanceReport(false, MaintenanceStatus.SUCCESS, reports, 0, 0);
+    }
+
+    private void applyRetentionPlan(List<Long> basesToDelete) {
         if (basesToDelete.isEmpty()) {
             return;
         }
@@ -154,82 +235,95 @@ public final class SegmentedPartitionLog implements PartitionLog {
                 .toList();
         segments.removeIf(segment -> deleteSet.contains(segment.baseOffset()));
         catalog = nextCatalog;
-        beginReaderQuiescence();
+        for (SegmentFile segment : deletedSegments) {
+            long baseOffset = segment.baseOffset();
+            segment.close();
+            deleteSegmentFiles(baseOffset);
+        }
+    }
+
+    synchronized void applyCompaction(CompactionPolicy policy) {
+        applyCompactionWithReport(partitionName(), policy);
+    }
+
+    synchronized LogMaintenanceReport applyCompactionWithReport(String partition, CompactionPolicy policy) {
+        ensureOpen();
+        if (!tryBeginReaderQuiescence()) {
+            return new LogMaintenanceReport(
+                    false,
+                    MaintenanceStatus.SKIPPED_READERS,
+                    List.of(),
+                    1,
+                    0);
+        }
         try {
-            for (SegmentFile segment : deletedSegments) {
-                long baseOffset = segment.baseOffset();
-                segment.close();
-                deleteSegmentFiles(baseOffset);
+            List<SegmentCompactor.SegmentReplacement> replacements =
+                    SegmentCompactor.plan(List.copyOf(segments), policy);
+            if (replacements.isEmpty()) {
+                return new LogMaintenanceReport(false, MaintenanceStatus.NOOP, List.of(), 0, 0);
             }
+            List<MaintenanceSegmentReport> reports = compactionReports(partition, replacements);
+            applyCompactionPlan(replacements);
+            return new LogMaintenanceReport(false, MaintenanceStatus.SUCCESS, reports, 0, 0);
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to compact segmented log " + partitionDir, e);
         } finally {
             endReaderQuiescence();
         }
     }
 
-    synchronized void applyCompaction(CompactionPolicy policy) {
-        ensureOpen();
-        try {
-            List<SegmentCompactor.SegmentReplacement> replacements =
-                    SegmentCompactor.plan(List.copyOf(segments), policy);
-            if (replacements.isEmpty()) {
-                return;
-            }
-            Map<Long, SegmentCompactor.SegmentReplacement> replacementByBase = new HashMap<>();
-            for (SegmentCompactor.SegmentReplacement replacement : replacements) {
-                replacementByBase.put(replacement.baseOffset(), replacement);
-                if (!replacement.retainedRecords().isEmpty()) {
-                    SegmentFile.writeCleaned(
-                            partitionDir,
-                            replacement.baseOffset(),
-                            replacement.retainedRecords(),
-                            config);
-                }
-            }
-
-            List<SegmentDescriptor> compactedDescriptors = catalog.segments().stream()
-                    .filter(descriptor -> {
-                        SegmentCompactor.SegmentReplacement replacement =
-                                replacementByBase.get(descriptor.baseOffset());
-                        return replacement == null || !replacement.retainedRecords().isEmpty();
-                    })
-                    .toList();
-            SegmentCatalog nextCatalog = new SegmentCatalog(
-                    catalog.generation() + 1,
-                    catalog.activeBaseOffset(),
-                    catalog.logStartOffset(),
-                    compactedDescriptors);
-
-            beginReaderQuiescence();
-            try {
-                catalogStore.save(nextCatalog);
-                List<SegmentFile> compactedSegments = new ArrayList<>();
-                for (SegmentFile segment : segments) {
-                    SegmentCompactor.SegmentReplacement replacement = replacementByBase.get(segment.baseOffset());
-                    if (replacement == null) {
-                        compactedSegments.add(segment);
-                        continue;
-                    }
-                    segment.close();
-                    if (replacement.retainedRecords().isEmpty()) {
-                        deleteSegmentFiles(replacement.baseOffset());
-                    } else {
-                        replaceWithCleanedSegment(replacement.baseOffset());
-                        compactedSegments.add(SegmentFile.open(
-                                partitionDir,
-                                descriptorFor(replacement.baseOffset()),
-                                false,
-                                config));
-                    }
-                }
-                segments.clear();
-                segments.addAll(compactedSegments);
-                catalog = nextCatalog;
-            } finally {
-                endReaderQuiescence();
-            }
-        } catch (IOException e) {
-            throw new IllegalStateException("Failed to compact segmented log " + partitionDir, e);
+    private void applyCompactionPlan(List<SegmentCompactor.SegmentReplacement> replacements) throws IOException {
+        if (replacements.isEmpty()) {
+            return;
         }
+        Map<Long, SegmentCompactor.SegmentReplacement> replacementByBase = new HashMap<>();
+        for (SegmentCompactor.SegmentReplacement replacement : replacements) {
+            replacementByBase.put(replacement.baseOffset(), replacement);
+            if (!replacement.retainedRecords().isEmpty()) {
+                SegmentFile.writeCleaned(
+                        partitionDir,
+                        replacement.baseOffset(),
+                        replacement.retainedRecords(),
+                        config);
+            }
+        }
+
+        List<SegmentDescriptor> compactedDescriptors = catalog.segments().stream()
+                .filter(descriptor -> {
+                    SegmentCompactor.SegmentReplacement replacement =
+                            replacementByBase.get(descriptor.baseOffset());
+                    return replacement == null || !replacement.retainedRecords().isEmpty();
+                })
+                .toList();
+        SegmentCatalog nextCatalog = new SegmentCatalog(
+                catalog.generation() + 1,
+                catalog.activeBaseOffset(),
+                catalog.logStartOffset(),
+                compactedDescriptors);
+
+        catalogStore.save(nextCatalog);
+        List<SegmentFile> compactedSegments = new ArrayList<>();
+        for (SegmentFile segment : segments) {
+            SegmentCompactor.SegmentReplacement replacement = replacementByBase.get(segment.baseOffset());
+            if (replacement == null) {
+                compactedSegments.add(segment);
+                continue;
+            }
+            segment.close();
+            if (replacement.retainedRecords().isEmpty()) {
+                deleteSegmentFiles(replacement.baseOffset());
+            } else {
+                replaceWithCleanedSegment(replacement.baseOffset());
+                compactedSegments.add(SegmentFile.open(
+                        partitionDir,
+                        descriptorFor(replacement.baseOffset()),
+                        false,
+                        config));
+            }
+        }
+        segments.clear();
+        segments.addAll(compactedSegments);
+        catalog = nextCatalog;
     }
 
     private void initialize() throws IOException {
@@ -414,6 +508,16 @@ public final class SegmentedPartitionLog implements PartitionLog {
         }
     }
 
+    private boolean tryBeginReaderQuiescence() {
+        synchronized (readerMonitor) {
+            if (activeReaders.get() > 0) {
+                return false;
+            }
+            maintenanceDeleting = true;
+            return true;
+        }
+    }
+
     private void endReaderQuiescence() {
         synchronized (readerMonitor) {
             maintenanceDeleting = false;
@@ -436,6 +540,69 @@ public final class SegmentedPartitionLog implements PartitionLog {
                     i == segments.size() - 1));
         }
         return metadata;
+    }
+
+    private List<MaintenanceSegmentReport> retentionReports(String partition, List<Long> basesToDelete) {
+        if (basesToDelete.isEmpty()) {
+            return List.of();
+        }
+        Set<Long> deleteSet = new HashSet<>(basesToDelete);
+        return segments.stream()
+                .filter(segment -> deleteSet.contains(segment.baseOffset()))
+                .map(segment -> segmentReport(partition, MaintenanceAction.RETENTION_DELETE, segment))
+                .toList();
+    }
+
+    private MaintenancePlan planMaintenance(
+            String partition,
+            RetentionPolicy retentionPolicy,
+            CompactionPolicy compactionPolicy,
+            long nowEpochMs) throws IOException {
+        List<Long> retentionBases = RetentionPlanner.segmentsToDelete(
+                segmentMetadata(),
+                retentionPolicy,
+                nowEpochMs);
+        Set<Long> retentionSet = new HashSet<>(retentionBases);
+        List<SegmentFile> survivingSegments = segments.stream()
+                .filter(segment -> !retentionSet.contains(segment.baseOffset()))
+                .toList();
+        List<SegmentCompactor.SegmentReplacement> compactionReplacements =
+                SegmentCompactor.plan(survivingSegments, compactionPolicy);
+        List<MaintenanceSegmentReport> reports = new ArrayList<>();
+        reports.addAll(retentionReports(partition, retentionBases));
+        reports.addAll(compactionReports(partition, compactionReplacements));
+        return new MaintenancePlan(retentionBases, compactionReplacements, reports);
+    }
+
+    private List<MaintenanceSegmentReport> compactionReports(
+            String partition,
+            List<SegmentCompactor.SegmentReplacement> replacements) {
+        return replacements.stream()
+                .map(replacement -> segmentReport(
+                        partition,
+                        replacement.retainedRecords().isEmpty()
+                                ? MaintenanceAction.COMPACTION_DELETE
+                                : MaintenanceAction.COMPACTION_REWRITE,
+                        replacement.original()))
+                .toList();
+    }
+
+    private MaintenanceSegmentReport segmentReport(
+            String partition,
+            MaintenanceAction action,
+            SegmentFile segment) {
+        return new MaintenanceSegmentReport(
+                partition,
+                action,
+                segment.baseOffset(),
+                segment.firstOffset(),
+                segment.lastOffset(),
+                segment.size());
+    }
+
+    private String partitionName() {
+        Path fileName = partitionDir.getFileName();
+        return fileName == null ? "partition" : fileName.toString();
     }
 
     private void deleteSegmentFiles(long baseOffset) {
@@ -525,6 +692,18 @@ public final class SegmentedPartitionLog implements PartitionLog {
     private void ensureOpen() {
         if (closed) {
             throw new IllegalStateException("SegmentedPartitionLog is closed");
+        }
+    }
+
+    private record MaintenancePlan(
+            List<Long> retentionBases,
+            List<SegmentCompactor.SegmentReplacement> compactionReplacements,
+            List<MaintenanceSegmentReport> reports) {
+
+        private MaintenancePlan {
+            retentionBases = List.copyOf(retentionBases);
+            compactionReplacements = List.copyOf(compactionReplacements);
+            reports = List.copyOf(reports);
         }
     }
 

@@ -54,9 +54,13 @@ public class BrokerServer {
                         LogMaintenanceConfig.of(
                                 RetentionPolicy.of(config.retentionMs(), config.retentionBytes()),
                                 config.compactionEnabled()
-                                        ? CompactionPolicy.enabled(config.compactionMaxSegments())
+                                        ? CompactionPolicy.enabled(
+                                                config.compactionMaxSegments(),
+                                                config.compactionMaxBytes())
                                         : CompactionPolicy.disabled(),
-                                config.maintenanceEveryNAppends())));
+                                config.maintenanceEveryNAppends(),
+                                config.maintenanceWindowStartHour(),
+                                config.maintenanceWindowEndHour())));
         partitionManager = new PartitionManager(logManager);
 
         if (config.controller()) {

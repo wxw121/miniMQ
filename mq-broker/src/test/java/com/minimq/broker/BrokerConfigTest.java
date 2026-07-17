@@ -31,6 +31,9 @@ class BrokerConfigTest {
                 "--retention-bytes", "1048576",
                 "--compaction-enabled",
                 "--compaction-max-segments", "4",
+                "--compaction-max-bytes", "8192",
+                "--maintenance-window-start-hour", "9",
+                "--maintenance-window-end-hour", "17",
                 "--maintenance-every-n-appends", "12"
         });
 
@@ -50,6 +53,9 @@ class BrokerConfigTest {
         assertEquals(1_048_576, config.retentionBytes());
         assertTrue(config.compactionEnabled());
         assertEquals(4, config.compactionMaxSegments());
+        assertEquals(8_192, config.compactionMaxBytes());
+        assertEquals(9, config.maintenanceWindowStartHour());
+        assertEquals(17, config.maintenanceWindowEndHour());
         assertEquals(12, config.maintenanceEveryNAppends());
     }
 
@@ -75,6 +81,19 @@ class BrokerConfigTest {
                 () -> BrokerConfig.parse(new String[] {"--retention-bytes", "-1"}));
         assertThrows(IllegalArgumentException.class,
                 () -> BrokerConfig.parse(new String[] {"--compaction-max-segments", "0"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> BrokerConfig.parse(new String[] {"--compaction-max-bytes", "-1"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> BrokerConfig.parse(new String[] {"--maintenance-window-start-hour", "24"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> BrokerConfig.parse(new String[] {
+                        "--maintenance-window-start-hour", "9",
+                        "--maintenance-window-end-hour", "-1"
+                }));
+        assertThrows(IllegalArgumentException.class,
+                () -> BrokerConfig.parse(new String[] {"--maintenance-window-start-hour", "9"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> BrokerConfig.parse(new String[] {"--maintenance-window-end-hour", "17"}));
         assertThrows(IllegalArgumentException.class,
                 () -> BrokerConfig.parse(new String[] {"--maintenance-every-n-appends", "-1"}));
     }

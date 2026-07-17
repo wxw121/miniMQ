@@ -52,6 +52,24 @@ class SegmentedPartitionLogCompactionTest {
     }
 
     @Test
+    void compactionHonorsMaxBytesPerRun(@TempDir Path dir) throws Exception {
+        try (SegmentedPartitionLog log = new SegmentedPartitionLog(dir, new SegmentedLogConfig(1, 1))) {
+            log.append("a".getBytes(), "old".getBytes());
+            log.append("a".getBytes(), "new".getBytes());
+            log.append("b".getBytes(), "active".getBytes());
+
+            long firstSegmentSize = Files.size(SegmentFile.logPath(dir, 0));
+            log.applyCompaction(CompactionPolicy.enabled(10, firstSegmentSize - 1));
+
+            assertEquals(List.of(0L, 1L, 2L), log.read(0, 4_096).stream().map(Record::offset).toList());
+
+            log.applyCompaction(CompactionPolicy.enabled(10, firstSegmentSize));
+
+            assertEquals(List.of(1L, 2L), log.read(0, 4_096).stream().map(Record::offset).toList());
+        }
+    }
+
+    @Test
     void startupRecoversInterruptedCompactionReplacement(@TempDir Path dir) throws Exception {
         SegmentedLogConfig config = new SegmentedLogConfig(1, 1);
         try (SegmentedPartitionLog log = new SegmentedPartitionLog(dir, config)) {

@@ -65,6 +65,7 @@ class SegmentedPartitionLogSnapshotTest {
             }
 
             assertNull(readerFailure.get());
+            log.applyRetention(RetentionPolicy.of(1, 0), System.currentTimeMillis() + 20_000);
             assertEquals(List.of(99L), log.read(0, 64 * 1024).stream().map(Record::offset).toList());
         }
     }

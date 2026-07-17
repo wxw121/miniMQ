@@ -58,33 +58,33 @@ Latest result / 最近结果：
 
 | Metric / 指标 | Value / 数值 |
 | --- | ---: |
-| Tests run / 测试总数 | 193 |
+| Tests run / 测试总数 | 203 |
 | Failures / 失败数 | 0 |
 | Errors / 错误数 | 0 |
 | Skipped / 跳过数 | 0 |
-| Overall line coverage / 总体行覆盖率 | 91.97% |
-| Overall instruction coverage / 总体指令覆盖率 | 92.96% |
-| Overall branch coverage / 总体分支覆盖率 | 80.57% |
-| Overall method coverage / 总体方法覆盖率 | 97.72% |
+| Overall line coverage / 总体行覆盖率 | 91.66% |
+| Overall instruction coverage / 总体指令覆盖率 | 92.60% |
+| Overall branch coverage / 总体分支覆盖率 | 80.87% |
+| Overall method coverage / 总体方法覆盖率 | 96.95% |
 | Overall class coverage / 总体类覆盖率 | 100.00% |
 
 ## 5. Coverage By Module / 模块覆盖率
 
 | Module / 模块 | Instruction / 指令 | Branch / 分支 | Line / 行 | Method / 方法 | Class / 类 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `mq-broker` | 94.59% | 77.26% | 92.81% | 97.17% | 100.00% |
+| `mq-broker` | 94.31% | 78.21% | 92.38% | 94.59% | 100.00% |
 | `mq-client` | 92.26% | 76.52% | 90.06% | 92.68% | 100.00% |
 | `mq-common` | 96.84% | 84.38% | 97.84% | 100.00% | 100.00% |
 | `mq-demo` | 95.06% | 74.56% | 92.14% | 95.16% | 100.00% |
 | `mq-protocol` | 92.55% | 79.53% | 91.88% | 100.00% | 100.00% |
-| `mq-storage` | 91.59% | 83.58% | 91.50% | 99.58% | 100.00% |
+| `mq-storage` | 91.11% | 83.42% | 91.09% | 98.61% | 100.00% |
 
 ```mermaid
 xychart-beta
     title "Line Coverage By Module / 模块行覆盖率"
     x-axis ["broker/代理", "client/客户端", "common/公共", "demo/演示", "protocol/协议", "storage/存储"]
     y-axis "Line % / 行覆盖率 %" 0 --> 100
-    bar [92.81, 90.06, 97.84, 92.14, 91.88, 91.50]
+    bar [92.38, 90.06, 97.84, 92.14, 91.88, 91.09]
 ```
 
 ```mermaid
@@ -92,7 +92,7 @@ xychart-beta
     title "Overall Coverage / 总体覆盖率"
     x-axis ["Instruction/指令", "Branch/分支", "Line/行", "Method/方法", "Class/类"]
     y-axis "Coverage % / 覆盖率 %" 0 --> 100
-    bar [92.96, 80.57, 91.97, 97.72, 100.00]
+    bar [92.60, 80.87, 91.65, 96.95, 100.00]
 ```
 
 
@@ -147,8 +147,8 @@ The numeric baseline above and the closeout report are the source of truth for t
 | `mq-storage` | `SegmentedPartitionLogRetentionTest` | Unit / 单元测试 | Sealed-segment retention, catalog `logStartOffset`, file cleanup, and replay after retained offsets are removed. / sealed segment 保留、catalog `logStartOffset`、文件清理，以及保留 offset 被删除后的重放。 |
 | `mq-storage` | `SegmentCompactorTest` | Unit / 单元测试 | Latest-key compaction planning, null-key preservation, and bounded segment rewrites. / 最新 key 压缩规划、null-key 保留和有界 segment 重写。 |
 | `mq-storage` | `SegmentedPartitionLogCompactionTest` | Unit / 单元测试 | Sealed-only compaction, atomic catalog publication, interrupted replacement recovery, cleaned-file cleanup, and offset-hole reads. / 仅对 sealed segment 压缩、原子 catalog 发布、中断替换恢复、cleaned 文件清理和 offset 空洞读取。 |
-| `mq-storage` | `SegmentedPartitionLogSnapshotTest` | Unit / 单元测试 | In-flight read snapshots, deferred physical deletion, and startup cleanup for interrupted maintenance files. / 进行中的读快照、延迟物理删除和中断维护文件的启动清理。 |
-| `mq-storage` | `LogManagerMaintenanceTest` | Unit / 单元测试 | Append-count maintenance, manual compaction, checkpointing, and WAL replay after retained offsets or compacted offset holes. / 按 append 次数触发维护、手动压缩、checkpoint，以及保留 offset 或压缩 offset 空洞后的 WAL replay。 |
+| `mq-storage` | `SegmentedPartitionLogSnapshotTest` | Unit / 单元测试 | Concurrent read safety, reader-aware maintenance skips, retry after readers drain, and startup cleanup for interrupted maintenance files. / 并发读取安全、reader 感知维护跳过、reader 退出后的重试，以及中断维护文件的启动清理。 |
+| `mq-storage` | `LogManagerMaintenanceTest` | Unit / 单元测试 | Accurate dry-run ordering, action/byte/offset reports, metrics, reader skips, UTC windows, manual execution, checkpointing, and WAL replay after retention or compaction holes. / 精确 dry-run 顺序、动作/字节/offset 报告、指标、reader 跳过、UTC 窗口、手动执行、checkpoint，以及 retention 或 compaction 空洞后的 WAL replay。 |
 | `mq-protocol` | `ProtocolSerdesTest` | Unit / 单元测试 | Request/response round trips, malformed collection counts, frame limits, encoder. / 请求/响应往返、畸形集合 count、帧限制和编码器。 |
 | `mq-broker` | `BrokerConfigTest` | Unit / 单元测试 | Broker argument parsing and validation, including flush/checkpoint, segment, retention, compaction, and maintenance options. / Broker 参数解析与校验，包括刷盘、checkpoint、segment、保留策略、压缩和维护选项。 |
 | `mq-broker` | `MetadataStoreTest` | Unit / 单元测试 | Metadata safe writes, load validation, corrupt-file failure, and quarantine recovery. / 元数据安全写入、加载校验、损坏文件失败与隔离恢复。 |
