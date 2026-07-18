@@ -19,6 +19,7 @@ import org.junit.jupiter.api.Test;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -106,6 +107,8 @@ class ProtocolSerdesTest {
                 new RequestCase(ApiKeys.OFFSET_FETCH, new OffsetFetchRequest("g1", "orders", 1)),
                 new RequestCase(ApiKeys.REPLICA_FETCH, new ReplicaFetchRequest("orders", 0, 1, 5L, 4096)),
                 new RequestCase(ApiKeys.MARK_BROKER_OFFLINE, new MarkBrokerOfflineRequest(2)),
+                new RequestCase(ApiKeys.UPDATE_REPLICA_LEO,
+                        new UpdateReplicaLeoRequest("orders", 0, 1, 9L)),
                 new RequestCase(ApiKeys.REGISTER_BROKER, new RegisterBrokerRequest(1, "localhost", 9093)));
 
         for (RequestCase requestCase : cases) {
@@ -131,7 +134,10 @@ class ProtocolSerdesTest {
                 new ResponseCase(ApiKeys.METADATA, new MetadataResponse(
                         List.of(new BrokerMetadata(1, "localhost", 9093)),
                         List.of(new TopicMetadata("orders",
-                                List.of(new PartitionMetadata(0, 1), new PartitionMetadata(1, 1)))))),
+                                List.of(
+                                        new PartitionMetadata(
+                                                0, 1, List.of(1, 2), List.of(1, 2), Map.of(1, 12L, 2, 9L)),
+                                        new PartitionMetadata(1, 1)))))),
                 new ResponseCase(ApiKeys.PRODUCE, new ProduceResponse("orders", 0, 11L)),
                 new ResponseCase(ApiKeys.FETCH, new FetchResponse("orders", 0, 12L,
                         List.of(new FetchedRecord(11L, bytes("k"), bytes("v"))))),
@@ -143,7 +149,8 @@ class ProtocolSerdesTest {
                 new ResponseCase(ApiKeys.REGISTER_BROKER, new RegisterBrokerResponse()),
                 new ResponseCase(ApiKeys.REPLICA_FETCH, new ReplicaFetchResponse("orders", 0, 12L,
                         List.of(new FetchedRecord(11L, bytes("k"), bytes("v"))))),
-                new ResponseCase(ApiKeys.MARK_BROKER_OFFLINE, new MarkBrokerOfflineResponse()));
+                new ResponseCase(ApiKeys.MARK_BROKER_OFFLINE, new MarkBrokerOfflineResponse()),
+                new ResponseCase(ApiKeys.UPDATE_REPLICA_LEO, new UpdateReplicaLeoResponse()));
 
         for (ResponseCase responseCase : cases) {
             var frame = ProtocolSerdes.encodeResponse(new MqResponseHeader(9, ErrorCode.NONE), responseCase.body());

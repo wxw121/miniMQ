@@ -243,7 +243,8 @@ public class ClusterController {
                 partition.partitionId,
                 partition.leaderBrokerId,
                 List.copyOf(partition.replicaBrokerIds),
-                List.copyOf(partition.isrBrokerIds));
+                List.copyOf(partition.isrBrokerIds),
+                Map.copyOf(partition.replicaLogEndOffsets));
     }
 
     private void normalizeMetadata() {

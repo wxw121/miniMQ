@@ -10,7 +10,9 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * MiniMQ 协议序列化入口，负责请求/响应 body 与完整网络帧之间的双向转换。
@@ -112,6 +114,11 @@ public final class ProtocolSerdes {
                     payload.readLong(),
                     payload.readInt());
             case ApiKeys.MARK_BROKER_OFFLINE -> new MarkBrokerOfflineRequest(payload.readInt());
+            case ApiKeys.UPDATE_REPLICA_LEO -> new UpdateReplicaLeoRequest(
+                    ByteBufSerde.readString(payload),
+                    payload.readInt(),
+                    payload.readInt(),
+                    payload.readLong());
             default -> throw new IllegalArgumentException("Unknown apiKey: " + apiKey);
         };
     }
@@ -138,6 +145,7 @@ public final class ProtocolSerdes {
             case ApiKeys.REGISTER_BROKER -> new RegisterBrokerResponse();
             case ApiKeys.REPLICA_FETCH -> decodeReplicaFetchResponse(payload);
             case ApiKeys.MARK_BROKER_OFFLINE -> new MarkBrokerOfflineResponse();
+            case ApiKeys.UPDATE_REPLICA_LEO -> new UpdateReplicaLeoResponse();
             default -> throw new IllegalArgumentException("Unknown apiKey: " + apiKey);
         };
     }
@@ -198,6 +206,13 @@ public final class ProtocolSerdes {
             }
             case ApiKeys.REPLICA_FETCH -> writeReplicaFetchRequest(buf, (ReplicaFetchRequest) body);
             case ApiKeys.MARK_BROKER_OFFLINE -> buf.writeInt(((MarkBrokerOfflineRequest) body).brokerId());
+            case ApiKeys.UPDATE_REPLICA_LEO -> {
+                UpdateReplicaLeoRequest req = (UpdateReplicaLeoRequest) body;
+                ByteBufSerde.writeString(buf, req.topicName());
+                buf.writeInt(req.partitionId());
+                buf.writeInt(req.replicaBrokerId());
+                buf.writeLong(req.logEndOffset());
+            }
             default -> throw new IllegalArgumentException("Unknown apiKey: " + apiKey);
         }
     }
@@ -297,7 +312,13 @@ public final class ProtocolSerdes {
                 int leaderBrokerId = buf.readInt();
                 List<Integer> replicaBrokerIds = readBrokerIdList(buf, "replica brokers");
                 List<Integer> isrBrokerIds = readBrokerIdList(buf, "isr brokers");
-                partitions.add(new PartitionMetadata(partitionId, leaderBrokerId, replicaBrokerIds, isrBrokerIds));
+                Map<Integer, Long> replicaLogEndOffsets = readReplicaLogEndOffsets(buf);
+                partitions.add(new PartitionMetadata(
+                        partitionId,
+                        leaderBrokerId,
+                        replicaBrokerIds,
+                        isrBrokerIds,
+                        replicaLogEndOffsets));
             }
             topics.add(new TopicMetadata(topicName, partitions));
         }
@@ -320,6 +341,7 @@ public final class ProtocolSerdes {
                 buf.writeInt(partition.leaderBrokerId());
                 writeBrokerIdList(buf, partition.replicaBrokerIds(), "replica brokers");
                 writeBrokerIdList(buf, partition.isrBrokerIds(), "isr brokers");
+                writeReplicaLogEndOffsets(buf, partition.replicaLogEndOffsets());
             }
         }
     }
@@ -388,6 +410,34 @@ public final class ProtocolSerdes {
         for (int brokerId : brokerIds) {
             buf.writeInt(brokerId);
         }
+    }
+
+    private static Map<Integer, Long> readReplicaLogEndOffsets(ByteBuf buf) {
+        int count = readItemCount(buf, "replica LEOs");
+        Map<Integer, Long> replicaLogEndOffsets = new HashMap<>(count);
+        for (int i = 0; i < count; i++) {
+            requireReadable(buf, Integer.BYTES + Long.BYTES, "replica LEO");
+            int brokerId = buf.readInt();
+            long logEndOffset = buf.readLong();
+            if (logEndOffset < 0) {
+                throw new IllegalArgumentException("Negative replica LEO");
+            }
+            replicaLogEndOffsets.put(brokerId, logEndOffset);
+        }
+        return replicaLogEndOffsets;
+    }
+
+    private static void writeReplicaLogEndOffsets(ByteBuf buf, Map<Integer, Long> replicaLogEndOffsets) {
+        writeItemCount(buf, replicaLogEndOffsets.size(), "replica LEOs");
+        replicaLogEndOffsets.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> {
+                    if (entry.getValue() < 0) {
+                        throw new IllegalArgumentException("Negative replica LEO");
+                    }
+                    buf.writeInt(entry.getKey());
+                    buf.writeLong(entry.getValue());
+                });
     }
 
     @FunctionalInterface
