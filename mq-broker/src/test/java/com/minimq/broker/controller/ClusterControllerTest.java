@@ -163,7 +163,7 @@ class ClusterControllerTest {
     }
 
     @Test
-    void markBrokerOfflineExcludesHigherLeoReplicaOutsideIsr() {
+    void markBrokerOfflineReExpandsCaughtUpReplicaBeforeElection() {
         ClusterController controller = new ClusterController(new MetadataStore(tempDir));
         controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
         controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
@@ -180,7 +180,38 @@ class ClusterControllerTest {
         controller.updateReplicaLogEndOffset("orders", 0, 1, 12L);
 
         assertEquals(ErrorCode.NONE, controller.markBrokerOffline(2));
-        assertEquals(0, controller.getLeaderBrokerId("orders", 0));
+        assertEquals(1, controller.getLeaderBrokerId("orders", 0));
+    }
+
+    @Test
+    void laggingLiveReplicaShrinksOutOfIsr() {
+        ClusterController controller = controllerWithReplicatedTopic();
+
+        assertEquals(ErrorCode.NONE, controller.updateReplicaLogEndOffset("orders", 0, 0, 10L));
+        assertEquals(ErrorCode.NONE, controller.updateReplicaLogEndOffset("orders", 0, 1, 5L));
+
+        PartitionMetadata partition = controller.metadata(new MetadataRequest("orders"))
+                .topics().get(0).partitions().get(0);
+        assertEquals(List.of(0), partition.isrBrokerIds());
+        assertEquals(List.of(0, 1), partition.replicaBrokerIds());
+    }
+
+    @Test
+    void caughtUpLiveReplicaReExpandsIntoIsrInReplicaOrder() {
+        ClusterController controller = controllerWithReplicatedTopic();
+        controller.updateMetadata(metadata -> {
+            var partition = metadata.topics.get("orders").partitions.get(0);
+            partition.isrBrokerIds = new ArrayList<>(List.of(0));
+            partition.replicaLogEndOffsets.put(0, 10L);
+            partition.replicaLogEndOffsets.put(1, 5L);
+            return null;
+        });
+
+        assertEquals(ErrorCode.NONE, controller.updateReplicaLogEndOffset("orders", 0, 1, 10L));
+
+        PartitionMetadata partition = controller.metadata(new MetadataRequest("orders"))
+                .topics().get(0).partitions().get(0);
+        assertEquals(List.of(0, 1), partition.isrBrokerIds());
     }
 
     @Test

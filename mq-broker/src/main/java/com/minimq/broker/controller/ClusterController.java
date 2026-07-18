@@ -23,9 +23,11 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
- * 集群控制器，维护 Broker、Topic、分区 leader 和消费组元数据的一致视图。
+ * Cluster controller that maintains a consistent view of brokers, topics, partition leaders, and consumer groups.
  */
 public class ClusterController {
+    private static final long ISR_LAG_TOLERANCE_RECORDS = 0L;
+
     private final MetadataStore metadataStore;
     private ClusterMetadata metadata;
 
@@ -35,7 +37,7 @@ public class ClusterController {
         normalizeMetadata();
     }
 
-    // 控制器的公开方法统一加 synchronized，保证内存态元数据和落盘顺序一致。
+    // Public controller methods are synchronized to keep in-memory and persisted metadata ordered consistently.
     public synchronized ErrorCode registerBroker(RegisterBrokerRequest request) {
         BrokerEntry entry = metadata.brokers.computeIfAbsent(request.brokerId(), id -> new BrokerEntry());
         entry.brokerId = request.brokerId();
@@ -194,8 +196,13 @@ public class ClusterController {
         }
         normalizePartition(partition);
         long current = partition.replicaLogEndOffsets.getOrDefault(brokerId, 0L);
+        boolean leoChanged = false;
         if (logEndOffset > current) {
             partition.replicaLogEndOffsets.put(brokerId, logEndOffset);
+            leoChanged = true;
+        }
+        boolean isrChanged = reconcileIsrByLeo(partition);
+        if (leoChanged || isrChanged) {
             metadataStore.save(metadata);
         }
         return ErrorCode.NONE;
@@ -298,9 +305,38 @@ public class ClusterController {
         for (int replicaId : partition.replicaBrokerIds) {
             partition.replicaLogEndOffsets.putIfAbsent(replicaId, 0L);
         }
+        reconcileIsrByLeo(partition);
     }
 
-    // 返回快照时做深拷贝，避免调用方直接修改控制器内部状态。
+    private boolean reconcileIsrByLeo(PartitionEntry partition) {
+        List<Integer> before = new ArrayList<>(partition.isrBrokerIds);
+        long leaderLeo = partition.replicaLogEndOffsets.getOrDefault(partition.leaderBrokerId, 0L);
+        partition.isrBrokerIds.removeIf(replicaId -> {
+            if (replicaId == partition.leaderBrokerId) {
+                return false;
+            }
+            BrokerEntry replica = metadata.brokers.get(replicaId);
+            if (replica == null || !replica.online) {
+                return true;
+            }
+            long replicaLeo = partition.replicaLogEndOffsets.getOrDefault(replicaId, 0L);
+            return leaderLeo - replicaLeo > ISR_LAG_TOLERANCE_RECORDS;
+        });
+        for (int replicaId : partition.replicaBrokerIds) {
+            BrokerEntry replica = metadata.brokers.get(replicaId);
+            if (replica == null || !replica.online || partition.isrBrokerIds.contains(replicaId)) {
+                continue;
+            }
+            long replicaLeo = partition.replicaLogEndOffsets.getOrDefault(replicaId, 0L);
+            if (replicaLeo >= leaderLeo) {
+                partition.isrBrokerIds.add(replicaId);
+            }
+        }
+        partition.isrBrokerIds.sort(Comparator.comparingInt(partition.replicaBrokerIds::indexOf));
+        return !partition.isrBrokerIds.equals(before);
+    }
+
+    // Return deep copies so callers cannot mutate controller-owned state directly.
     private static ClusterMetadata copyMetadata(ClusterMetadata source) {
         ClusterMetadata copy = new ClusterMetadata();
         source.brokers.forEach((id, broker) -> copy.brokers.put(id, copyBroker(broker)));
