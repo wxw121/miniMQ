@@ -133,6 +133,19 @@ public class MetadataStore {
                     throw new IOException("Metadata topic " + topicName
                             + " has invalid partitionId " + partition.partitionId);
                 }
+                if (partition.replicaLogEndOffsets == null) {
+                    throw new IOException("Metadata topic " + topicName + " has null replica LEO map");
+                }
+                for (var leoEntry : partition.replicaLogEndOffsets.entrySet()) {
+                    Integer brokerId = leoEntry.getKey();
+                    Long logEndOffset = leoEntry.getValue();
+                    if (brokerId == null || logEndOffset == null || logEndOffset < 0
+                            || partition.replicaBrokerIds == null
+                            || !partition.replicaBrokerIds.contains(brokerId)) {
+                        throw new IOException("Metadata topic " + topicName
+                                + " has invalid replica LEO for broker " + brokerId);
+                    }
+                }
             }
         }
         for (var entry : metadata.consumerGroups.entrySet()) {
