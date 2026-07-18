@@ -4,7 +4,7 @@ Date: 2026-07-18
 
 Branch: `dev/v2.3.2-replica-fetch-pooling`
 
-Scope: R3-P1-05 â€” reuse replica-fetch TCP connections and Netty event loops per leader broker.
+Scope: R3-P1-05 â€?reuse replica-fetch TCP connections and Netty event loops per leader broker.
 
 ## Changes Validated
 
@@ -58,6 +58,6 @@ Result:
 
 ## Release Notes
 
-- R3-P1-05 is complete in `2.3.2-SNAPSHOT`.
+- R3-P1-05 is complete in `2.3.2`.
 - No public protocol or CLI changes were introduced.
 - The next roadmap item remains operator-facing maintenance API / CLI reporting for maintenance metrics.

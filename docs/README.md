@@ -1,61 +1,61 @@
-ï»¿# MiniMQ Project Context Index / é¡¹ç›®ä¸Šä¸‹æ–‡ç´¢å¼•
+# MiniMQ Project Context Index / ÏîÄ¿ÉÏÏÂÎÄË÷Òı
 
-> Last updated / æœ€åæ›´æ–°ï¼š2026-07-17
-> Audience / é€‚ç”¨å¯¹è±¡ï¼ˆè‹±æ–‡ï¼‰ï¼šnew agents, new contributors, reviewers, interview readers
-> é€‚ç”¨å¯¹è±¡ï¼šæ–° agent ä¼šè¯ã€æ–°è´¡çŒ®è€…ã€ä»£ç å®¡æŸ¥è€…ã€é¢è¯•/ä½œå“é›†è¯»è€…
+> Last updated / ×îºó¸üĞÂ£º2026-07-17
+> Audience / ÊÊÓÃ¶ÔÏó£¨Ó¢ÎÄ£©£ºnew agents, new contributors, reviewers, interview readers
+> ÊÊÓÃ¶ÔÏó£ºĞÂ agent »á»°¡¢ĞÂ¹±Ï×Õß¡¢´úÂëÉó²éÕß¡¢ÃæÊÔ/×÷Æ·¼¯¶ÁÕß
 
-## 1. What This Project Is / é¡¹ç›®æ˜¯ä»€ä¹ˆ
+## 1. What This Project Is / ÏîÄ¿ÊÇÊ²Ã´
 
 MiniMQ is a compact Java 17 message queue inspired by Kafka-style concepts. It is not a production Kafka replacement. It is a learning-oriented and interview-oriented implementation that demonstrates binary protocol design, append-only storage, broker/controller coordination, producer and consumer SDKs, consumer group assignment, offset commit/fetch, and a small CLI demo.
 
-MiniMQ æ˜¯ä¸€ä¸ª Java 17 å®ç°çš„è½»é‡æ¶ˆæ¯é˜Ÿåˆ—é¡¹ç›®ï¼Œæ¦‚å¿µä¸Šå‚è€ƒ Kafkaï¼šäºŒè¿›åˆ¶åè®®ã€è¿½åŠ å†™æ—¥å¿—ã€Broker/Controllerã€Producer/Consumer SDKã€Consumer Groupã€Offset æäº¤ä¸æ‹‰å–ã€‚å®ƒä¸æ˜¯ç”Ÿäº§çº§ Kafka æ›¿ä»£å“ï¼Œè€Œæ˜¯ä¸€ä¸ªä¾¿äºç†è§£åˆ†å¸ƒå¼æ¶ˆæ¯ç³»ç»Ÿæ ¸å¿ƒæœºåˆ¶çš„ä½œå“çº§/å­¦ä¹ çº§é¡¹ç›®ã€‚
+MiniMQ ÊÇÒ»¸ö Java 17 ÊµÏÖµÄÇáÁ¿ÏûÏ¢¶ÓÁĞÏîÄ¿£¬¸ÅÄîÉÏ²Î¿¼ Kafka£º¶ş½øÖÆĞ­Òé¡¢×·¼ÓĞ´ÈÕÖ¾¡¢Broker/Controller¡¢Producer/Consumer SDK¡¢Consumer Group¡¢Offset Ìá½»ÓëÀ­È¡¡£Ëü²»ÊÇÉú²ú¼¶ Kafka Ìæ´úÆ·£¬¶øÊÇÒ»¸ö±ãÓÚÀí½â·Ö²¼Ê½ÏûÏ¢ÏµÍ³ºËĞÄ»úÖÆµÄ×÷Æ·¼¶/Ñ§Ï°¼¶ÏîÄ¿¡£
 
 The current implementation focuses on a single-leader partition model. Broker 0 is usually the controller in demo mode. Topics are split into partitions, each partition has a leader broker, and clients use metadata to route produce/fetch requests to the right broker.
 
-å½“å‰å®ç°é‡‡ç”¨å• leader åˆ†åŒºæ¨¡å‹ã€‚Demo ä¸­é€šå¸¸ç”± Broker 0 ä½œä¸º Controllerã€‚Topic è¢«æ‹†åˆ†ä¸ºå¤šä¸ª Partitionï¼Œæ¯ä¸ª Partition æœ‰ä¸€ä¸ª Leader Brokerï¼Œå®¢æˆ·ç«¯å…ˆå‘ Controller æ‹‰å–å…ƒæ•°æ®ï¼Œå†æŠŠç”Ÿäº§å’Œæ‹‰å–è¯·æ±‚è·¯ç”±åˆ°å¯¹åº” Brokerã€‚
+µ±Ç°ÊµÏÖ²ÉÓÃµ¥ leader ·ÖÇøÄ£ĞÍ¡£Demo ÖĞÍ¨³£ÓÉ Broker 0 ×÷Îª Controller¡£Topic ±»²ğ·ÖÎª¶à¸ö Partition£¬Ã¿¸ö Partition ÓĞÒ»¸ö Leader Broker£¬¿Í»§¶ËÏÈÏò Controller À­È¡ÔªÊı¾İ£¬ÔÙ°ÑÉú²úºÍÀ­È¡ÇëÇóÂ·ÓÉµ½¶ÔÓ¦ Broker¡£
 
-## 2. Reading Order / æ¨èé˜…è¯»é¡ºåº
+## 2. Reading Order / ÍÆ¼öÔÄ¶ÁË³Ğò
 
-| Order / é¡ºåº | Document / æ–‡æ¡£ | Purpose / ç”¨é€” |
+| Order / Ë³Ğò | Document / ÎÄµµ | Purpose / ÓÃÍ¾ |
 | ---: | --- | --- |
-| 1 | [Project Architecture](architecture.md) / [é¡¹ç›®æ¶æ„](architecture.md) | Understand modules, runtime topology, dependency graph, and data/control flows. / ç†è§£æ¨¡å—ã€è¿è¡Œæ—¶æ‹“æ‰‘ã€ä¾èµ–å›¾ã€æ•°æ®æµä¸æ§åˆ¶æµã€‚ |
-| 2 | [System Design](design.md) / [ç³»ç»Ÿè®¾è®¡](design.md) | Understand protocol format, storage format, metadata model, group coordination, and client behavior. / ç†è§£åè®®æ ¼å¼ã€å­˜å‚¨æ ¼å¼ã€å…ƒæ•°æ®æ¨¡å‹ã€æ¶ˆè´¹ç»„åè°ƒä¸å®¢æˆ·ç«¯è¡Œä¸ºã€‚ |
-| 3 | [Testing Guide](testing.md) / [æµ‹è¯•æ–‡æ¡£](testing.md) | Understand tests, coverage, commands, report locations, and quality gates. / ç†è§£æµ‹è¯•ã€è¦†ç›–ç‡ã€å‘½ä»¤ã€æŠ¥å‘Šä½ç½®ä¸è´¨é‡é—¨æ§›ã€‚ |
-| 4 | [Roadmap](roadmap.md) / [ä»£åŠä¸è·¯çº¿å›¾](roadmap.md) | Understand known limitations, TODOs, V2 features, and recommended next tasks. / ç†è§£å·²çŸ¥é™åˆ¶ã€å¾…åŠäº‹é¡¹ã€V2 åŠŸèƒ½ä¸æ¨èä¸‹ä¸€æ­¥ä»»åŠ¡ã€‚ |
-| 5 | [Code Review Fix Log](code-review-2026-07-02.md) / [ä»£ç å®¡æŸ¥ä¿®å¤è®°å½•](code-review-2026-07-02.md) | See recently fixed bugs and why they mattered. / æŸ¥çœ‹è¿‘æœŸä¿®å¤çš„é—®é¢˜ä»¥åŠå®ƒä»¬çš„é‡è¦æ€§ã€‚ |
-| 5b | [V2.3 Code Review Fix Log](code-review-2026-07-17-v2.3-replication.md) / [V2.3 ä»£ç å®¡æŸ¥ä¿®å¤è®°å½•](code-review-2026-07-17-v2.3-replication.md) | See V2.3 replication review findings, `2.3.0` fixes, and `2.3.1` backlog. / æŸ¥çœ‹ V2.3 å‰¯æœ¬å®¡æŸ¥é—®é¢˜ã€`2.3.0` ä¿®å¤ä¸ `2.3.1` å¾…åŠã€‚ |
-| 6 | [Test Report](test-report-2026-07-10-v2-storage.md) / [æµ‹è¯•æŠ¥å‘Š](test-report-2026-07-10-v2-storage.md) | See the V2.0 storage recovery closeout results. / æŸ¥çœ‹ V2.0 å­˜å‚¨æ¢å¤æ”¶å£æµ‹è¯•ç»“æœã€‚ |
-| 7 | [V2.3 Replication Test Report](test-report-2026-07-17-v2.3-replication.md) / [V2.3 å‰¯æœ¬æœºåˆ¶æµ‹è¯•æŠ¥å‘Š](test-report-2026-07-17-v2.3-replication.md) | See the V2.3 replication release verification. / æŸ¥çœ‹ V2.3 å‰¯æœ¬æœºåˆ¶å‘å¸ƒéªŒè¯ã€‚ |
+| 1 | [Project Architecture](architecture.md) / [ÏîÄ¿¼Ü¹¹](architecture.md) | Understand modules, runtime topology, dependency graph, and data/control flows. / Àí½âÄ£¿é¡¢ÔËĞĞÊ±ÍØÆË¡¢ÒÀÀµÍ¼¡¢Êı¾İÁ÷Óë¿ØÖÆÁ÷¡£ |
+| 2 | [System Design](design.md) / [ÏµÍ³Éè¼Æ](design.md) | Understand protocol format, storage format, metadata model, group coordination, and client behavior. / Àí½âĞ­Òé¸ñÊ½¡¢´æ´¢¸ñÊ½¡¢ÔªÊı¾İÄ£ĞÍ¡¢Ïû·Ñ×éĞ­µ÷Óë¿Í»§¶ËĞĞÎª¡£ |
+| 3 | [Testing Guide](testing.md) / [²âÊÔÎÄµµ](testing.md) | Understand tests, coverage, commands, report locations, and quality gates. / Àí½â²âÊÔ¡¢¸²¸ÇÂÊ¡¢ÃüÁî¡¢±¨¸æÎ»ÖÃÓëÖÊÁ¿ÃÅ¼÷¡£ |
+| 4 | [Roadmap](roadmap.md) / [´ú°ìÓëÂ·ÏßÍ¼](roadmap.md) | Understand known limitations, TODOs, V2 features, and recommended next tasks. / Àí½âÒÑÖªÏŞÖÆ¡¢´ı°ìÊÂÏî¡¢V2 ¹¦ÄÜÓëÍÆ¼öÏÂÒ»²½ÈÎÎñ¡£ |
+| 5 | [Code Review Fix Log](code-review-2026-07-02.md) / [´úÂëÉó²éĞŞ¸´¼ÇÂ¼](code-review-2026-07-02.md) | See recently fixed bugs and why they mattered. / ²é¿´½üÆÚĞŞ¸´µÄÎÊÌâÒÔ¼°ËüÃÇµÄÖØÒªĞÔ¡£ |
+| 5b | [V2.3 Code Review Fix Log](code-review-2026-07-17-v2.3-replication.md) / [V2.3 ´úÂëÉó²éĞŞ¸´¼ÇÂ¼](code-review-2026-07-17-v2.3-replication.md) | See V2.3 replication review findings, `2.3.0` fixes, and `2.3.1` backlog. / ²é¿´ V2.3 ¸±±¾Éó²éÎÊÌâ¡¢`2.3.0` ĞŞ¸´Óë `2.3.1` ´ı°ì¡£ |
+| 6 | [Test Report](test-report-2026-07-10-v2-storage.md) / [²âÊÔ±¨¸æ](test-report-2026-07-10-v2-storage.md) | See the V2.0 storage recovery closeout results. / ²é¿´ V2.0 ´æ´¢»Ö¸´ÊÕ¿Ú²âÊÔ½á¹û¡£ |
+| 7 | [V2.3 Replication Test Report](test-report-2026-07-17-v2.3-replication.md) / [V2.3 ¸±±¾»úÖÆ²âÊÔ±¨¸æ](test-report-2026-07-17-v2.3-replication.md) | See the V2.3 replication release verification. / ²é¿´ V2.3 ¸±±¾»úÖÆ·¢²¼ÑéÖ¤¡£ |
 | 7b | [V2.3.1 Replication Hardening Test Report](test-report-2026-07-18-v2.3.1-replication-hardening.md) | See the V2.3.1 replication hardening release verification. |
-| 8 | [Troubleshooting Guide](troubleshooting.md) / [æ•…éšœæ’æŸ¥æŒ‡å—](troubleshooting.md) | Resolve common Maven, port, Windows, test report, and GitHub/SSH issues. / æ’æŸ¥ Mavenã€ç«¯å£ã€Windowsã€æµ‹è¯•æŠ¥å‘Šã€GitHub/SSH å¸¸è§é—®é¢˜ã€‚ |
+| 8 | [Troubleshooting Guide](troubleshooting.md) / [¹ÊÕÏÅÅ²éÖ¸ÄÏ](troubleshooting.md) | Resolve common Maven, port, Windows, test report, and GitHub/SSH issues. / ÅÅ²é Maven¡¢¶Ë¿Ú¡¢Windows¡¢²âÊÔ±¨¸æ¡¢GitHub/SSH ³£¼ûÎÊÌâ¡£ |
 
-## 3. Current Snapshot / å½“å‰å¿«ç…§
+## 3. Current Snapshot / µ±Ç°¿ìÕÕ
 
-| Item / é¡¹ç›® | Value / å€¼ |
+| Item / ÏîÄ¿ | Value / Öµ |
 | --- | --- |
-| Language / è¯­è¨€ | Java 17 |
-| Project version | 2.3.2-SNAPSHOT |
-| Build tool / æ„å»ºå·¥å…· | Maven multi-module project / Maven å¤šæ¨¡å—é¡¹ç›® |
-| Network framework / ç½‘ç»œæ¡†æ¶ | Netty 4.1 |
-| Serialization / åºåˆ—åŒ– | Custom binary protocol over Netty `ByteBuf` / åŸºäº Netty `ByteBuf` çš„è‡ªå®šä¹‰äºŒè¿›åˆ¶åè®® |
-| Metadata persistence / å…ƒæ•°æ®æŒä¹…åŒ– | JSON via Jackson / é€šè¿‡ Jackson å†™å…¥ JSON |
-| Storage / å­˜å‚¨ | WAL-backed segmented log with retention, compaction, dry-run reports, maintenance metrics, zero-copy FETCH sendfile, and ISR-aware replication / åŸºäº WAL çš„åˆ†æ®µæ—¥å¿—ï¼Œæ”¯æŒä¿ç•™ç­–ç•¥ã€å‹ç¼©ã€dry-run æŠ¥å‘Šã€ç»´æŠ¤æŒ‡æ ‡ã€é›¶æ‹·è´ FETCH sendfile ä¸ ISR æ„ŸçŸ¥å‰¯æœ¬ |
-| Tests / æµ‹è¯• | JUnit 5 + Surefire |
-| Coverage / è¦†ç›–ç‡ | JaCoCo |
+| Language / ÓïÑÔ | Java 17 |
+| Project version | 2.3.2 |
+| Build tool / ¹¹½¨¹¤¾ß | Maven multi-module project / Maven ¶àÄ£¿éÏîÄ¿ |
+| Network framework / ÍøÂç¿ò¼Ü | Netty 4.1 |
+| Serialization / ĞòÁĞ»¯ | Custom binary protocol over Netty `ByteBuf` / »ùÓÚ Netty `ByteBuf` µÄ×Ô¶¨Òå¶ş½øÖÆĞ­Òé |
+| Metadata persistence / ÔªÊı¾İ³Ö¾Ã»¯ | JSON via Jackson / Í¨¹ı Jackson Ğ´Èë JSON |
+| Storage / ´æ´¢ | WAL-backed segmented log with retention, compaction, dry-run reports, maintenance metrics, zero-copy FETCH sendfile, and ISR-aware replication / »ùÓÚ WAL µÄ·Ö¶ÎÈÕÖ¾£¬Ö§³Ö±£Áô²ßÂÔ¡¢Ñ¹Ëõ¡¢dry-run ±¨¸æ¡¢Î¬»¤Ö¸±ê¡¢Áã¿½±´ FETCH sendfile Óë ISR ¸ĞÖª¸±±¾ |
+| Tests / ²âÊÔ | JUnit 5 + Surefire |
+| Coverage / ¸²¸ÇÂÊ | JaCoCo |
 | Latest milestone tag | `v2.3.1-replication-hardening` |
-| Active development line | V2.3.2 replica-fetch connection pooling |
+| Latest release | V2.3.2 replica-fetch connection pooling |
 | Latest evidence | [V2.3.1 replication hardening test report](test-report-2026-07-18-v2.3.1-replication-hardening.md) |
 
-## 4. Module Map / æ¨¡å—åœ°å›¾
+## 4. Module Map / Ä£¿éµØÍ¼
 
 ```mermaid
 flowchart LR
-    common[mq-common<br/>Models / æ¨¡å‹<br/>Errors / é”™è¯¯ç <br/>Assignor / åˆ†é…å™¨<br/>Hash / å“ˆå¸Œ]
-    storage[mq-storage<br/>Append-only partition log / è¿½åŠ å†™åˆ†åŒºæ—¥å¿—]
-    protocol[mq-protocol<br/>Frame / å¸§<br/>Codec / ç¼–è§£ç <br/>Messages / æ¶ˆæ¯]
-    broker[mq-broker<br/>Server / æœåŠ¡ç«¯<br/>Controller / æ§åˆ¶å™¨<br/>Handler / å¤„ç†å™¨]
-    client[mq-client<br/>Producer / ç”Ÿäº§è€…<br/>Consumer / æ¶ˆè´¹è€…<br/>NetworkClient / ç½‘ç»œå®¢æˆ·ç«¯]
-    demo[mq-demo<br/>CLI / å‘½ä»¤è¡Œ<br/>E2E demo / ç«¯åˆ°ç«¯æ¼”ç¤º]
+    common[mq-common<br/>Models / Ä£ĞÍ<br/>Errors / ´íÎóÂë<br/>Assignor / ·ÖÅäÆ÷<br/>Hash / ¹şÏ£]
+    storage[mq-storage<br/>Append-only partition log / ×·¼ÓĞ´·ÖÇøÈÕÖ¾]
+    protocol[mq-protocol<br/>Frame / Ö¡<br/>Codec / ±à½âÂë<br/>Messages / ÏûÏ¢]
+    broker[mq-broker<br/>Server / ·şÎñ¶Ë<br/>Controller / ¿ØÖÆÆ÷<br/>Handler / ´¦ÀíÆ÷]
+    client[mq-client<br/>Producer / Éú²úÕß<br/>Consumer / Ïû·ÑÕß<br/>NetworkClient / ÍøÂç¿Í»§¶Ë]
+    demo[mq-demo<br/>CLI / ÃüÁîĞĞ<br/>E2E demo / ¶Ëµ½¶ËÑİÊ¾]
 
     common --> protocol
     common --> broker
@@ -68,22 +68,22 @@ flowchart LR
     client --> demo
 ```
 
-## 5. Fast Commands / å¸¸ç”¨å‘½ä»¤
+## 5. Fast Commands / ³£ÓÃÃüÁî
 
-Build and test / æ„å»ºå¹¶è¿è¡Œæµ‹è¯•ï¼š
+Build and test / ¹¹½¨²¢ÔËĞĞ²âÊÔ£º
 
 ```powershell
 mvn clean install -gs .mvn/settings.xml -s .mvn/settings.xml
 mvn verify -gs .mvn/settings.xml -s .mvn/settings.xml
 ```
 
-Generate coverage / ç”Ÿæˆè¦†ç›–ç‡ï¼š
+Generate coverage / Éú³É¸²¸ÇÂÊ£º
 
 ```powershell
 mvn verify -gs .mvn/settings.xml -s .mvn/settings.xml
 ```
 
-JaCoCo HTML reports are generated under / JaCoCo HTML æŠ¥å‘Šç”Ÿæˆåœ¨ä»¥ä¸‹ä½ç½®ï¼š
+JaCoCo HTML reports are generated under / JaCoCo HTML ±¨¸æÉú³ÉÔÚÒÔÏÂÎ»ÖÃ£º
 
 ```text
 mq-common/target/site/jacoco/index.html
@@ -94,7 +94,7 @@ mq-client/target/site/jacoco/index.html
 mq-demo/target/site/jacoco/index.html
 ```
 
-Start a three-broker demo cluster / å¯åŠ¨ä¸‰èŠ‚ç‚¹ Broker æ¼”ç¤ºé›†ç¾¤ï¼š
+Start a three-broker demo cluster / Æô¶¯Èı½Úµã Broker ÑİÊ¾¼¯Èº£º
 
 ```powershell
 java -jar mq-demo/target/mq-demo-2.3.1.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller
@@ -102,7 +102,7 @@ java -jar mq-demo/target/mq-demo-2.3.1.jar broker --broker-id 1 --port 9093 --da
 java -jar mq-demo/target/mq-demo-2.3.1.jar broker --broker-id 2 --port 9094 --data-dir ./data/broker-2 --controller-addr localhost:9092
 ```
 
-Create, produce, and consume / åˆ›å»º Topicã€ç”Ÿäº§æ¶ˆæ¯ã€æ¶ˆè´¹æ¶ˆæ¯ï¼š
+Create, produce, and consume / ´´½¨ Topic¡¢Éú²úÏûÏ¢¡¢Ïû·ÑÏûÏ¢£º
 
 ```powershell
 java -jar mq-demo/target/mq-demo-2.3.1.jar create-topic --brokers localhost:9092 --name orders --partitions 3
@@ -110,37 +110,37 @@ java -jar mq-demo/target/mq-demo-2.3.1.jar produce --brokers localhost:9092 --to
 java -jar mq-demo/target/mq-demo-2.3.1.jar consume --brokers localhost:9092 --topic orders --group order-processors
 ```
 
-Benchmark FETCH heap versus sendfile / å¯¹æ¯” HEAP ä¸ sendfile çš„ FETCH åŸºå‡†ï¼š
+Benchmark FETCH heap versus sendfile / ¶Ô±È HEAP Óë sendfile µÄ FETCH »ù×¼£º
 
 ```powershell
 java -jar mq-demo/target/mq-demo-2.3.1.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
 ```
 
-## 6. Glossary / ä¸“ä¸šåè¯è§£é‡Š
+## 6. Glossary / ×¨ÒµÃû´Ê½âÊÍ
 
-| Term / æœ¯è¯­ | ä¸­æ–‡è§£é‡Š | English explanation / è‹±æ–‡è§£é‡Š |
+| Term / ÊõÓï | ÖĞÎÄ½âÊÍ | English explanation / Ó¢ÎÄ½âÊÍ |
 | --- | --- | --- |
-| Broker | æ¶ˆæ¯é˜Ÿåˆ—æœåŠ¡èŠ‚ç‚¹ï¼Œè´Ÿè´£æ¥æ”¶ç”Ÿäº§è¯·æ±‚ã€ä¿å­˜æ—¥å¿—ã€å“åº”æ¶ˆè´¹è¯·æ±‚ã€‚ | A server node that stores records and serves produce/fetch requests. |
-| Controller | ç®¡ç†é›†ç¾¤å…ƒæ•°æ®çš„è§’è‰²ï¼Œä¾‹å¦‚ Broker æ³¨å†Œã€Topic åˆ›å»ºã€Partition leader åˆ†é…ã€‚ | The node responsible for cluster metadata and leadership decisions. |
-| Topic | æ¶ˆæ¯çš„é€»è¾‘åˆ†ç±»ï¼Œä¾‹å¦‚ `orders`ã€`payments`ã€‚ | A logical stream/category of messages. |
-| Partition | Topic çš„ç‰©ç†åˆ†ç‰‡ï¼Œç”¨äºå¹¶è¡Œå†™å…¥å’Œæ¶ˆè´¹ã€‚ | A shard of a topic, enabling parallelism and routing. |
-| Offset | åˆ†åŒºå†…æ¶ˆæ¯çš„é€’å¢ä½ç½®ç¼–å·ã€‚ | A monotonically increasing position in a partition log. |
-| Consumer Group | ä¸€ç»„æ¶ˆè´¹è€…å…±äº«åŒä¸€ä¸ªæ¶ˆè´¹è¿›åº¦å’Œåˆ†åŒºåˆ†é…ã€‚ | A group of consumers coordinating partition ownership and offsets. |
-| Assignment | Consumer Group ä¸­â€œå“ªä¸ªæˆå‘˜æ¶ˆè´¹å“ªäº›åˆ†åŒºâ€çš„ç»“æœã€‚ | The mapping from consumer members to partitions. |
-| High Watermark | å½“å‰åˆ†åŒºä¸‹ä¸€æ¡æ¶ˆæ¯çš„ offsetï¼Œä¹Ÿå¯ç†è§£ä¸ºå·²å†™å…¥å°¾éƒ¨ä½ç½®ã€‚ | The next offset after the last appended record. |
-| Append-only Log | åªè¿½åŠ ã€ä¸åŸåœ°ä¿®æ”¹çš„æ—¥å¿—æ–‡ä»¶ã€‚ | A log file that only appends new records. |
-| Frame | ç½‘ç»œåè®®ä¸­çš„å®Œæ•´æ¶ˆæ¯åŒ…ï¼ŒåŒ…å« magicã€versionã€lengthã€payloadã€‚ | A complete network packet with magic, version, length, and payload. |
+| Broker | ÏûÏ¢¶ÓÁĞ·şÎñ½Úµã£¬¸ºÔğ½ÓÊÕÉú²úÇëÇó¡¢±£´æÈÕÖ¾¡¢ÏìÓ¦Ïû·ÑÇëÇó¡£ | A server node that stores records and serves produce/fetch requests. |
+| Controller | ¹ÜÀí¼¯ÈºÔªÊı¾İµÄ½ÇÉ«£¬ÀıÈç Broker ×¢²á¡¢Topic ´´½¨¡¢Partition leader ·ÖÅä¡£ | The node responsible for cluster metadata and leadership decisions. |
+| Topic | ÏûÏ¢µÄÂß¼­·ÖÀà£¬ÀıÈç `orders`¡¢`payments`¡£ | A logical stream/category of messages. |
+| Partition | Topic µÄÎïÀí·ÖÆ¬£¬ÓÃÓÚ²¢ĞĞĞ´ÈëºÍÏû·Ñ¡£ | A shard of a topic, enabling parallelism and routing. |
+| Offset | ·ÖÇøÄÚÏûÏ¢µÄµİÔöÎ»ÖÃ±àºÅ¡£ | A monotonically increasing position in a partition log. |
+| Consumer Group | Ò»×éÏû·ÑÕß¹²ÏíÍ¬Ò»¸öÏû·Ñ½ø¶ÈºÍ·ÖÇø·ÖÅä¡£ | A group of consumers coordinating partition ownership and offsets. |
+| Assignment | Consumer Group ÖĞ¡°ÄÄ¸ö³ÉÔ±Ïû·ÑÄÄĞ©·ÖÇø¡±µÄ½á¹û¡£ | The mapping from consumer members to partitions. |
+| High Watermark | µ±Ç°·ÖÇøÏÂÒ»ÌõÏûÏ¢µÄ offset£¬Ò²¿ÉÀí½âÎªÒÑĞ´ÈëÎ²²¿Î»ÖÃ¡£ | The next offset after the last appended record. |
+| Append-only Log | Ö»×·¼Ó¡¢²»Ô­µØĞŞ¸ÄµÄÈÕÖ¾ÎÄ¼ş¡£ | A log file that only appends new records. |
+| Frame | ÍøÂçĞ­ÒéÖĞµÄÍêÕûÏûÏ¢°ü£¬°üº¬ magic¡¢version¡¢length¡¢payload¡£ | A complete network packet with magic, version, length, and payload. |
 
-## 7. New Agent Checklist / æ–° Agent æ¥æ‰‹æ¸…å•
+## 7. New Agent Checklist / ĞÂ Agent ½ÓÊÖÇåµ¥
 
-1. Read this index first. / å…ˆé˜…è¯»æœ¬ç´¢å¼•ã€‚
-2. Read `architecture.md` for module boundaries and runtime topology. / é˜…è¯» `architecture.md`ï¼Œç†è§£æ¨¡å—è¾¹ç•Œå’Œè¿è¡Œæ—¶æ‹“æ‰‘ã€‚
-3. Read `design.md` before changing protocol, storage, metadata, or consumer group logic. / ä¿®æ”¹åè®®ã€å­˜å‚¨ã€å…ƒæ•°æ®æˆ–æ¶ˆè´¹ç»„é€»è¾‘å‰å…ˆé˜…è¯» `design.md`ã€‚
-4. Run `mvn verify -gs .mvn/settings.xml -s .mvn/settings.xml` before and after changes. / ä¿®æ”¹å‰åéƒ½è¿è¡Œå®Œæ•´ Maven æµ‹è¯•å‘½ä»¤ã€‚
-5. Check `docs/test-report-2026-07-09.md` for the V1.3 closeout baseline. / æŸ¥çœ‹ `docs/test-report-2026-07-09.md` äº†è§£ V1.3 æ”¶å£åŸºçº¿ã€‚
-6. Do not treat target files as source of truth; source lives under `src/main/java` and `src/test/java`. / ä¸è¦æŠŠ `target` ç›®å½•å½“ä½œäº‹å®æ¥æºï¼Œæºç ä½äº `src/main/java` å’Œ `src/test/java`ã€‚
-7. Keep JaCoCo overall line coverage at or above 90%. / ä¿æŒ JaCoCo æ€»ä½“è¡Œè¦†ç›–ç‡ä¸ä½äº 90%ã€‚
-8. If changing protocol fields, update both `ProtocolSerdesTest` and the design document. / å¦‚æœä¿®æ”¹åè®®å­—æ®µï¼ŒåŒæ—¶æ›´æ–° `ProtocolSerdesTest` å’Œè®¾è®¡æ–‡æ¡£ã€‚
-9. If changing topic/partition routing, update `ProducerIntegrationTest`, `ProduceFetchIntegrationTest`, and architecture diagrams. / å¦‚æœä¿®æ”¹ Topic/Partition è·¯ç”±ï¼ŒåŒæ—¶æ›´æ–° `ProducerIntegrationTest`ã€`ProduceFetchIntegrationTest` å’Œæ¶æ„å›¾ã€‚
-10. If changing CLI behavior, update `DemoCliTest` and command examples in docs. / å¦‚æœä¿®æ”¹ CLI è¡Œä¸ºï¼ŒåŒæ—¶æ›´æ–° `DemoCliTest` å’Œæ–‡æ¡£ä¸­çš„å‘½ä»¤ç¤ºä¾‹ã€‚
+1. Read this index first. / ÏÈÔÄ¶Á±¾Ë÷Òı¡£
+2. Read `architecture.md` for module boundaries and runtime topology. / ÔÄ¶Á `architecture.md`£¬Àí½âÄ£¿é±ß½çºÍÔËĞĞÊ±ÍØÆË¡£
+3. Read `design.md` before changing protocol, storage, metadata, or consumer group logic. / ĞŞ¸ÄĞ­Òé¡¢´æ´¢¡¢ÔªÊı¾İ»òÏû·Ñ×éÂß¼­Ç°ÏÈÔÄ¶Á `design.md`¡£
+4. Run `mvn verify -gs .mvn/settings.xml -s .mvn/settings.xml` before and after changes. / ĞŞ¸ÄÇ°ºó¶¼ÔËĞĞÍêÕû Maven ²âÊÔÃüÁî¡£
+5. Check `docs/test-report-2026-07-09.md` for the V1.3 closeout baseline. / ²é¿´ `docs/test-report-2026-07-09.md` ÁË½â V1.3 ÊÕ¿Ú»ùÏß¡£
+6. Do not treat target files as source of truth; source lives under `src/main/java` and `src/test/java`. / ²»Òª°Ñ `target` Ä¿Â¼µ±×÷ÊÂÊµÀ´Ô´£¬Ô´ÂëÎ»ÓÚ `src/main/java` ºÍ `src/test/java`¡£
+7. Keep JaCoCo overall line coverage at or above 90%. / ±£³Ö JaCoCo ×ÜÌåĞĞ¸²¸ÇÂÊ²»µÍÓÚ 90%¡£
+8. If changing protocol fields, update both `ProtocolSerdesTest` and the design document. / Èç¹ûĞŞ¸ÄĞ­Òé×Ö¶Î£¬Í¬Ê±¸üĞÂ `ProtocolSerdesTest` ºÍÉè¼ÆÎÄµµ¡£
+9. If changing topic/partition routing, update `ProducerIntegrationTest`, `ProduceFetchIntegrationTest`, and architecture diagrams. / Èç¹ûĞŞ¸Ä Topic/Partition Â·ÓÉ£¬Í¬Ê±¸üĞÂ `ProducerIntegrationTest`¡¢`ProduceFetchIntegrationTest` ºÍ¼Ü¹¹Í¼¡£
+10. If changing CLI behavior, update `DemoCliTest` and command examples in docs. / Èç¹ûĞŞ¸Ä CLI ĞĞÎª£¬Í¬Ê±¸üĞÂ `DemoCliTest` ºÍÎÄµµÖĞµÄÃüÁîÊ¾Àı¡£
 
