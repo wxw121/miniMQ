@@ -74,6 +74,7 @@ public class ClusterController {
             partition.replicaBrokerIds = replicas;
             partition.isrBrokerIds = new ArrayList<>(replicas);
             partition.leaderBrokerId = replicas.get(0);
+            replicas.forEach(replicaId -> partition.replicaLogEndOffsets.put(replicaId, 0L));
             topic.partitions.add(partition);
         }
         metadata.topics.put(request.topicName(), topic);
@@ -178,6 +179,31 @@ public class ClusterController {
         return getReplicaBrokerIds(topicName, partitionId).contains(brokerId);
     }
 
+    public synchronized ErrorCode updateReplicaLogEndOffset(
+            String topicName, int partitionId, int brokerId, long logEndOffset) {
+        PartitionEntry partition = getPartitionEntry(topicName, partitionId);
+        if (partition == null || logEndOffset < 0
+                || !partition.replicaBrokerIds.contains(brokerId)) {
+            return ErrorCode.INVALID_REQUEST;
+        }
+        normalizePartition(partition);
+        long current = partition.replicaLogEndOffsets.getOrDefault(brokerId, 0L);
+        if (logEndOffset >= current) {
+            partition.replicaLogEndOffsets.put(brokerId, logEndOffset);
+            metadataStore.save(metadata);
+        }
+        return ErrorCode.NONE;
+    }
+
+    public synchronized long replicaLogEndOffset(String topicName, int partitionId, int brokerId) {
+        PartitionEntry partition = getPartitionEntry(topicName, partitionId);
+        if (partition == null) {
+            return 0L;
+        }
+        normalizePartition(partition);
+        return partition.replicaLogEndOffsets.getOrDefault(brokerId, 0L);
+    }
+
     public synchronized BrokerEntry getBroker(int brokerId) {
         BrokerEntry broker = metadata.brokers.get(brokerId);
         return broker != null ? copyBroker(broker) : null;
@@ -235,6 +261,9 @@ public class ClusterController {
         if (partition.isrBrokerIds == null) {
             partition.isrBrokerIds = new ArrayList<>();
         }
+        if (partition.replicaLogEndOffsets == null) {
+            partition.replicaLogEndOffsets = new java.util.HashMap<>();
+        }
         if (partition.replicaBrokerIds.isEmpty()) {
             partition.replicaBrokerIds.add(partition.leaderBrokerId);
         }
@@ -258,6 +287,9 @@ public class ClusterController {
         }
         if (!partition.isrBrokerIds.contains(partition.leaderBrokerId)) {
             partition.isrBrokerIds.add(0, partition.leaderBrokerId);
+        }
+        for (int replicaId : partition.replicaBrokerIds) {
+            partition.replicaLogEndOffsets.putIfAbsent(replicaId, 0L);
         }
     }
 
@@ -288,6 +320,7 @@ public class ClusterController {
             partitionCopy.leaderBrokerId = partition.leaderBrokerId;
             partitionCopy.replicaBrokerIds = new ArrayList<>(partition.replicaBrokerIds);
             partitionCopy.isrBrokerIds = new ArrayList<>(partition.isrBrokerIds);
+            partitionCopy.replicaLogEndOffsets = new java.util.HashMap<>(partition.replicaLogEndOffsets);
             copy.partitions.add(partitionCopy);
         }
         return copy;

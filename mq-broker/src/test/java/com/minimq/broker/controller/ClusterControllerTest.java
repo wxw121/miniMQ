@@ -12,6 +12,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -55,6 +56,30 @@ class ClusterControllerTest {
         assertEquals(0, partition.leaderBrokerId());
         assertEquals(List.of(0, 1, 2), partition.replicaBrokerIds());
         assertEquals(List.of(0, 1, 2), partition.isrBrokerIds());
+        assertEquals(Map.of(0, 0L, 1, 0L, 2, 0L),
+                controller.snapshot().topics.get("orders").partitions.get(0).replicaLogEndOffsets);
+    }
+
+    @Test
+    void replicaLogEndOffsetUpdatesAreMonotonic() {
+        ClusterController controller = controllerWithReplicatedTopic();
+
+        assertEquals(ErrorCode.NONE, controller.updateReplicaLogEndOffset("orders", 0, 1, 8L));
+        assertEquals(ErrorCode.NONE, controller.updateReplicaLogEndOffset("orders", 0, 1, 3L));
+
+        assertEquals(8L, controller.replicaLogEndOffset("orders", 0, 1));
+    }
+
+    @Test
+    void replicaLogEndOffsetRejectsInvalidUpdates() {
+        ClusterController controller = controllerWithReplicatedTopic();
+
+        assertEquals(ErrorCode.INVALID_REQUEST,
+                controller.updateReplicaLogEndOffset("orders", 0, 1, -1L));
+        assertEquals(ErrorCode.INVALID_REQUEST,
+                controller.updateReplicaLogEndOffset("missing", 0, 1, 1L));
+        assertEquals(ErrorCode.INVALID_REQUEST,
+                controller.updateReplicaLogEndOffset("orders", 0, 9, 1L));
     }
 
     @Test
@@ -139,10 +164,20 @@ class ClusterControllerTest {
         controller.createTopic(new CreateTopicRequest("orders", 1));
 
         var snapshot = controller.snapshot();
+        snapshot.topics.get("orders").partitions.get(0).replicaLogEndOffsets.put(0, 99L);
         snapshot.topics.clear();
         snapshot.brokers.clear();
 
         assertEquals(1, controller.metadata(new MetadataRequest("orders")).topics().size());
         assertEquals(1, controller.metadata(new MetadataRequest("orders")).brokers().size());
+        assertEquals(0L, controller.replicaLogEndOffset("orders", 0, 0));
+    }
+
+    private ClusterController controllerWithReplicatedTopic() {
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
+        controller.createTopic(new CreateTopicRequest("orders", 1, 2));
+        return controller;
     }
 }
