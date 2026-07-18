@@ -2,7 +2,7 @@
 
 > Branch / 分支：`dev/v2.3-replication`  
 > Release target / 发布目标：`2.3.0` (`v2.3.0-replication`)  
-> Follow-up patch line / 后续补丁线：`2.3.1-SNAPSHOT`
+> Follow-up patch line / 后续补丁线：`2.3.1`
 
 ## Scope / 范围
 
