@@ -38,7 +38,7 @@ The most important remaining limitation is that replication still depends on a s
 | P0 | Implemented: V2.3 replication foundation. / 已实现：V2.3 副本机制基础。 | Partitions now carry replica and ISR lists, followers pull with `REPLICA_FETCH`, leaders expose replication-aware high watermarks, and the controller can mark brokers offline to elect a new leader. / 分区现在带有 replica 与 ISR 列表，Follower 通过 `REPLICA_FETCH` 拉取，Leader 暴露复制感知的 high watermark，Controller 可标记 Broker 离线并选举新 Leader。 | `ClusterControllerTest`, `ReplicaStateManagerTest`, and `ReplicationIntegrationTest` cover metadata assignment, ISR high watermark math, follower catch-up, leader failover, and `NOT_LEADER` redirects. / 这些测试覆盖元数据分配、ISR high watermark 计算、Follower 追平、Leader 故障转移与 `NOT_LEADER` 重定向。 |
 | P0 | Completed: V2.3 replication P0 code-review fixes. / 已完成：V2.3 副本机制 P0 代码审查修复。 | Client/sendfile FETCH now honor replication HW; replica fetch catch-up is uncapped; offline election is atomic; failover read grace and monotonic LEO updates are in place. / 客户端/sendfile FETCH 遵守 replication HW；副本追平不再被错误截断；离线选举原子化；failover 读宽限期与单调 LEO 更新已落地。 | See `docs/code-review-2026-07-17-v2.3-replication.md` and `docs/test-report-2026-07-17-v2.3-replication.md`. / 见 `docs/code-review-2026-07-17-v2.3-replication.md` 与 `docs/test-report-2026-07-17-v2.3-replication.md`。 |
 | P1 | Released: V2.3.1 replication hardening. | Preferred-order and LEO-aware election, persisted follower LEO, ISR lag shrink/re-expand, sendfile concurrency/failure safety, and focused replica-fetch tests are included in `2.3.1`; connection pooling remains deferred. | Covered by `ClusterControllerTest`, `SegmentFileTest`, `FetchResponseWriterTest`, `LeaderReplicaClientTest`, `ReplicaFetcherTest`, `EmbeddedBrokerChannelTest`, and `docs/test-report-2026-07-18-v2.3.1-replication-hardening.md`. |
-| P1 | Planned: V2.3.2 replica-fetch connection pooling. | Reuse `LeaderReplicaClient` connections and Netty event loops per leader broker instead of creating one TCP connection and `NioEventLoopGroup` per partition per loop. | Planned coverage: `ReplicaConnectionPoolTest`, `LeaderReplicaClientTest`, and `ReplicaFetcherTest`. |
+| P1 | Completed: V2.3.2 replica-fetch connection pooling. | `ReplicaFetcher` now reuses `LeaderReplicaClient` connections and a shared Netty event loop per leader broker instead of creating one TCP connection and `NioEventLoopGroup` per partition per loop. | Covered by `ReplicaConnectionPoolTest`, `LeaderReplicaClientTest`, `ReplicaFetcherTest`, focused `ReplicationIntegrationTest` regression coverage, and `docs/test-report-2026-07-18-v2.3.2-replica-fetch-pooling.md`. |
 
 ## 3. Version Roadmap / 版本路线图
 
@@ -279,9 +279,9 @@ Implemented scope / 已实现范围：
 `2.3.1` 跟踪剩余 P1 副本待办：
 
 1. Released in `2.3.1`: preferred and LEO-aware leader election, persisted replica LEO, ISR lag shrink/re-expand, sendfile append/read-plan synchronization, sendfile prefix-failure close, and focused replica-fetch tests.
-2. Deferred after `2.3.1`: R3-P1-05 connection pooling for `ReplicaFetcher` / `LeaderReplicaClient`.
+2. Completed in `2.3.2-SNAPSHOT`: R3-P1-05 connection pooling for `ReplicaFetcher` / `LeaderReplicaClient`.
 
-Reference: `docs/code-review-2026-07-17-v2.3-replication.md` (R3-P1-01/02/03/04/06/07/08 complete; R3-P1-05 deferred).
+Reference: `docs/code-review-2026-07-17-v2.3-replication.md` (R3-P1-01/02/03/04/05/06/07/08 complete).
 
 Out of scope for V2.3 / 本阶段不包含：
 
@@ -395,9 +395,8 @@ For a new agent session, the most productive next tasks are:
 
 对新 agent 会话，最建议继续做：
 
-1. Start `2.3.2-SNAPSHOT` with R3-P1-05 connection pooling for `ReplicaFetcher` / `LeaderReplicaClient`.
-2. Add an operator-facing maintenance API or CLI command that renders `LogMaintenanceReport` and `LogMaintenanceMetrics`. / 增加面向运维的维护 API 或 CLI 命令，用来输出 `LogMaintenanceReport` 和 `LogMaintenanceMetrics`。
-3. Keep service discovery, circuit breaker, Epoll, and mmap in later productionization versions. / 服务发现、熔断、Epoll 与 mmap 继续放在后续生产化版本。
+1. Add an operator-facing maintenance API or CLI command that renders `LogMaintenanceReport` and `LogMaintenanceMetrics`. / 增加面向运维的维护 API 或 CLI 命令，用来输出 `LogMaintenanceReport` 和 `LogMaintenanceMetrics`。
+2. Keep service discovery, circuit breaker, Epoll, and mmap in later productionization versions. / 服务发现、熔断、Epoll 与 mmap 继续放在后续生产化版本。
 
 ## 6. Risk Register / 风险登记表
 
