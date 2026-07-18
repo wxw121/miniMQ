@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class RetentionPlannerTest {
 
@@ -63,5 +64,15 @@ class RetentionPlannerTest {
                 segments,
                 RetentionPolicy.disabled(),
                 1_000));
+    }
+
+    @Test
+    void segmentMetadataRejectsNegativeFields() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new SegmentMetadata(-1, 0, 0, false));
+        assertThrows(IllegalArgumentException.class,
+                () -> new SegmentMetadata(0, -1, 0, false));
+        assertThrows(IllegalArgumentException.class,
+                () -> new SegmentMetadata(0, 0, -1, false));
     }
 }
