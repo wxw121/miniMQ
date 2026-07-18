@@ -38,16 +38,16 @@ Severity legend / 严重级别：
 | R3-P1-01 | Leader election / Leader 选举 | `markBrokerOffline` elected the lowest Broker ID in ISR instead of following `replicaBrokerIds`. / `markBrokerOffline` 按 ISR 中最小 Broker ID 选举，而非遵循 `replicaBrokerIds` 顺序。 | Validate and retain the first online ISR member in configured replica order, then apply the atomic offline mutation without sorting ISR. / 按配置副本顺序预校验并保留首个在线 ISR 成员，再在不排序 ISR 的前提下原子应用离线变更。 | `ad3dd54` |
 | R3-P1-06 | Replica LEO / 副本 LEO | Follower LEO was broker-local memory only and unavailable to Controller after restart. / Follower LEO 仅存在于 Broker 本地内存，重启后 Controller 无法访问。 | Persist monotonic per-replica LEO in partition metadata; report non-Controller progress through API 12 and sync it in metadata responses. / 在分区元数据中持久化单调副本 LEO；非 Controller Broker 通过 API 12 上报，并由 metadata response 同步。 | `0c36053`, `7356d0d`, `6a37081`, `bbedc20` |
 | R3-P1-07 | Leader election / Leader 选举 | Promotion did not compare replica LEO lag. / 提升 Leader 时不比较副本 LEO 滞后。 | Elect the online ISR member with the highest known LEO; retain configured replica order as the tie-breaker. / 选举已知 LEO 最高的在线 ISR 成员；等值时保持配置副本顺序。 | `510c9a2` |
+| R3-P1-02 | ISR lifecycle | Lagging live replicas stayed in ISR and caught-up replicas were not restored. | Reconcile ISR from persisted replica LEO: shrink lagging followers and re-expand online replicas once caught up, preserving replica order with a bounded lag tolerance. | `b9bfdd4`, `060f169` |
+| R3-P1-03 | Storage concurrency | `SegmentFile.append` was unsynchronized while `planRead`/`read` were synchronized. | Synchronize append, size, flush, and close with read/plan paths so sendfile planning cannot race an active tail append. | `ef06d90` |
+| R3-P1-04 | Sendfile failure | Exception after `ctx.write(prefix)` could leave a truncated frame on the wire. | Track queued prefix state and close the channel on sendfile setup failure after prefix bytes are queued. | `cc17bcc` |
+| R3-P1-08 | Tests | No dedicated unit tests for `ReplicaFetcher`, `LeaderReplicaClient`, or direct `REPLICA_FETCH` behavior. | Add focused `LeaderReplicaClientTest`, `ReplicaFetcherTest`, and keep direct `REPLICA_FETCH` handler coverage in `EmbeddedBrokerChannelTest`. | `2d7c68f` |
 
-### P1 — Deferred to 2.3.1 / 延后至 2.3.1（R3-P1-02..08）
+### P1 - Deferred after 2.3.1
 
 | ID | Area / 区域 | Finding / 问题 | Planned fix / 计划修复 |
 | --- | --- | --- | --- |
-| R3-P1-02 | ISR lifecycle / ISR 生命周期 | ISR shrinks only through `MARK_BROKER_OFFLINE`; lagging live replicas stay in ISR; re-registered brokers are not restored to ISR. / ISR 仅通过 `MARK_BROKER_OFFLINE` 收缩；存活但滞后的副本仍留在 ISR；重新注册的 Broker 不会回到 ISR。 | Add lag-based ISR shrink and explicit ISR re-expansion on safe catch-up. / 增加基于滞后的 ISR 收缩与安全追平后的 ISR 扩容。 |
-| R3-P1-03 | Storage concurrency / 存储并发 | `SegmentFile.append` is unsynchronized while `planRead`/`read` are synchronized; concurrent tail append during sendfile can read torn records. / `SegmentFile.append` 未同步而 `planRead`/`read` 已同步；sendfile 期间并发 tail append 可能读到撕裂记录。 | Synchronize append with read/plan paths or exclude active tail from file regions. / 同步 append 与 read/plan 路径，或把 active tail 排除在 file region 之外。 |
-| R3-P1-04 | Sendfile failure / sendfile 失败 | Exception after `ctx.write(prefix)` can leave a truncated frame on the wire. / `ctx.write(prefix)` 之后异常可能向连接写入截断帧。 | Close channel on sendfile setup failure after any prefix byte is queued. / sendfile 设置失败且已排队 prefix 字节时关闭连接。 |
 | R3-P1-05 | ReplicaFetcher / 副本拉取 | New TCP connection and `NioEventLoopGroup` per partition per loop. / 每轮循环、每分区新建 TCP 连接与 `NioEventLoopGroup`。 | Pool connections per leader broker. / 按 Leader Broker 复用连接。 |
-| R3-P1-08 | Tests / 测试 | No dedicated unit tests for `ReplicaFetcher`, `LeaderReplicaClient`, or `REPLICA_FETCH` handler paths. / 缺少 `ReplicaFetcher`、`LeaderReplicaClient`、`REPLICA_FETCH` handler 的专门单测。 | Add focused unit/integration coverage. / 补充聚焦单测/集成测试。 |
 
 ### P2 — Known limitations / 已知限制（暂不排期）
 
@@ -75,6 +75,12 @@ Severity legend / 严重级别：
 | `MetadataSyncTest.applyMetadataCopiesReplicaLogEndOffsets` | R3-P1-06 |
 | `ReplicaLeoReporterTest.followerReporterUpdatesRemoteControllerMetadata` | R3-P1-06 |
 | `ClusterControllerTest.markBrokerOfflineElectsHighestLeoIsrReplica` | R3-P1-07 |
+| `ClusterControllerTest.laggingLiveReplicaShrinksOutOfIsr` | R3-P1-02 |
+| `ClusterControllerTest.caughtUpLiveReplicaReExpandsIntoIsrInReplicaOrder` | R3-P1-02 |
+| `SegmentFileTest.appendWaitsForSegmentMonitorHeldByReadPlanning` | R3-P1-03 |
+| `FetchResponseWriterTest.sendfileSetupFailureAfterPrefixQueuedClosesChannel` | R3-P1-04 |
+| `LeaderReplicaClientTest` | R3-P1-08 |
+| `ReplicaFetcherTest` | R3-P1-08 |
 
 ## Verification / 验证
 
