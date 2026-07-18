@@ -5,7 +5,7 @@
 
 ## 1. Current State / 当前状态
 
-MiniMQ has released V2.0 storage recovery as `v2.0.0`, tagged V2.1.2 maintenance observability as `v2.1.2-maintenance-observability`, released V2.2 zero-copy FETCH sendfile as `v2.2.0-read-performance` on `2.2.0`, released V2.3 replication as `v2.3.0-replication` on `2.3.0`, and released V2.3.1 replication hardening as `v2.3.1-replication-hardening` on `2.3.1`.
+MiniMQ has released V2.0 storage recovery as `v2.0.0`, tagged V2.1.2 maintenance observability as `v2.1.2-maintenance-observability`, released V2.2 zero-copy FETCH sendfile as `v2.2.0-read-performance` on `2.2.0`, released V2.3 replication as `v2.3.0-replication` on `2.3.0`, released V2.3.1 replication hardening as `v2.3.1-replication-hardening` on `2.3.1`, and opened `2.3.2-SNAPSHOT` for replica-fetch connection pooling.
 
 MiniMQ 已将 V2.0 存储恢复以 `v2.0.0` 发布，已将 V2.1.2 维护可观测性打为 `v2.1.2-maintenance-observability`，已将 V2.2 零拷贝 FETCH sendfile 以 `v2.2.0-read-performance` 发布为 `2.2.0`，已将 V2.3 副本机制以 `v2.3.0-replication` 发布为 `2.3.0`，并在 `2.3.1` 上实现 V2.3.1 副本机制加固。
 
@@ -38,6 +38,7 @@ The most important remaining limitation is that replication still depends on a s
 | P0 | Implemented: V2.3 replication foundation. / 已实现：V2.3 副本机制基础。 | Partitions now carry replica and ISR lists, followers pull with `REPLICA_FETCH`, leaders expose replication-aware high watermarks, and the controller can mark brokers offline to elect a new leader. / 分区现在带有 replica 与 ISR 列表，Follower 通过 `REPLICA_FETCH` 拉取，Leader 暴露复制感知的 high watermark，Controller 可标记 Broker 离线并选举新 Leader。 | `ClusterControllerTest`, `ReplicaStateManagerTest`, and `ReplicationIntegrationTest` cover metadata assignment, ISR high watermark math, follower catch-up, leader failover, and `NOT_LEADER` redirects. / 这些测试覆盖元数据分配、ISR high watermark 计算、Follower 追平、Leader 故障转移与 `NOT_LEADER` 重定向。 |
 | P0 | Completed: V2.3 replication P0 code-review fixes. / 已完成：V2.3 副本机制 P0 代码审查修复。 | Client/sendfile FETCH now honor replication HW; replica fetch catch-up is uncapped; offline election is atomic; failover read grace and monotonic LEO updates are in place. / 客户端/sendfile FETCH 遵守 replication HW；副本追平不再被错误截断；离线选举原子化；failover 读宽限期与单调 LEO 更新已落地。 | See `docs/code-review-2026-07-17-v2.3-replication.md` and `docs/test-report-2026-07-17-v2.3-replication.md`. / 见 `docs/code-review-2026-07-17-v2.3-replication.md` 与 `docs/test-report-2026-07-17-v2.3-replication.md`。 |
 | P1 | Released: V2.3.1 replication hardening. | Preferred-order and LEO-aware election, persisted follower LEO, ISR lag shrink/re-expand, sendfile concurrency/failure safety, and focused replica-fetch tests are included in `2.3.1`; connection pooling remains deferred. | Covered by `ClusterControllerTest`, `SegmentFileTest`, `FetchResponseWriterTest`, `LeaderReplicaClientTest`, `ReplicaFetcherTest`, `EmbeddedBrokerChannelTest`, and `docs/test-report-2026-07-18-v2.3.1-replication-hardening.md`. |
+| P1 | Planned: V2.3.2 replica-fetch connection pooling. | Reuse `LeaderReplicaClient` connections and Netty event loops per leader broker instead of creating one TCP connection and `NioEventLoopGroup` per partition per loop. | Planned coverage: `ReplicaConnectionPoolTest`, `LeaderReplicaClientTest`, and `ReplicaFetcherTest`. |
 
 ## 3. Version Roadmap / 版本路线图
 
