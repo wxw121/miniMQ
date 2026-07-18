@@ -115,16 +115,22 @@ public class ClusterController {
     }
 
     private Integer preferredSurvivingLeader(PartitionEntry partition, int offlineBrokerId) {
+        Integer selectedBrokerId = null;
+        long selectedLeo = Long.MIN_VALUE;
         for (int replicaId : partition.replicaBrokerIds) {
             BrokerEntry replica = metadata.brokers.get(replicaId);
             if (replicaId != offlineBrokerId
                     && partition.isrBrokerIds.contains(replicaId)
                     && replica != null
                     && replica.online) {
-                return replicaId;
+                long replicaLeo = partition.replicaLogEndOffsets.getOrDefault(replicaId, 0L);
+                if (selectedBrokerId == null || replicaLeo > selectedLeo) {
+                    selectedBrokerId = replicaId;
+                    selectedLeo = replicaLeo;
+                }
             }
         }
-        return null;
+        return selectedBrokerId;
     }
 
     public synchronized MetadataResponse metadata(MetadataRequest request) {

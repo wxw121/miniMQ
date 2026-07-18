@@ -123,6 +123,51 @@ class ClusterControllerTest {
     }
 
     @Test
+    void markBrokerOfflineElectsHighestLeoIsrReplica() {
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
+        controller.registerBroker(new RegisterBrokerRequest(2, "localhost", 9094));
+        controller.createTopic(new CreateTopicRequest("orders", 1, 3));
+        controller.updateMetadata(metadata -> {
+            var partition = metadata.topics.get("orders").partitions.get(0);
+            partition.replicaBrokerIds = new ArrayList<>(List.of(2, 0, 1));
+            partition.isrBrokerIds = new ArrayList<>(List.of(2, 0, 1));
+            partition.leaderBrokerId = 2;
+            return null;
+        });
+        controller.updateReplicaLogEndOffset("orders", 0, 0, 9L);
+        controller.updateReplicaLogEndOffset("orders", 0, 1, 12L);
+
+        assertEquals(ErrorCode.NONE, controller.markBrokerOffline(2));
+
+        PartitionMetadata partition = controller.metadata(new MetadataRequest("orders"))
+                .topics().get(0).partitions().get(0);
+        assertEquals(1, partition.leaderBrokerId());
+    }
+
+    @Test
+    void markBrokerOfflineExcludesHigherLeoReplicaOutsideIsr() {
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
+        controller.registerBroker(new RegisterBrokerRequest(2, "localhost", 9094));
+        controller.createTopic(new CreateTopicRequest("orders", 1, 3));
+        controller.updateMetadata(metadata -> {
+            var partition = metadata.topics.get("orders").partitions.get(0);
+            partition.replicaBrokerIds = new ArrayList<>(List.of(2, 0, 1));
+            partition.isrBrokerIds = new ArrayList<>(List.of(2, 0));
+            partition.leaderBrokerId = 2;
+            return null;
+        });
+        controller.updateReplicaLogEndOffset("orders", 0, 0, 9L);
+        controller.updateReplicaLogEndOffset("orders", 0, 1, 12L);
+
+        assertEquals(ErrorCode.NONE, controller.markBrokerOffline(2));
+        assertEquals(0, controller.getLeaderBrokerId("orders", 0));
+    }
+
+    @Test
     void rejectsTopicWithoutPositivePartitions() {
         ClusterController controller = new ClusterController(new MetadataStore(tempDir));
         controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
