@@ -36,6 +36,8 @@ Severity legend / 严重级别：
 | ID | Area / 区域 | Finding / 问题 | Fix / 修复 | Commit / 提交 |
 | --- | --- | --- | --- | --- |
 | R3-P1-01 | Leader election / Leader 选举 | `markBrokerOffline` elected the lowest Broker ID in ISR instead of following `replicaBrokerIds`. / `markBrokerOffline` 按 ISR 中最小 Broker ID 选举，而非遵循 `replicaBrokerIds` 顺序。 | Validate and retain the first online ISR member in configured replica order, then apply the atomic offline mutation without sorting ISR. / 按配置副本顺序预校验并保留首个在线 ISR 成员，再在不排序 ISR 的前提下原子应用离线变更。 | `ad3dd54` |
+| R3-P1-06 | Replica LEO / 副本 LEO | Follower LEO was broker-local memory only and unavailable to Controller after restart. / Follower LEO 仅存在于 Broker 本地内存，重启后 Controller 无法访问。 | Persist monotonic per-replica LEO in partition metadata; report non-Controller progress through API 12 and sync it in metadata responses. / 在分区元数据中持久化单调副本 LEO；非 Controller Broker 通过 API 12 上报，并由 metadata response 同步。 | `0c36053`, `7356d0d`, `6a37081`, `bbedc20` |
+| R3-P1-07 | Leader election / Leader 选举 | Promotion did not compare replica LEO lag. / 提升 Leader 时不比较副本 LEO 滞后。 | Elect the online ISR member with the highest known LEO; retain configured replica order as the tie-breaker. / 选举已知 LEO 最高的在线 ISR 成员；等值时保持配置副本顺序。 | `510c9a2` |
 
 ### P1 — Deferred to 2.3.1 / 延后至 2.3.1（R3-P1-02..08）
 
@@ -45,8 +47,6 @@ Severity legend / 严重级别：
 | R3-P1-03 | Storage concurrency / 存储并发 | `SegmentFile.append` is unsynchronized while `planRead`/`read` are synchronized; concurrent tail append during sendfile can read torn records. / `SegmentFile.append` 未同步而 `planRead`/`read` 已同步；sendfile 期间并发 tail append 可能读到撕裂记录。 | Synchronize append with read/plan paths or exclude active tail from file regions. / 同步 append 与 read/plan 路径，或把 active tail 排除在 file region 之外。 |
 | R3-P1-04 | Sendfile failure / sendfile 失败 | Exception after `ctx.write(prefix)` can leave a truncated frame on the wire. / `ctx.write(prefix)` 之后异常可能向连接写入截断帧。 | Close channel on sendfile setup failure after any prefix byte is queued. / sendfile 设置失败且已排队 prefix 字节时关闭连接。 |
 | R3-P1-05 | ReplicaFetcher / 副本拉取 | New TCP connection and `NioEventLoopGroup` per partition per loop. / 每轮循环、每分区新建 TCP 连接与 `NioEventLoopGroup`。 | Pool connections per leader broker. / 按 Leader Broker 复用连接。 |
-| R3-P1-06 | ReplicaStateManager / 副本 LEO | Follower LEO state is in-memory only; broker restart loses ISR progress until all followers re-report. / Follower LEO 仅内存态；Broker 重启后需全部 follower 重新上报才能恢复 replication HW。 | Persist or rebuild follower LEO on recovery / leadership transition. / 在恢复/领导权变更时持久化或重建 follower LEO。 |
-| R3-P1-07 | Leader election / Leader 选举 | Promotion does not compare replica LEO lag. / 提升 Leader 时不比较副本 LEO 滞后。 | Implement with R3-P1-06 after a reliable Controller-visible follower LEO source exists; then prefer the caught-up ISR member with the highest LEO. / 待 R3-P1-06 提供 Controller 可可靠访问的 follower LEO 数据源后一起实现，再优先选择已追平且 LEO 最高的 ISR 成员。 |
 | R3-P1-08 | Tests / 测试 | No dedicated unit tests for `ReplicaFetcher`, `LeaderReplicaClient`, or `REPLICA_FETCH` handler paths. / 缺少 `ReplicaFetcher`、`LeaderReplicaClient`、`REPLICA_FETCH` handler 的专门单测。 | Add focused unit/integration coverage. / 补充聚焦单测/集成测试。 |
 
 ### P2 — Known limitations / 已知限制（暂不排期）
@@ -71,6 +71,10 @@ Severity legend / 严重级别：
 | `ReplicaStateManagerTest.unreportedFollowerDoesNotBlockReadsBeforeNewWritesAfterLeaderChange` | R3-P0-06 |
 | `ReplicaStateManagerTest.newWritesBlockUnreportedFollowersAfterLeaderChange` | R3-P0-06 |
 | `ReplicationIntegrationTest.clientFetchAfterFailoverWithoutWaitingForFollowerFetch` | R3-P0-06 |
+| `MetadataStoreTest.saveAndLoadPreservesReplicaLogEndOffsets` | R3-P1-06 |
+| `MetadataSyncTest.applyMetadataCopiesReplicaLogEndOffsets` | R3-P1-06 |
+| `ReplicaLeoReporterTest.followerReporterUpdatesRemoteControllerMetadata` | R3-P1-06 |
+| `ClusterControllerTest.markBrokerOfflineElectsHighestLeoIsrReplica` | R3-P1-07 |
 
 ## Verification / 验证
 
