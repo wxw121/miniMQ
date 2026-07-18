@@ -11,6 +11,7 @@ import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
 import com.minimq.protocol.message.ProtocolMessages.TopicMetadata;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 
 /**
  * Broker 本地元数据缓存，接收 Controller 快照并提供线程安全读取入口。
@@ -32,7 +33,7 @@ public final class MetadataSync {
         }
     }
 
-    private static void applyMetadata(ClusterController controller, MetadataResponse metadata) {
+    static void applyMetadata(ClusterController controller, MetadataResponse metadata) {
         controller.updateMetadata(snapshot -> {
             snapshot.brokers.clear();
             snapshot.topics.clear();
@@ -54,6 +55,8 @@ public final class MetadataSync {
                     partitionEntry.leaderBrokerId = partition.leaderBrokerId();
                     partitionEntry.replicaBrokerIds = new ArrayList<>(partition.replicaBrokerIds());
                     partitionEntry.isrBrokerIds = new ArrayList<>(partition.isrBrokerIds());
+                    partitionEntry.replicaLogEndOffsets =
+                            new HashMap<>(partition.replicaLogEndOffsets());
                     entry.partitions.add(partitionEntry);
                 }
                 snapshot.topics.put(entry.topicName, entry);

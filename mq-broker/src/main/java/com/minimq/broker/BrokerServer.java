@@ -5,6 +5,7 @@ import com.minimq.broker.controller.GroupCoordinator;
 import com.minimq.broker.handler.MqRequestHandler;
 import com.minimq.broker.replication.ReplicaFetcher;
 import com.minimq.broker.replication.ReplicaStateManager;
+import com.minimq.broker.replication.ReplicaLeoReporter;
 import com.minimq.broker.metadata.MetadataStore;
 import com.minimq.protocol.codec.MqDecoder;
 import com.minimq.protocol.codec.MqEncoder;
@@ -39,6 +40,7 @@ public class BrokerServer {
     private PartitionManager partitionManager;
     private ClusterController clusterController;
     private ReplicaFetcher replicaFetcher;
+    private ReplicaLeoReporter replicaLeoReporter;
 
     public BrokerServer(BrokerConfig config) {
         this.config = config;
@@ -77,6 +79,7 @@ public class BrokerServer {
                                 config.maintenanceWindowEndHour())));
         partitionManager = new PartitionManager(logManager);
         replicaFetcher = new ReplicaFetcher(config, clusterController, partitionManager);
+        replicaLeoReporter = new ReplicaLeoReporter(config, clusterController);
 
         if (config.controller()) {
             clusterController.registerBroker(new RegisterBrokerRequest(
@@ -101,7 +104,8 @@ public class BrokerServer {
                                         groupCoordinator,
                                         partitionManager,
                                         replicaStateManager,
-                                        fetchTransferMetrics))
+                                        fetchTransferMetrics,
+                                        replicaLeoReporter))
                                 .addLast(new MqEncoder());
                     }
                 });
@@ -124,6 +128,9 @@ public class BrokerServer {
         }
         if (replicaFetcher != null) {
             replicaFetcher.close();
+        }
+        if (replicaLeoReporter != null) {
+            replicaLeoReporter.close();
         }
         if (partitionManager != null) {
             partitionManager.close();

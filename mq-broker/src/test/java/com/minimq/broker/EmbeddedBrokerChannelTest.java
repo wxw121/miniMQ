@@ -25,8 +25,11 @@ import com.minimq.protocol.message.ProtocolMessages.ProduceRecord;
 import com.minimq.protocol.message.ProtocolMessages.ProduceRequest;
 import com.minimq.protocol.message.ProtocolMessages.ProduceResponse;
 import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
+import com.minimq.protocol.message.ProtocolMessages.ReplicaFetchRequest;
+import com.minimq.protocol.message.ProtocolMessages.ReplicaFetchResponse;
 import com.minimq.protocol.message.ProtocolMessages.SyncGroupRequest;
 import com.minimq.protocol.message.ProtocolMessages.SyncGroupResponse;
+import com.minimq.protocol.message.ProtocolMessages.UpdateReplicaLeoRequest;
 import com.minimq.storage.LogManager;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.embedded.EmbeddedChannel;
@@ -128,6 +131,38 @@ class EmbeddedBrokerChannelTest {
     }
 
     @Test
+    void controllerAcceptsReplicaLeoUpdates() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
+        clusterController.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092));
+        clusterController.registerBroker(new RegisterBrokerRequest(1, "127.0.0.1", 9093));
+        clusterController.createTopic(new CreateTopicRequest("orders", 1, 2));
+        EmbeddedChannel channel = newChannel(clusterController, true);
+
+        MqDecoder.DecodedResponse response = send(
+                channel,
+                ApiKeys.UPDATE_REPLICA_LEO,
+                new UpdateReplicaLeoRequest("orders", 0, 1, 9L));
+
+        assertEquals(ErrorCode.NONE, response.header().errorCode());
+        assertEquals(9L, clusterController.replicaLogEndOffset("orders", 0, 1));
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void nonControllerRejectsReplicaLeoUpdates() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
+        EmbeddedChannel channel = newChannel(clusterController, false);
+
+        MqDecoder.DecodedResponse response = send(
+                channel,
+                ApiKeys.UPDATE_REPLICA_LEO,
+                new UpdateReplicaLeoRequest("orders", 0, 1, 9L));
+
+        assertEquals(ErrorCode.INVALID_REQUEST, response.header().errorCode());
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
     void produceToUnknownTopicReturnsUnknownTopic() {
         MetadataStore store = new MetadataStore(tempDir);
         ClusterController clusterController = new ClusterController(store);
@@ -172,6 +207,7 @@ class EmbeddedBrokerChannelTest {
                         new ProduceRecord("k2".getBytes(), "v2".getBytes()))));
         assertEquals(ErrorCode.NONE, produceResponse.header().errorCode());
         assertEquals(1, ((ProduceResponse) produceResponse.body()).baseOffset());
+        assertEquals(2L, clusterController.replicaLogEndOffset("orders", 0, 0));
 
         MqDecoder.DecodedResponse fetchResponse = send(channel, ApiKeys.FETCH,
                 new FetchRequest("orders", 0, 0, 1024));
@@ -200,6 +236,29 @@ class EmbeddedBrokerChannelTest {
                 new OffsetFetchRequest("g1", "orders", 0));
         assertEquals(2, ((OffsetFetchResponse) offsetFetchResponse.body()).offset());
 
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void replicaFetchOnlyReportsFollowerConfirmedFetchOffset() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
+        EmbeddedChannel channel = newChannel(clusterController, true);
+        assertEquals(ErrorCode.NONE, send(channel, ApiKeys.REGISTER_BROKER,
+                new RegisterBrokerRequest(0, "127.0.0.1", 9092)).header().errorCode());
+        assertEquals(ErrorCode.NONE, send(channel, ApiKeys.REGISTER_BROKER,
+                new RegisterBrokerRequest(1, "127.0.0.1", 9093)).header().errorCode());
+        assertEquals(ErrorCode.NONE, send(channel, ApiKeys.CREATE_TOPIC,
+                new CreateTopicRequest("orders", 1, 2)).header().errorCode());
+        assertEquals(ErrorCode.NONE, send(channel, ApiKeys.PRODUCE,
+                new ProduceRequest("orders", 0, List.of(
+                        new ProduceRecord(null, new byte[] {1})))).header().errorCode());
+
+        MqDecoder.DecodedResponse response = send(channel, ApiKeys.REPLICA_FETCH,
+                new ReplicaFetchRequest("orders", 0, 1, 0L, 1024));
+
+        assertEquals(ErrorCode.NONE, response.header().errorCode());
+        assertEquals(1, ((ReplicaFetchResponse) response.body()).records().size());
+        assertEquals(0L, clusterController.replicaLogEndOffset("orders", 0, 1));
         channel.finishAndReleaseAll();
     }
 

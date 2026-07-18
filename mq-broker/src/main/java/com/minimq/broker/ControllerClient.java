@@ -10,6 +10,7 @@ import com.minimq.protocol.message.MqRequestHeader;
 import com.minimq.protocol.message.ProtocolMessages.MetadataRequest;
 import com.minimq.protocol.message.ProtocolMessages.MetadataResponse;
 import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
+import com.minimq.protocol.message.ProtocolMessages.UpdateReplicaLeoRequest;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.*;
@@ -61,6 +62,11 @@ public class ControllerClient implements AutoCloseable {
         MqDecoder.DecodedResponse decoded = awaitResponse(ApiKeys.METADATA);
         ensureSuccess(decoded);
         return (MetadataResponse) decoded.body();
+    }
+
+    public synchronized void updateReplicaLeo(UpdateReplicaLeoRequest request) throws InterruptedException {
+        send(ApiKeys.UPDATE_REPLICA_LEO, request);
+        ensureSuccess(awaitResponse(ApiKeys.UPDATE_REPLICA_LEO));
     }
 
     private void send(short apiKey, Object body) {
