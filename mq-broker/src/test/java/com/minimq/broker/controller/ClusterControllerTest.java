@@ -187,7 +187,7 @@ class ClusterControllerTest {
     void laggingLiveReplicaShrinksOutOfIsr() {
         ClusterController controller = controllerWithReplicatedTopic();
 
-        assertEquals(ErrorCode.NONE, controller.updateReplicaLogEndOffset("orders", 0, 0, 10L));
+        assertEquals(ErrorCode.NONE, controller.updateReplicaLogEndOffset("orders", 0, 0, 20L));
         assertEquals(ErrorCode.NONE, controller.updateReplicaLogEndOffset("orders", 0, 1, 5L));
 
         PartitionMetadata partition = controller.metadata(new MetadataRequest("orders"))

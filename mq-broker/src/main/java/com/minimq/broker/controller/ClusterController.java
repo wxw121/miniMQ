@@ -26,7 +26,7 @@ import java.util.stream.Collectors;
  * Cluster controller that maintains a consistent view of brokers, topics, partition leaders, and consumer groups.
  */
 public class ClusterController {
-    private static final long ISR_LAG_TOLERANCE_RECORDS = 0L;
+    private static final long ISR_LAG_TOLERANCE_RECORDS = 10L;
 
     private final MetadataStore metadataStore;
     private ClusterMetadata metadata;
