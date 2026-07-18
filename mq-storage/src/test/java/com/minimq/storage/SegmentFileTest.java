@@ -9,6 +9,12 @@ import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static java.nio.file.StandardOpenOption.CREATE;
 import static java.nio.file.StandardOpenOption.READ;
@@ -63,6 +69,35 @@ class SegmentFileTest {
             assertNull(segment.recordAt(9));
             assertNull(segment.recordAt(12));
             assertThrows(IOException.class, () -> segment.append(11, "k".getBytes(), "v".getBytes()));
+        }
+    }
+
+    @Test
+    void appendWaitsForSegmentMonitorHeldByReadPlanning(@TempDir Path dir) throws Exception {
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try (SegmentFile segment = SegmentFile.create(
+                dir,
+                new SegmentDescriptor(0, 100),
+                new SegmentedLogConfig(1_024, 1))) {
+            segment.append(0, "k0".getBytes(), "v0".getBytes());
+            CountDownLatch appendAttempted = new CountDownLatch(1);
+
+            Future<Void> append = executor.submit(() -> {
+                appendAttempted.countDown();
+                segment.append(1, "k1".getBytes(), "v1".getBytes());
+                return null;
+            });
+
+            synchronized (segment) {
+                assertTrue(appendAttempted.await(1, TimeUnit.SECONDS));
+                assertThrows(TimeoutException.class, () -> append.get(150, TimeUnit.MILLISECONDS));
+                assertEquals(1, segment.planRead(0, 1_024, 10, true).recordCount());
+            }
+
+            append.get(1, TimeUnit.SECONDS);
+            assertEquals(List.of(0L, 1L), segment.read(0, 1_024).stream().map(Record::offset).toList());
+        } finally {
+            executor.shutdownNow();
         }
     }
 

@@ -137,7 +137,7 @@ final class SegmentFile implements AutoCloseable {
         return recordCount > 0;
     }
 
-    long size() {
+    synchronized long size() {
         try {
             ensureOpen();
             return logChannel.size();
@@ -146,7 +146,7 @@ final class SegmentFile implements AutoCloseable {
         }
     }
 
-    void append(long offset, byte[] key, byte[] value) throws IOException {
+    synchronized void append(long offset, byte[] key, byte[] value) throws IOException {
         ensureOpen();
         if (offset < descriptor.baseOffset() || offset <= lastOffset) {
             throw new IOException("Invalid append offset " + offset + " for segment " + logPath);
@@ -243,7 +243,7 @@ final class SegmentFile implements AutoCloseable {
         return null;
     }
 
-    void flush() {
+    synchronized void flush() {
         try {
             ensureOpen();
             logChannel.force(false);
@@ -254,7 +254,7 @@ final class SegmentFile implements AutoCloseable {
     }
 
     @Override
-    public void close() {
+    public synchronized void close() {
         if (closed) {
             return;
         }

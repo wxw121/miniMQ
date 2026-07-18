@@ -101,6 +101,7 @@ final class FetchResponseWriter {
                 request.fetchOffset(), request.maxBytes(), effectiveHighWatermark);
         TransferCleanup cleanup = new TransferCleanup(plan);
         List<DefaultFileRegion> regions = new ArrayList<>();
+        boolean prefixQueued = false;
         try {
             for (FileRegionSlice slice : plan.slices()) {
                 FileChannel channel = FileChannel.open(slice.path(), StandardOpenOption.READ);
@@ -128,8 +129,10 @@ final class FetchResponseWriter {
             final ChannelFuture lastFuture;
             if (regions.isEmpty()) {
                 lastFuture = ctx.writeAndFlush(prefix);
+                prefixQueued = true;
             } else {
                 ctx.write(prefix);
+                prefixQueued = true;
                 ChannelFuture flushFuture = null;
                 for (int i = 0; i < regions.size(); i++) {
                     DefaultFileRegion region = regions.get(i);
@@ -165,6 +168,9 @@ final class FetchResponseWriter {
                 ReferenceCountUtil.safeRelease(region);
             }
             cleanup.run();
+            if (prefixQueued) {
+                ctx.close();
+            }
             throw new IllegalStateException("Failed to write sendfile FETCH response", failure);
         }
     }

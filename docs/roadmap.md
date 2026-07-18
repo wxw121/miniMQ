@@ -37,7 +37,7 @@ The most important remaining limitation is that replication still depends on a s
 | P0 | Implemented: V2.2 zero-copy FETCH sendfile path. / 已实现：V2.2 零拷贝 FETCH sendfile 路径。 | Broker FETCH can transfer segmented-log bytes with Netty `DefaultFileRegion` while preserving heap fallback and reader-lease safety. / Broker FETCH 可用 Netty `DefaultFileRegion` 传输分段日志字节，同时保留 heap 回退和读租约安全。 | `SegmentedPartitionLogFetchPlanTest`, `FetchResponseWriterTest`, `ZeroCopyFetchIntegrationTest`, and `FetchBenchmarkTest` cover planning, writer selection, real TCP, and metrics. / 这些测试覆盖规划、writer 选择、真实 TCP 与指标。 |
 | P0 | Implemented: V2.3 replication foundation. / 已实现：V2.3 副本机制基础。 | Partitions now carry replica and ISR lists, followers pull with `REPLICA_FETCH`, leaders expose replication-aware high watermarks, and the controller can mark brokers offline to elect a new leader. / 分区现在带有 replica 与 ISR 列表，Follower 通过 `REPLICA_FETCH` 拉取，Leader 暴露复制感知的 high watermark，Controller 可标记 Broker 离线并选举新 Leader。 | `ClusterControllerTest`, `ReplicaStateManagerTest`, and `ReplicationIntegrationTest` cover metadata assignment, ISR high watermark math, follower catch-up, leader failover, and `NOT_LEADER` redirects. / 这些测试覆盖元数据分配、ISR high watermark 计算、Follower 追平、Leader 故障转移与 `NOT_LEADER` 重定向。 |
 | P0 | Completed: V2.3 replication P0 code-review fixes. / 已完成：V2.3 副本机制 P0 代码审查修复。 | Client/sendfile FETCH now honor replication HW; replica fetch catch-up is uncapped; offline election is atomic; failover read grace and monotonic LEO updates are in place. / 客户端/sendfile FETCH 遵守 replication HW；副本追平不再被错误截断；离线选举原子化；failover 读宽限期与单调 LEO 更新已落地。 | See `docs/code-review-2026-07-17-v2.3-replication.md` and `docs/test-report-2026-07-17-v2.3-replication.md`. / 见 `docs/code-review-2026-07-17-v2.3-replication.md` 与 `docs/test-report-2026-07-17-v2.3-replication.md`。 |
-| P1 | In progress: V2.3.1 replication hardening. / 进行中：V2.3.1 副本机制加固。 | Preferred-order leader election is complete; ISR lag shrink/expand, sendfile concurrency safety, replica-fetch connection pooling, persisted follower LEO, LEO-aware promotion, and missing unit tests remain. / preferred 顺序 Leader 选举已完成；ISR 滞后收缩/扩容、sendfile 并发安全、副本拉取连接池、持久化 follower LEO、LEO 感知提升与缺失单测仍待完成。 | `ClusterControllerTest.markBrokerOfflineElectsFirstSurvivingReplicaByConfiguredOrder` covers R3-P1-01; R3-P1-02..08 remain tracked in `docs/code-review-2026-07-17-v2.3-replication.md`. / `ClusterControllerTest.markBrokerOfflineElectsFirstSurvivingReplicaByConfiguredOrder` 覆盖 R3-P1-01；R3-P1-02..08 继续记录在审查文档中。 |
+| P1 | Completed: V2.3.1 replication hardening core P1s. | Preferred-order and LEO-aware election, persisted follower LEO, ISR lag shrink/re-expand, sendfile concurrency/failure safety, and focused replica-fetch tests are complete; connection pooling remains deferred. | Covered by `ClusterControllerTest`, `SegmentFileTest`, `FetchResponseWriterTest`, `LeaderReplicaClientTest`, `ReplicaFetcherTest`, and `EmbeddedBrokerChannelTest`. |
 
 ## 3. Version Roadmap / 版本路线图
 
@@ -277,16 +277,10 @@ Implemented scope / 已实现范围：
 
 `2.3.1-SNAPSHOT` 跟踪剩余 P1 副本待办：
 
-1. Completed in `2.3.1-SNAPSHOT`: preferred leader election now follows `replicaBrokerIds` order instead of lowest broker ID. / 已在 `2.3.1-SNAPSHOT` 完成：preferred leader 选举现按 `replicaBrokerIds` 顺序，而非最小 broker ID。
-2. ISR lag shrink and broker rejoin expansion. / ISR 滞后收缩与 Broker 重新加入后的扩容。
-3. Active-segment append/read concurrency safety for sendfile FETCH. / sendfile FETCH 的 active segment 追加/读取并发安全。
-4. Close channel on partial sendfile failure. / sendfile 部分写入失败时关闭连接。
-5. Replica-fetch connection pooling per leader broker. / 按 Leader Broker 复用副本拉取连接。
-6. Persist or rebuild follower LEO across broker restart. / Broker 重启后持久化或重建 follower LEO。
-7. Leader promotion with replica LEO comparison, implemented together with item 6 after a reliable Controller-visible follower LEO source exists. / 结合副本 LEO 比较的 Leader 提升；待第 6 项提供 Controller 可可靠访问的 follower LEO 数据源后一起实现。
-8. Unit tests for `ReplicaFetcher`, `LeaderReplicaClient`, and `REPLICA_FETCH` handler paths. / 为 `ReplicaFetcher`、`LeaderReplicaClient`、`REPLICA_FETCH` handler 补单测。
+1. Completed in `2.3.1-SNAPSHOT`: preferred and LEO-aware leader election, persisted replica LEO, ISR lag shrink/re-expand, sendfile append/read-plan synchronization, sendfile prefix-failure close, and focused replica-fetch tests.
+2. Deferred after `2.3.1`: R3-P1-05 connection pooling for `ReplicaFetcher` / `LeaderReplicaClient`.
 
-Reference / 参考：`docs/code-review-2026-07-17-v2.3-replication.md` (R3-P1-01 complete; R3-P1-02..08 pending / R3-P1-01 已完成，R3-P1-02..08 待完成).
+Reference: `docs/code-review-2026-07-17-v2.3-replication.md` (R3-P1-01/02/03/04/06/07/08 complete; R3-P1-05 deferred).
 
 Out of scope for V2.3 / 本阶段不包含：
 
@@ -400,7 +394,7 @@ For a new agent session, the most productive next tasks are:
 
 对新 agent 会话，最建议继续做：
 
-1. Continue V2.3.1 replication hardening from `docs/code-review-2026-07-17-v2.3-replication.md` (R3-P1-02..08). / 从 `docs/code-review-2026-07-17-v2.3-replication.md`（R3-P1-02..08）继续 V2.3.1 副本机制加固。
+1. Prepare the V2.3.1 release decision; R3-P1-05 connection pooling is the only remaining deferred P1 from the replication review.
 2. Add an operator-facing maintenance API or CLI command that renders `LogMaintenanceReport` and `LogMaintenanceMetrics`. / 增加面向运维的维护 API 或 CLI 命令，用来输出 `LogMaintenanceReport` 和 `LogMaintenanceMetrics`。
 3. Keep service discovery, circuit breaker, Epoll, and mmap in later productionization versions. / 服务发现、熔断、Epoll 与 mmap 继续放在后续生产化版本。
 
