@@ -7,6 +7,7 @@ import com.minimq.broker.PartitionManager;
 import com.minimq.broker.controller.ClusterController;
 import com.minimq.broker.controller.GroupCoordinator;
 import com.minimq.broker.replication.ReplicaStateManager;
+import com.minimq.broker.replication.ReplicaLeoReporter;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.common.model.Record;
 import com.minimq.protocol.ApiKeys;
@@ -35,6 +36,7 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     private final GroupCoordinator groupCoordinator;
     private final PartitionManager partitionManager;
     private final ReplicaStateManager replicaStateManager;
+    private final ReplicaLeoReporter replicaLeoReporter;
     private final FetchResponseWriter fetchResponseWriter;
 
     public MqRequestHandler(
@@ -63,6 +65,24 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             ReplicaStateManager replicaStateManager,
             FetchTransferMetrics fetchTransferMetrics) {
         this.config = config;
+        this.replicaLeoReporter = new ReplicaLeoReporter(config, clusterController);
+        this.clusterController = clusterController;
+        this.groupCoordinator = groupCoordinator;
+        this.partitionManager = partitionManager;
+        this.replicaStateManager = replicaStateManager;
+        this.fetchResponseWriter = new FetchResponseWriter(config, fetchTransferMetrics);
+    }
+
+    public MqRequestHandler(
+            BrokerConfig config,
+            ClusterController clusterController,
+            GroupCoordinator groupCoordinator,
+            PartitionManager partitionManager,
+            ReplicaStateManager replicaStateManager,
+            FetchTransferMetrics fetchTransferMetrics,
+            ReplicaLeoReporter replicaLeoReporter) {
+        this.config = config;
+        this.replicaLeoReporter = replicaLeoReporter;
         this.clusterController = clusterController;
         this.groupCoordinator = groupCoordinator;
         this.partitionManager = partitionManager;
@@ -105,6 +125,18 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                             ((MarkBrokerOfflineRequest) requestBody).brokerId());
                     if (errorCode == ErrorCode.NONE) {
                         responseBody = new MarkBrokerOfflineResponse();
+                    }
+                }
+                case ApiKeys.UPDATE_REPLICA_LEO -> {
+                    ensureController();
+                    UpdateReplicaLeoRequest request = (UpdateReplicaLeoRequest) requestBody;
+                    errorCode = clusterController.updateReplicaLogEndOffset(
+                            request.topicName(),
+                            request.partitionId(),
+                            request.replicaBrokerId(),
+                            request.logEndOffset());
+                    if (errorCode == ErrorCode.NONE) {
+                        responseBody = new UpdateReplicaLeoResponse();
                     }
                 }
                 case ApiKeys.PRODUCE -> {
@@ -194,6 +226,11 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 request.partitionId(),
                 config.brokerId(),
                 partitionLog.highWatermark());
+        reportReplicaLeo(
+                request.topicName(),
+                request.partitionId(),
+                config.brokerId(),
+                partitionLog.highWatermark());
         return new ProduceResponse(request.topicName(), request.partitionId(), baseOffset);
     }
 
@@ -224,6 +261,11 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             fetched.add(new FetchedRecord(record.offset(), record.key(), record.value()));
         }
         replicaStateManager.updateReplicaLeo(
+                request.topicName(),
+                request.partitionId(),
+                request.replicaBrokerId(),
+                request.fetchOffset() + fetched.size());
+        reportReplicaLeo(
                 request.topicName(),
                 request.partitionId(),
                 request.replicaBrokerId(),
@@ -289,11 +331,19 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     }
 
     private void noteLeadership(String topicName, int partitionId) {
+        long highWatermark = partitionManager.highWatermark(topicName, partitionId);
         replicaStateManager.noteLeadership(
                 topicName,
                 partitionId,
                 config.brokerId(),
-                partitionManager.highWatermark(topicName, partitionId));
+                highWatermark);
+        reportReplicaLeo(topicName, partitionId, config.brokerId(), highWatermark);
+    }
+
+    private void reportReplicaLeo(String topicName, int partitionId, int brokerId, long logEndOffset) {
+        if (replicaLeoReporter.report(topicName, partitionId, brokerId, logEndOffset) != ErrorCode.NONE) {
+            throw new IllegalStateException("Controller did not accept replica LEO update");
+        }
     }
 
     private void ensureController() {

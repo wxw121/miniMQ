@@ -9,6 +9,8 @@ import com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest;
 import com.minimq.protocol.message.ProtocolMessages.FetchRequest;
 import com.minimq.protocol.message.ProtocolMessages.FetchResponse;
 import com.minimq.protocol.message.ProtocolMessages.MarkBrokerOfflineRequest;
+import com.minimq.protocol.message.ProtocolMessages.MetadataRequest;
+import com.minimq.protocol.message.ProtocolMessages.MetadataResponse;
 import com.minimq.protocol.message.ProtocolMessages.ProduceRecord;
 import com.minimq.protocol.message.ProtocolMessages.ProduceRequest;
 import org.junit.jupiter.api.Test;
@@ -66,6 +68,12 @@ class ReplicationIntegrationTest {
 
             waitForFollowerReplication(broker1, "orders", 0, 1);
             waitForFollowerReplication(broker2, "orders", 0, 1);
+
+            MetadataResponse metadata = (MetadataResponse) admin.send(
+                    ApiKeys.METADATA, new MetadataRequest("orders")).body();
+            var replicaLeos = metadata.topics().get(0).partitions().get(0).replicaLogEndOffsets();
+            assertEquals(1L, replicaLeos.get(1));
+            assertEquals(1L, replicaLeos.get(2));
         }
     }
 
