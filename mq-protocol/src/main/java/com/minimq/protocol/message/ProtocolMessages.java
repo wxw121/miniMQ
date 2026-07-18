@@ -1,6 +1,7 @@
 package com.minimq.protocol.message;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 协议消息集合，集中定义各 API 的请求、响应和元数据 record。
@@ -28,9 +29,18 @@ public final class ProtocolMessages {
             int partitionId,
             int leaderBrokerId,
             List<Integer> replicaBrokerIds,
-            List<Integer> isrBrokerIds) {
+            List<Integer> isrBrokerIds,
+            Map<Integer, Long> replicaLogEndOffsets) {
         public PartitionMetadata(int partitionId, int leaderBrokerId) {
-            this(partitionId, leaderBrokerId, List.of(leaderBrokerId), List.of(leaderBrokerId));
+            this(partitionId, leaderBrokerId, List.of(leaderBrokerId), List.of(leaderBrokerId), Map.of());
+        }
+
+        public PartitionMetadata(
+                int partitionId,
+                int leaderBrokerId,
+                List<Integer> replicaBrokerIds,
+                List<Integer> isrBrokerIds) {
+            this(partitionId, leaderBrokerId, replicaBrokerIds, isrBrokerIds, Map.of());
         }
     }
 
@@ -121,5 +131,15 @@ public final class ProtocolMessages {
     }
 
     public record MarkBrokerOfflineResponse() {
+    }
+
+    public record UpdateReplicaLeoRequest(
+            String topicName,
+            int partitionId,
+            int replicaBrokerId,
+            long logEndOffset) {
+    }
+
+    public record UpdateReplicaLeoResponse() {
     }
 }

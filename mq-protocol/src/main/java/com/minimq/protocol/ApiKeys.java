@@ -16,6 +16,7 @@ public final class ApiKeys {
     public static final short REGISTER_BROKER = 9;
     public static final short REPLICA_FETCH = 10;
     public static final short MARK_BROKER_OFFLINE = 11;
+    public static final short UPDATE_REPLICA_LEO = 12;
 
     private ApiKeys() {
     }

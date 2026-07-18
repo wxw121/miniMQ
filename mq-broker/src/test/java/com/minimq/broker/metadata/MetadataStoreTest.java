@@ -10,6 +10,8 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -333,6 +335,50 @@ class MetadataStoreTest {
         assertFalse(Files.exists(dir.resolve("cluster-metadata.json.tmp")));
         ClusterMetadata loaded = store.load();
         assertEquals("127.0.0.1", loaded.brokers.get(1).host);
+    }
+
+    @Test
+    void saveAndLoadPreservesReplicaLogEndOffsets(@TempDir Path dir) {
+        ClusterMetadata metadata = new ClusterMetadata();
+        ClusterMetadata.TopicEntry topic = new ClusterMetadata.TopicEntry();
+        topic.topicName = "orders";
+        ClusterMetadata.PartitionEntry partition = new ClusterMetadata.PartitionEntry();
+        partition.partitionId = 0;
+        partition.leaderBrokerId = 0;
+        partition.replicaBrokerIds = List.of(0, 1);
+        partition.isrBrokerIds = List.of(0, 1);
+        partition.replicaLogEndOffsets.put(0, 12L);
+        partition.replicaLogEndOffsets.put(1, 9L);
+        topic.partitions.add(partition);
+        metadata.topics.put(topic.topicName, topic);
+
+        MetadataStore store = new MetadataStore(dir);
+        store.save(metadata);
+
+        assertEquals(Map.of(0, 12L, 1, 9L),
+                store.load().topics.get("orders").partitions.get(0).replicaLogEndOffsets);
+    }
+
+    @Test
+    void loadRejectsInvalidReplicaLogEndOffset(@TempDir Path dir) throws IOException {
+        assertInvalidMetadata(dir, """
+                {
+                  "brokers": {},
+                  "topics": {
+                    "orders": {
+                      "topicName": "orders",
+                      "partitions": [{
+                        "partitionId": 0,
+                        "leaderBrokerId": 0,
+                        "replicaBrokerIds": [0, 1],
+                        "isrBrokerIds": [0, 1],
+                        "replicaLogEndOffsets": {"1": -1}
+                      }]
+                    }
+                  },
+                  "consumerGroups": {}
+                }
+                """, "invalid replica LEO");
     }
 
     private static void assertInvalidMetadata(Path dir, String json, String expectedCause) throws IOException {

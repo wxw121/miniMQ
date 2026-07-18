@@ -30,6 +30,7 @@ public class ClusterMetadata {
         public int leaderBrokerId;
         public List<Integer> replicaBrokerIds = new ArrayList<>();
         public List<Integer> isrBrokerIds = new ArrayList<>();
+        public Map<Integer, Long> replicaLogEndOffsets = new HashMap<>();
     }
 
     public static class ConsumerGroupEntry {
