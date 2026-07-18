@@ -26,6 +26,7 @@ public final class ReplicaFetcher implements AutoCloseable {
     private final BrokerConfig config;
     private final ClusterController clusterController;
     private final PartitionManager partitionManager;
+    private final ReplicaConnectionPool connectionPool = new ReplicaConnectionPool();
     private final Thread thread;
     private volatile boolean running = true;
 
@@ -48,7 +49,11 @@ public final class ReplicaFetcher implements AutoCloseable {
     public void close() throws InterruptedException {
         running = false;
         thread.interrupt();
-        thread.join(5_000);
+        try {
+            thread.join(5_000);
+        } finally {
+            connectionPool.close();
+        }
     }
 
     private void runLoop() {
@@ -89,8 +94,8 @@ public final class ReplicaFetcher implements AutoCloseable {
             return;
         }
         long fetchOffset = partitionManager.highWatermark(topicName, partition.partitionId);
-        try (LeaderReplicaClient client = new LeaderReplicaClient()) {
-            client.connect(leader.host, leader.port);
+        try {
+            LeaderReplicaClient client = connectionPool.client(leader.host, leader.port);
             ReplicaFetchResponse response = client.replicaFetch(
                     topicName,
                     partition.partitionId,
@@ -106,9 +111,13 @@ public final class ReplicaFetcher implements AutoCloseable {
                         record.value());
             }
         } catch (LeaderReplicaClient.ReplicaFetchException failure) {
+            connectionPool.invalidate(leader.host, leader.port);
             if (failure.errorCode() == ErrorCode.NOT_LEADER && !config.controller()) {
                 MetadataSync.registerAndSync(config, clusterController);
             }
+        } catch (RuntimeException failure) {
+            connectionPool.invalidate(leader.host, leader.port);
+            throw failure;
         }
     }
 }

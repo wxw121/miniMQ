@@ -43,11 +43,11 @@ Severity legend / 严重级别：
 | R3-P1-04 | Sendfile failure | Exception after `ctx.write(prefix)` could leave a truncated frame on the wire. | Track queued prefix state and close the channel on sendfile setup failure after prefix bytes are queued. | `cc17bcc` |
 | R3-P1-08 | Tests | No dedicated unit tests for `ReplicaFetcher`, `LeaderReplicaClient`, or direct `REPLICA_FETCH` behavior. | Add focused `LeaderReplicaClientTest`, `ReplicaFetcherTest`, and keep direct `REPLICA_FETCH` handler coverage in `EmbeddedBrokerChannelTest`. | `2d7c68f` |
 
-### P1 - Deferred after 2.3.1
+### P1 - Fixed in 2.3.2 / Completed in 2.3.2
 
 | ID | Area / 区域 | Finding / 问题 | Planned fix / 计划修复 |
 | --- | --- | --- | --- |
-| R3-P1-05 | ReplicaFetcher / 副本拉取 | New TCP connection and `NioEventLoopGroup` per partition per loop. / 每轮循环、每分区新建 TCP 连接与 `NioEventLoopGroup`。 | Pool connections per leader broker. / 按 Leader Broker 复用连接。 |
+| R3-P1-05 | ReplicaFetcher / replica fetch | New TCP connection and `NioEventLoopGroup` per partition per loop. | `ReplicaConnectionPool` caches one `LeaderReplicaClient` per leader broker, shares the Netty event loop, invalidates failed clients, and is closed by `ReplicaFetcher`. |
 
 ### P2 — Known limitations / 已知限制（暂不排期）
 
