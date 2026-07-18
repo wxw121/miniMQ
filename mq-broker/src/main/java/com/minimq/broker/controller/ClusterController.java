@@ -15,9 +15,10 @@ import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
 import com.minimq.protocol.message.ProtocolMessages.TopicMetadata;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Comparator;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -85,15 +86,16 @@ public class ClusterController {
         if (broker == null) {
             return ErrorCode.INVALID_REQUEST;
         }
+        Map<PartitionEntry, Integer> replacementLeaders = new IdentityHashMap<>();
         for (TopicEntry topic : metadata.topics.values()) {
             for (PartitionEntry partition : topic.partitions) {
                 normalizePartition(partition);
                 if (partition.leaderBrokerId == brokerId) {
-                    boolean hasReplacementLeader = partition.isrBrokerIds.stream()
-                            .anyMatch(id -> id != brokerId);
-                    if (!hasReplacementLeader) {
+                    Integer replacementLeader = preferredSurvivingLeader(partition, brokerId);
+                    if (replacementLeader == null) {
                         return ErrorCode.INVALID_REQUEST;
                     }
+                    replacementLeaders.put(partition, replacementLeader);
                 }
             }
         }
@@ -101,14 +103,27 @@ public class ClusterController {
         for (TopicEntry topic : metadata.topics.values()) {
             for (PartitionEntry partition : topic.partitions) {
                 partition.isrBrokerIds.removeIf(id -> id == brokerId);
-                if (partition.leaderBrokerId == brokerId) {
-                    Collections.sort(partition.isrBrokerIds);
-                    partition.leaderBrokerId = partition.isrBrokerIds.get(0);
+                Integer replacementLeader = replacementLeaders.get(partition);
+                if (replacementLeader != null) {
+                    partition.leaderBrokerId = replacementLeader;
                 }
             }
         }
         metadataStore.save(metadata);
         return ErrorCode.NONE;
+    }
+
+    private Integer preferredSurvivingLeader(PartitionEntry partition, int offlineBrokerId) {
+        for (int replicaId : partition.replicaBrokerIds) {
+            BrokerEntry replica = metadata.brokers.get(replicaId);
+            if (replicaId != offlineBrokerId
+                    && partition.isrBrokerIds.contains(replicaId)
+                    && replica != null
+                    && replica.online) {
+                return replicaId;
+            }
+        }
+        return null;
     }
 
     public synchronized MetadataResponse metadata(MetadataRequest request) {

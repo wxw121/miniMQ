@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -71,6 +72,29 @@ class ClusterControllerTest {
                 .topics().get(0).partitions().get(0);
         assertEquals(1, partition.leaderBrokerId());
         assertEquals(List.of(1, 2), partition.isrBrokerIds());
+    }
+
+    @Test
+    void markBrokerOfflineElectsFirstSurvivingReplicaByConfiguredOrder() {
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
+        controller.registerBroker(new RegisterBrokerRequest(2, "localhost", 9094));
+        controller.createTopic(new CreateTopicRequest("orders", 1, 3));
+        controller.updateMetadata(metadata -> {
+            var partition = metadata.topics.get("orders").partitions.get(0);
+            partition.replicaBrokerIds = new ArrayList<>(List.of(2, 1, 0));
+            partition.isrBrokerIds = new ArrayList<>(List.of(2, 1, 0));
+            partition.leaderBrokerId = 2;
+            return null;
+        });
+
+        assertEquals(ErrorCode.NONE, controller.markBrokerOffline(2));
+
+        PartitionMetadata partition = controller.metadata(new MetadataRequest("orders"))
+                .topics().get(0).partitions().get(0);
+        assertEquals(1, partition.leaderBrokerId());
+        assertEquals(List.of(1, 0), partition.isrBrokerIds());
     }
 
     @Test
