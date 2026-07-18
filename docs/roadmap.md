@@ -5,9 +5,9 @@
 
 ## 1. Current State / 当前状态
 
-MiniMQ has released V2.0 storage recovery as `v2.0.0`, tagged V2.1.2 maintenance observability as `v2.1.2-maintenance-observability`, released V2.2 zero-copy FETCH sendfile as `v2.2.0-read-performance` on `2.2.0`, released V2.3 replication as `v2.3.0-replication` on `2.3.0`, and is opening the `2.3.1-SNAPSHOT` patch line for replication hardening.
+MiniMQ has released V2.0 storage recovery as `v2.0.0`, tagged V2.1.2 maintenance observability as `v2.1.2-maintenance-observability`, released V2.2 zero-copy FETCH sendfile as `v2.2.0-read-performance` on `2.2.0`, released V2.3 replication as `v2.3.0-replication` on `2.3.0`, and is implementing V2.3.1 replication hardening on `2.3.1-SNAPSHOT`.
 
-MiniMQ 已将 V2.0 存储恢复以 `v2.0.0` 发布，已将 V2.1.2 维护可观测性打为 `v2.1.2-maintenance-observability`，已将 V2.2 零拷贝 FETCH sendfile 以 `v2.2.0-read-performance` 发布为 `2.2.0`，已将 V2.3 副本机制以 `v2.3.0-replication` 发布为 `2.3.0`，并开启 `2.3.1-SNAPSHOT` 补丁线用于副本机制加固。
+MiniMQ 已将 V2.0 存储恢复以 `v2.0.0` 发布，已将 V2.1.2 维护可观测性打为 `v2.1.2-maintenance-observability`，已将 V2.2 零拷贝 FETCH sendfile 以 `v2.2.0-read-performance` 发布为 `2.2.0`，已将 V2.3 副本机制以 `v2.3.0-replication` 发布为 `2.3.0`，并在 `2.3.1-SNAPSHOT` 上实现 V2.3.1 副本机制加固。
 
 The most important remaining limitation is that replication still depends on a static controller and manual broker-offline operations. Automatic failure detection, ISR lag management, and controller HA remain future work.
 
