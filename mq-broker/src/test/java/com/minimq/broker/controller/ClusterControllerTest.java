@@ -1,6 +1,7 @@
 package com.minimq.broker.controller;
 
 import com.minimq.broker.metadata.MetadataStore;
+import com.minimq.broker.metadata.ClusterMetadata;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest;
 import com.minimq.protocol.message.ProtocolMessages.MetadataRequest;
@@ -68,6 +69,21 @@ class ClusterControllerTest {
         assertEquals(ErrorCode.NONE, controller.updateReplicaLogEndOffset("orders", 0, 1, 3L));
 
         assertEquals(8L, controller.replicaLogEndOffset("orders", 0, 1));
+    }
+
+    @Test
+    void equalReplicaLogEndOffsetDoesNotPersistAgain() {
+        CountingMetadataStore store = new CountingMetadataStore(tempDir);
+        ClusterController controller = new ClusterController(store);
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.createTopic(new CreateTopicRequest("orders", 1));
+        controller.updateReplicaLogEndOffset("orders", 0, 0, 8L);
+        int savesAfterIncrease = store.saveCount;
+
+        assertEquals(ErrorCode.NONE,
+                controller.updateReplicaLogEndOffset("orders", 0, 0, 8L));
+
+        assertEquals(savesAfterIncrease, store.saveCount);
     }
 
     @Test
@@ -224,5 +240,19 @@ class ClusterControllerTest {
         controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
         controller.createTopic(new CreateTopicRequest("orders", 1, 2));
         return controller;
+    }
+
+    private static final class CountingMetadataStore extends MetadataStore {
+        private int saveCount;
+
+        private CountingMetadataStore(Path dataDir) {
+            super(dataDir);
+        }
+
+        @Override
+        public synchronized void save(ClusterMetadata metadata) {
+            saveCount++;
+            super.save(metadata);
+        }
     }
 }

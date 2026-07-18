@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.net.ServerSocket;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -73,6 +74,96 @@ class ReplicaLeoReporterTest {
                     9L,
                     metadata.topics().get(0).partitions().get(0)
                             .replicaLogEndOffsets().get(1));
+        }
+    }
+
+    @Test
+    void followerReporterReconnectsAfterControllerBecomesAvailable() throws Exception {
+        int controllerPort;
+        try (ServerSocket socket = new ServerSocket(0)) {
+            controllerPort = socket.getLocalPort();
+        }
+        BrokerConfig followerConfig = new BrokerConfig(
+                1,
+                "127.0.0.1",
+                9093,
+                tempDir.resolve("recovering-follower"),
+                false,
+                "127.0.0.1",
+                controllerPort,
+                false);
+        ClusterController followerMetadata = new ClusterController(
+                new MetadataStore(tempDir.resolve("recovering-follower")));
+
+        try (ReplicaLeoReporter reporter =
+                     new ReplicaLeoReporter(followerConfig, followerMetadata)) {
+            assertEquals(
+                    ErrorCode.INVALID_REQUEST,
+                    reporter.report("orders", 0, 1, 9L));
+
+            BrokerConfig controllerConfig = new BrokerConfig(
+                    0,
+                    "127.0.0.1",
+                    controllerPort,
+                    tempDir.resolve("recovering-controller"),
+                    true,
+                    "127.0.0.1",
+                    controllerPort,
+                    false);
+            try (BrokerTestHarness controller = BrokerTestHarness.start(controllerConfig);
+                 TestNetworkClient admin = new TestNetworkClient()) {
+                admin.connect("127.0.0.1", controller.port());
+                assertEquals(ErrorCode.NONE, admin.send(
+                        ApiKeys.REGISTER_BROKER,
+                        new RegisterBrokerRequest(1, "127.0.0.1", 9093))
+                        .header().errorCode());
+                assertEquals(ErrorCode.NONE, admin.send(
+                        ApiKeys.CREATE_TOPIC,
+                        new CreateTopicRequest("orders", 1, 2))
+                        .header().errorCode());
+
+                assertEquals(
+                        ErrorCode.NONE,
+                        reporter.report("orders", 0, 1, 9L));
+            }
+        }
+    }
+
+    @Test
+    void followerReporterSkipsAlreadyConfirmedLeoWhenControllerIsUnavailable() throws Exception {
+        Path controllerDir = BrokerTestHarness.newDataDir("leo-reporter-deduplicate");
+        BrokerTestHarness controller = BrokerTestHarness.startController(controllerDir);
+        try (TestNetworkClient admin = new TestNetworkClient()) {
+            admin.connect("127.0.0.1", controller.port());
+            assertEquals(ErrorCode.NONE, admin.send(
+                    ApiKeys.REGISTER_BROKER,
+                    new RegisterBrokerRequest(1, "127.0.0.1", 9093)).header().errorCode());
+            assertEquals(ErrorCode.NONE, admin.send(
+                    ApiKeys.CREATE_TOPIC,
+                    new CreateTopicRequest("orders", 1, 2)).header().errorCode());
+            BrokerConfig followerConfig = new BrokerConfig(
+                    1,
+                    "127.0.0.1",
+                    9093,
+                    tempDir.resolve("deduplicate-follower"),
+                    false,
+                    "127.0.0.1",
+                    controller.port(),
+                    false);
+            ClusterController followerMetadata = new ClusterController(
+                    new MetadataStore(tempDir.resolve("deduplicate-follower")));
+            try (ReplicaLeoReporter reporter =
+                         new ReplicaLeoReporter(followerConfig, followerMetadata)) {
+                assertEquals(ErrorCode.NONE, reporter.report("orders", 0, 1, 9L));
+                controller.close();
+                controller = null;
+
+                assertEquals(ErrorCode.NONE, reporter.report("orders", 0, 1, 9L));
+            }
+        } finally {
+            if (controller != null) {
+                controller.close();
+            }
         }
     }
 }

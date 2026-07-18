@@ -194,7 +194,7 @@ public class ClusterController {
         }
         normalizePartition(partition);
         long current = partition.replicaLogEndOffsets.getOrDefault(brokerId, 0L);
-        if (logEndOffset >= current) {
+        if (logEndOffset > current) {
             partition.replicaLogEndOffsets.put(brokerId, logEndOffset);
             metadataStore.save(metadata);
         }

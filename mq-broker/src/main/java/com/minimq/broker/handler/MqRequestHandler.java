@@ -264,12 +264,12 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 request.topicName(),
                 request.partitionId(),
                 request.replicaBrokerId(),
-                request.fetchOffset() + fetched.size());
+                request.fetchOffset());
         reportReplicaLeo(
                 request.topicName(),
                 request.partitionId(),
                 request.replicaBrokerId(),
-                request.fetchOffset() + fetched.size());
+                request.fetchOffset());
         long replicationHighWatermark = effectiveHighWatermark(
                 request.topicName(), request.partitionId(), partitionLog);
         return new ReplicaFetchResponse(

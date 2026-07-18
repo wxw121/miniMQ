@@ -68,6 +68,8 @@ class ReplicationIntegrationTest {
 
             waitForFollowerReplication(broker1, "orders", 0, 1);
             waitForFollowerReplication(broker2, "orders", 0, 1);
+            waitForControllerLeo(admin, "orders", 0, 1, 1L);
+            waitForControllerLeo(admin, "orders", 0, 2, 1L);
 
             MetadataResponse metadata = (MetadataResponse) admin.send(
                     ApiKeys.METADATA, new MetadataRequest("orders")).body();
@@ -138,6 +140,7 @@ class ReplicationIntegrationTest {
             newLeaderClient.connect("127.0.0.1", broker1.port());
             produce(newLeaderClient, "orders", 0, "after-failover");
             waitForFollowerReplication(broker2, "orders", 0, 2);
+            waitForControllerLeo(admin, "orders", 0, 2, 2L);
 
             MqDecoder.DecodedResponse fetchResponse = newLeaderClient.send(
                     ApiKeys.FETCH, new FetchRequest("orders", 0, 0, 1024 * 1024));
@@ -225,5 +228,30 @@ class ReplicationIntegrationTest {
                 expectedRecords,
                 follower.localHighWatermark(topic, partition),
                 "follower did not replicate expected records");
+    }
+
+    private static void waitForControllerLeo(
+            TestNetworkClient client,
+            String topic,
+            int partition,
+            int brokerId,
+            long expectedLeo) throws InterruptedException {
+        for (int attempt = 0; attempt < 100; attempt++) {
+            MetadataResponse metadata = (MetadataResponse) client.send(
+                    ApiKeys.METADATA, new MetadataRequest(topic)).body();
+            Long actualLeo = metadata.topics().get(0).partitions().get(partition)
+                    .replicaLogEndOffsets().get(brokerId);
+            if (actualLeo != null && actualLeo >= expectedLeo) {
+                return;
+            }
+            Thread.sleep(50);
+        }
+        MetadataResponse metadata = (MetadataResponse) client.send(
+                ApiKeys.METADATA, new MetadataRequest(topic)).body();
+        assertEquals(
+                expectedLeo,
+                metadata.topics().get(0).partitions().get(partition)
+                        .replicaLogEndOffsets().get(brokerId),
+                "Controller did not observe confirmed follower LEO");
     }
 }
