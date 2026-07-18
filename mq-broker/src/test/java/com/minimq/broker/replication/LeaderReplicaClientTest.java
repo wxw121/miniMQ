@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class LeaderReplicaClientTest {
@@ -64,6 +65,18 @@ class LeaderReplicaClientTest {
                     () -> client.replicaFetch("orders", 0, 1, 0L, 1024));
 
             assertEquals(ErrorCode.NOT_LEADER, failure.errorCode());
+        }
+    }
+
+    @Test
+    void closeSharedGroupClientDoesNotShutdownCallerOwnedGroup() throws Exception {
+        NioEventLoopGroup group = new NioEventLoopGroup(1);
+        try (LeaderReplicaClient client = new LeaderReplicaClient(group, false)) {
+            client.close();
+
+            assertFalse(group.isShuttingDown());
+        } finally {
+            group.shutdownGracefully().sync();
         }
     }
 

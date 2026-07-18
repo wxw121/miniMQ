@@ -25,9 +25,19 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 final class LeaderReplicaClient implements AutoCloseable {
     private static final AtomicInteger CORR = new AtomicInteger(1);
-    private final EventLoopGroup group = new NioEventLoopGroup(1);
+    private final EventLoopGroup group;
+    private final boolean ownsGroup;
     private final ArrayBlockingQueue<ByteBuf> responses = new ArrayBlockingQueue<>(4);
     private Channel channel;
+
+    LeaderReplicaClient() {
+        this(new NioEventLoopGroup(1), true);
+    }
+
+    LeaderReplicaClient(EventLoopGroup group, boolean ownsGroup) {
+        this.group = group;
+        this.ownsGroup = ownsGroup;
+    }
 
     void connect(String host, int port) throws InterruptedException {
         Bootstrap bootstrap = new Bootstrap()
@@ -85,7 +95,9 @@ final class LeaderReplicaClient implements AutoCloseable {
         if (channel != null) {
             channel.close().sync();
         }
-        group.shutdownGracefully().sync();
+        if (ownsGroup) {
+            group.shutdownGracefully().sync();
+        }
     }
 
     static final class ReplicaFetchException extends RuntimeException {
