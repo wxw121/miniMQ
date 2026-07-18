@@ -30,6 +30,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -37,6 +38,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FetchResponseWriterTest {
@@ -257,6 +259,61 @@ class FetchResponseWriterTest {
         }
     }
 
+    @Test
+    void sendfileSetupFailureAfterPrefixQueuedClosesChannel(@TempDir Path dir) throws Exception {
+        try (SegmentedPartitionLog log = new SegmentedPartitionLog(dir, new SegmentedLogConfig(1_024, 1))) {
+            log.append("k".getBytes(), "value".getBytes());
+            FetchResponseWriter writer = new FetchResponseWriter(
+                    FetchTransferMode.AUTO, 30_000, new FetchTransferMetrics(), channel -> true);
+            EmbeddedChannel channel = new EmbeddedChannel();
+            AtomicBoolean prefixQueued = new AtomicBoolean();
+            AtomicBoolean closeCalled = new AtomicBoolean();
+            ChannelHandlerContext ctx = (ChannelHandlerContext) java.lang.reflect.Proxy.newProxyInstance(
+                    ChannelHandlerContext.class.getClassLoader(),
+                    new Class<?>[] {ChannelHandlerContext.class},
+                    (proxy, method, args) -> switch (method.getName()) {
+                        case "pipeline" -> channel.pipeline();
+                        case "channel" -> channel;
+                        case "executor" -> channel.eventLoop();
+                        case "write" -> {
+                            Object msg = args[0];
+                            if (msg instanceof ByteBuf) {
+                                prefixQueued.set(true);
+                                ReferenceCountUtil.release(msg);
+                                yield channel.newSucceededFuture();
+                            }
+                            throw new RuntimeException("simulated sendfile setup failure");
+                        }
+                        case "writeAndFlush" -> {
+                            Object msg = args[0];
+                            if (msg instanceof ByteBuf) {
+                                prefixQueued.set(true);
+                                ReferenceCountUtil.release(msg);
+                                yield channel.newSucceededFuture();
+                            }
+                            throw new RuntimeException("simulated sendfile setup failure");
+                        }
+                        case "close" -> {
+                            closeCalled.set(true);
+                            yield channel.close();
+                        }
+                        default -> throw new UnsupportedOperationException(method.getName());
+                    });
+
+            try {
+                assertThrows(IllegalStateException.class, () -> writer.write(
+                        ctx,
+                        new MqResponseHeader(1, ErrorCode.NONE),
+                        new FetchRequest("orders", 0, 0, 1_024),
+                        log,
+                        log.highWatermark()));
+                assertTrue(prefixQueued.get());
+                assertTrue(closeCalled.get());
+            } finally {
+                channel.finishAndReleaseAll();
+            }
+        }
+    }
     @Test
     void timeoutReleasesReaderLeaseAndClosesChannel(@TempDir Path dir) throws Exception {
         try (SegmentedPartitionLog log = new SegmentedPartitionLog(dir, new SegmentedLogConfig(1_024, 1))) {
