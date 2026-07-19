@@ -31,6 +31,7 @@ import com.minimq.protocol.message.ProtocolMessages.ProduceRecord;
 import com.minimq.protocol.message.ProtocolMessages.ProduceRequest;
 import com.minimq.protocol.message.ProtocolMessages.ProduceResponse;
 import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
+import com.minimq.protocol.message.ProtocolMessages.BrokerHeartbeatRequest;
 import com.minimq.protocol.message.ProtocolMessages.ReplicaFetchRequest;
 import com.minimq.protocol.message.ProtocolMessages.ReplicaFetchResponse;
 import com.minimq.protocol.message.ProtocolMessages.SyncGroupRequest;
@@ -167,6 +168,60 @@ class EmbeddedBrokerChannelTest {
         MqDecoder.DecodedResponse response = send(channel, ApiKeys.METADATA, new MetadataRequest("orders"));
 
         assertEquals(ErrorCode.INVALID_REQUEST, response.header().errorCode());
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void fencedBrokerRejectsDataAndMaintenanceMutationButAllowsMaintenanceReads() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
+        clusterController.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092));
+        clusterController.createTopic(new CreateTopicRequest("orders", 1));
+        BrokerAvailabilityGuard guard = new BrokerAvailabilityGuard();
+        guard.fence();
+        EmbeddedChannel channel = newChannel(clusterController, true, 0, guard);
+
+        assertEquals(ErrorCode.BROKER_FENCED, send(
+                channel,
+                ApiKeys.PRODUCE,
+                new ProduceRequest("orders", 0, List.of(new ProduceRecord(null, new byte[] {1}))))
+                .header().errorCode());
+        assertEquals(ErrorCode.BROKER_FENCED, send(
+                channel,
+                ApiKeys.FETCH,
+                new FetchRequest("orders", 0, 0L, 1024)).header().errorCode());
+        assertEquals(ErrorCode.BROKER_FENCED, send(
+                channel,
+                ApiKeys.REPLICA_FETCH,
+                new ReplicaFetchRequest("orders", 0, 1, 0L, 1024)).header().errorCode());
+        assertEquals(ErrorCode.BROKER_FENCED, send(
+                channel,
+                ApiKeys.MAINTENANCE_RUN,
+                new MaintenanceRunRequest(BrokerTestHarness.ADMIN_TOKEN)).header().errorCode());
+        assertEquals(ErrorCode.NONE, send(
+                channel,
+                ApiKeys.MAINTENANCE_REPORT,
+                new MaintenanceReportRequest(BrokerTestHarness.ADMIN_TOKEN)).header().errorCode());
+        assertEquals(ErrorCode.NONE, send(
+                channel,
+                ApiKeys.MAINTENANCE_METRICS,
+                new MaintenanceMetricsRequest(BrokerTestHarness.ADMIN_TOKEN)).header().errorCode());
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void controllerHandlesCurrentAndStaleBrokerHeartbeatEpochs() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
+        clusterController.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092));
+        EmbeddedChannel channel = newChannel(clusterController, true);
+
+        assertEquals(ErrorCode.NONE, send(
+                channel,
+                ApiKeys.BROKER_HEARTBEAT,
+                new BrokerHeartbeatRequest(0, 1L)).header().errorCode());
+        assertEquals(ErrorCode.BROKER_FENCED, send(
+                channel,
+                ApiKeys.BROKER_HEARTBEAT,
+                new BrokerHeartbeatRequest(0, 0L)).header().errorCode());
         channel.finishAndReleaseAll();
     }
 
@@ -433,6 +488,16 @@ class EmbeddedBrokerChannelTest {
     }
 
     private EmbeddedChannel newChannel(ClusterController clusterController, boolean controller, int brokerId) {
+        BrokerAvailabilityGuard guard = new BrokerAvailabilityGuard();
+        guard.activate();
+        return newChannel(clusterController, controller, brokerId, guard);
+    }
+
+    private EmbeddedChannel newChannel(
+            ClusterController clusterController,
+            boolean controller,
+            int brokerId,
+            BrokerAvailabilityGuard guard) {
         GroupCoordinator groupCoordinator = new GroupCoordinator(clusterController);
         LogManager logManager = new LogManager(tempDir);
         PartitionManager partitionManager = new PartitionManager(logManager);
@@ -446,6 +511,7 @@ class EmbeddedBrokerChannelTest {
                         clusterController,
                         groupCoordinator,
                         partitionManager,
+                        guard,
                         maintenanceServiceFor(config, partitionManager)),
                 new MqEncoder());
     }

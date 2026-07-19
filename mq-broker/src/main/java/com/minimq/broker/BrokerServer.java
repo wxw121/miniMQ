@@ -1,6 +1,7 @@
 package com.minimq.broker;
 
 import com.minimq.broker.controller.ClusterController;
+import com.minimq.broker.controller.BrokerLeaseMonitor;
 import com.minimq.broker.controller.GroupCoordinator;
 import com.minimq.broker.handler.MqRequestHandler;
 import com.minimq.broker.replication.ReplicaFetcher;
@@ -9,7 +10,6 @@ import com.minimq.broker.replication.ReplicaLeoReporter;
 import com.minimq.broker.metadata.MetadataStore;
 import com.minimq.protocol.codec.MqDecoder;
 import com.minimq.protocol.codec.MqEncoder;
-import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
 import com.minimq.storage.LogManagerConfig;
 import com.minimq.storage.LogManager;
 import com.minimq.storage.CompactionPolicy;
@@ -42,6 +42,10 @@ public class BrokerServer {
     private ReplicaFetcher replicaFetcher;
     private ReplicaLeoReporter replicaLeoReporter;
     private MaintenanceAdminService maintenanceAdminService;
+    private final BrokerAvailabilityGuard availabilityGuard = new BrokerAvailabilityGuard();
+    private BrokerLeaseService brokerLeaseService;
+    private BrokerLeaseMonitor brokerLeaseMonitor;
+    private boolean stopped;
 
     public BrokerServer(BrokerConfig config) {
         this.config = config;
@@ -55,9 +59,18 @@ public class BrokerServer {
         return partitionManager.highWatermark(topic, partition);
     }
 
+    public BrokerAvailabilityGuard.State availabilityState() {
+        return availabilityGuard.state();
+    }
+
+    public long brokerEpoch() {
+        return brokerLeaseService != null ? brokerLeaseService.brokerEpoch() : -1L;
+    }
+
     public void start() throws InterruptedException {
         MetadataStore metadataStore = new MetadataStore(config.dataDir(), config.recoverCorruptMetadata());
-        clusterController = new ClusterController(metadataStore);
+        clusterController = new ClusterController(
+                metadataStore, config.controllerBrokerLeaseTimeoutMs());
         GroupCoordinator groupCoordinator = new GroupCoordinator(clusterController);
         ReplicaStateManager replicaStateManager = new ReplicaStateManager();
         LogManager logManager = new LogManager(
@@ -80,14 +93,12 @@ public class BrokerServer {
                                 config.maintenanceWindowEndHour())));
         partitionManager = new PartitionManager(logManager);
         maintenanceAdminService = new MaintenanceAdminService(config.adminToken(), partitionManager);
-        replicaFetcher = new ReplicaFetcher(config, clusterController, partitionManager);
-        replicaLeoReporter = new ReplicaLeoReporter(config, clusterController);
-
+        replicaFetcher = new ReplicaFetcher(config, clusterController, partitionManager, availabilityGuard);
+        replicaLeoReporter = new ReplicaLeoReporter(config, clusterController, availabilityGuard);
+        brokerLeaseService = new BrokerLeaseService(config, clusterController, availabilityGuard);
         if (config.controller()) {
-            clusterController.registerBroker(new RegisterBrokerRequest(
-                    config.brokerId(), config.host(), config.port()));
-        } else {
-            MetadataSync.registerAndSync(config, clusterController);
+            brokerLeaseMonitor = new BrokerLeaseMonitor(
+                    clusterController, config.brokerHeartbeatIntervalMs());
         }
 
         bossGroup = new NioEventLoopGroup(1);
@@ -108,18 +119,62 @@ public class BrokerServer {
                                         replicaStateManager,
                                         fetchTransferMetrics,
                                         replicaLeoReporter,
+                                        availabilityGuard,
                                         maintenanceAdminService))
                                 .addLast(new MqEncoder());
                     }
                 });
 
-        channelFuture = bootstrap.bind(config.host(), config.port()).sync();
-        replicaFetcher.start();
+        try {
+            channelFuture = bootstrap.bind(config.host(), config.port()).sync();
+            brokerLeaseService.initialize();
+            if (brokerLeaseMonitor != null) {
+                brokerLeaseMonitor.start();
+            }
+            brokerLeaseService.start();
+            replicaFetcher.start();
+        } catch (InterruptedException failure) {
+            cleanupAfterFailedStart(failure);
+            throw failure;
+        } catch (Exception failure) {
+            cleanupAfterFailedStart(failure);
+            if (failure instanceof RuntimeException runtimeFailure) {
+                throw runtimeFailure;
+            }
+            throw new IllegalStateException("Broker startup failed", failure);
+        } catch (Error failure) {
+            cleanupAfterFailedStart(failure);
+            throw failure;
+        }
         log.info("Broker {} started on {}:{} controller={}", config.brokerId(), config.host(), config.port(),
                 config.controller());
     }
 
-    public void stop() throws InterruptedException {
+    private void cleanupAfterFailedStart(Throwable failure) {
+        try {
+            stop();
+        } catch (InterruptedException cleanupFailure) {
+            Thread.currentThread().interrupt();
+            failure.addSuppressed(cleanupFailure);
+        }
+    }
+
+    public synchronized void stop() throws InterruptedException {
+        if (stopped) {
+            return;
+        }
+        if (brokerLeaseService != null) {
+            brokerLeaseService.close();
+        }
+        if (brokerLeaseMonitor != null) {
+            brokerLeaseMonitor.close();
+        }
+        if (replicaFetcher != null) {
+            replicaFetcher.close();
+        }
+        if (replicaLeoReporter != null) {
+            replicaLeoReporter.close();
+        }
         if (channelFuture != null) {
             channelFuture.channel().close().sync();
         }
@@ -132,14 +187,9 @@ public class BrokerServer {
         if (workerGroup != null) {
             workerGroup.shutdownGracefully().sync();
         }
-        if (replicaFetcher != null) {
-            replicaFetcher.close();
-        }
-        if (replicaLeoReporter != null) {
-            replicaLeoReporter.close();
-        }
         if (partitionManager != null) {
             partitionManager.close();
         }
+        stopped = true;
     }
 }

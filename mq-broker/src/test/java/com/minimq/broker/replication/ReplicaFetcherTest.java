@@ -1,6 +1,7 @@
 package com.minimq.broker.replication;
 
 import com.minimq.broker.BrokerConfig;
+import com.minimq.broker.BrokerAvailabilityGuard;
 import com.minimq.broker.PartitionManager;
 import com.minimq.broker.controller.ClusterController;
 import com.minimq.broker.metadata.MetadataStore;
@@ -104,6 +105,36 @@ class ReplicaFetcherTest {
 
                 waitForAcceptedConnections(leader, 1);
                 assertEquals(1, leader.acceptedConnections());
+            } finally {
+                fetcher.close();
+                partitionManager.close();
+            }
+        }
+    }
+
+    @Test
+    void waitsForActiveGuardBeforeConnectingToLeader() throws Exception {
+        try (CountingReplicaLeader leader = CountingReplicaLeader.start()) {
+            ClusterController controller = new ClusterController(new MetadataStore(tempDir.resolve("guard-controller")));
+            controller.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", leader.port()));
+            controller.registerBroker(new RegisterBrokerRequest(1, "127.0.0.1", 19093));
+            controller.createTopic(new CreateTopicRequest("orders", 1, 2));
+            PartitionManager partitionManager = new PartitionManager(new LogManager(tempDir.resolve("guard-follower")));
+            BrokerAvailabilityGuard guard = new BrokerAvailabilityGuard();
+            guard.fence();
+            ReplicaFetcher fetcher = new ReplicaFetcher(
+                    new BrokerConfig(1, "127.0.0.1", 19093, tempDir.resolve("guard-broker"),
+                            true, "127.0.0.1", 9092, false, BrokerTestHarness.ADMIN_TOKEN),
+                    controller,
+                    partitionManager,
+                    guard);
+            try {
+                fetcher.start();
+                Thread.sleep(200);
+                assertEquals(0, leader.acceptedConnections());
+
+                guard.activate();
+                waitForAcceptedConnections(leader, 1);
             } finally {
                 fetcher.close();
                 partitionManager.close();

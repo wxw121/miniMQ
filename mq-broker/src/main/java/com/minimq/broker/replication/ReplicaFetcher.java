@@ -1,6 +1,7 @@
 package com.minimq.broker.replication;
 
 import com.minimq.broker.BrokerConfig;
+import com.minimq.broker.BrokerAvailabilityGuard;
 import com.minimq.broker.MetadataSync;
 import com.minimq.broker.PartitionManager;
 import com.minimq.broker.controller.ClusterController;
@@ -26,6 +27,7 @@ public final class ReplicaFetcher implements AutoCloseable {
     private final BrokerConfig config;
     private final ClusterController clusterController;
     private final PartitionManager partitionManager;
+    private final BrokerAvailabilityGuard availabilityGuard;
     private final ReplicaConnectionPool connectionPool = new ReplicaConnectionPool();
     private final Thread thread;
     private volatile boolean running = true;
@@ -34,9 +36,18 @@ public final class ReplicaFetcher implements AutoCloseable {
             BrokerConfig config,
             ClusterController clusterController,
             PartitionManager partitionManager) {
+        this(config, clusterController, partitionManager, activeGuard());
+    }
+
+    public ReplicaFetcher(
+            BrokerConfig config,
+            ClusterController clusterController,
+            PartitionManager partitionManager,
+            BrokerAvailabilityGuard availabilityGuard) {
         this.config = config;
         this.clusterController = clusterController;
         this.partitionManager = partitionManager;
+        this.availabilityGuard = availabilityGuard;
         this.thread = new Thread(this::runLoop, "replica-fetcher-" + config.brokerId());
         this.thread.setDaemon(true);
     }
@@ -60,8 +71,12 @@ public final class ReplicaFetcher implements AutoCloseable {
         int metadataRefreshCounter = 0;
         while (running) {
             try {
+                if (!availabilityGuard.allowsDataPlane()) {
+                    Thread.sleep(SLEEP_MS);
+                    continue;
+                }
                 if (!config.controller() && metadataRefreshCounter++ % 20 == 0) {
-                    MetadataSync.registerAndSync(config, clusterController);
+                    MetadataSync.refresh(config, clusterController);
                 }
                 fetchAssignedReplicas();
                 Thread.sleep(SLEEP_MS);
@@ -112,12 +127,20 @@ public final class ReplicaFetcher implements AutoCloseable {
             }
         } catch (LeaderReplicaClient.ReplicaFetchException failure) {
             connectionPool.invalidate(leader.host, leader.port);
-            if (failure.errorCode() == ErrorCode.NOT_LEADER && !config.controller()) {
-                MetadataSync.registerAndSync(config, clusterController);
+            if ((failure.errorCode() == ErrorCode.NOT_LEADER
+                    || failure.errorCode() == ErrorCode.BROKER_FENCED)
+                    && !config.controller()) {
+                MetadataSync.refresh(config, clusterController);
             }
         } catch (RuntimeException failure) {
             connectionPool.invalidate(leader.host, leader.port);
             throw failure;
         }
+    }
+
+    private static BrokerAvailabilityGuard activeGuard() {
+        BrokerAvailabilityGuard guard = new BrokerAvailabilityGuard();
+        guard.activate();
+        return guard;
     }
 }

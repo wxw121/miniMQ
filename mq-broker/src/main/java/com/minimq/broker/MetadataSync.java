@@ -7,7 +7,6 @@ import com.minimq.broker.metadata.ClusterMetadata.TopicEntry;
 import com.minimq.protocol.message.ProtocolMessages.BrokerMetadata;
 import com.minimq.protocol.message.ProtocolMessages.MetadataResponse;
 import com.minimq.protocol.message.ProtocolMessages.PartitionMetadata;
-import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
 import com.minimq.protocol.message.ProtocolMessages.TopicMetadata;
 
 import java.util.ArrayList;
@@ -18,19 +17,6 @@ import java.util.HashMap;
  */
 public final class MetadataSync {
     private MetadataSync() {
-    }
-
-    public static void registerAndSync(BrokerConfig config, ClusterController controller) throws InterruptedException {
-        if (config.controller()) {
-            controller.registerBroker(new RegisterBrokerRequest(config.brokerId(), config.host(), config.port()));
-            return;
-        }
-        try (ControllerClient client = new ControllerClient()) {
-            client.connect(config.controllerHost(), config.controllerPort());
-            client.registerBroker(new RegisterBrokerRequest(config.brokerId(), config.host(), config.port()));
-            MetadataResponse metadata = client.fetchMetadata();
-            applyMetadata(controller, metadata);
-        }
     }
 
     public static void refresh(BrokerConfig config, ClusterController controller) throws InterruptedException {
