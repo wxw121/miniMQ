@@ -103,10 +103,12 @@ public final class BrokerLeaseService implements AutoCloseable {
             } else {
                 fenceIfTimedOut();
             }
-            resetClient();
+            resetClient(remainingSelfFenceTimeoutMs(nanoTime.getAsLong()));
+            fenceIfTimedOut();
         } catch (Exception failure) {
             fenceIfTimedOut();
-            resetClient();
+            resetClient(remainingSelfFenceTimeoutMs(nanoTime.getAsLong()));
+            fenceIfTimedOut();
         }
     }
 
@@ -142,7 +144,7 @@ public final class BrokerLeaseService implements AutoCloseable {
                 actualLeaseTimeoutMs = response.leaseTimeoutMs();
             }
         } else {
-            ControllerClient controllerClient = controllerClient();
+            ControllerClient controllerClient = controllerClient(config.brokerSelfFenceTimeoutMs());
             RegisterBrokerResponse response = controllerClient.registerBroker(registrationRequest());
             brokerEpoch = response.brokerEpoch();
             actualLeaseTimeoutMs = response.leaseTimeoutMs();
@@ -155,7 +157,7 @@ public final class BrokerLeaseService implements AutoCloseable {
         }
         if (!config.controller()) {
             confirmedRequestStart = nanoTime.getAsLong();
-            controllerClient().heartbeatBroker(
+            controllerClient(config.brokerSelfFenceTimeoutMs()).heartbeatBroker(
                     new BrokerHeartbeatRequest(config.brokerId(), brokerEpoch),
                     config.brokerSelfFenceTimeoutMs());
         }
@@ -175,7 +177,11 @@ public final class BrokerLeaseService implements AutoCloseable {
         if (config.controller()) {
             ensureControllerSuccess(localController.heartbeatBroker(request));
         } else {
-            controllerClient().heartbeatBroker(request, responseTimeoutMs);
+            ControllerClient controllerClient = controllerClient(responseTimeoutMs);
+            long remainingTimeoutMs = Math.min(
+                    responseTimeoutMs,
+                    remainingSelfFenceTimeoutMs(nanoTime.getAsLong()));
+            controllerClient.heartbeatBroker(request, remainingTimeoutMs);
         }
     }
 
@@ -219,10 +225,10 @@ public final class BrokerLeaseService implements AutoCloseable {
         return TimeUnit.NANOSECONDS.toMillis(remainingNanos - 1L) + 1L;
     }
 
-    private ControllerClient controllerClient() throws InterruptedException {
+    private ControllerClient controllerClient(long connectTimeoutMs) throws InterruptedException {
         if (client == null) {
             client = clientFactory.get();
-            client.connect(config.controllerHost(), config.controllerPort());
+            client.connect(config.controllerHost(), config.controllerPort(), connectTimeoutMs);
         }
         return client;
     }
@@ -234,11 +240,15 @@ public final class BrokerLeaseService implements AutoCloseable {
     }
 
     private void resetClient() {
+        resetClient(TimeUnit.SECONDS.toMillis(5));
+    }
+
+    private void resetClient(long closeTimeoutMs) {
         if (client == null) {
             return;
         }
         try {
-            client.close();
+            client.close(closeTimeoutMs);
         } catch (InterruptedException failure) {
             Thread.currentThread().interrupt();
         } finally {

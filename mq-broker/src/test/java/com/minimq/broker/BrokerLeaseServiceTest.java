@@ -154,6 +154,57 @@ class BrokerLeaseServiceTest {
         service.close();
     }
 
+    @Test
+    void reconnectAndHeartbeatShareRemainingSelfFenceBudget() throws Exception {
+        AtomicLong now = new AtomicLong();
+        FakeControllerClient fake = new FakeControllerClient();
+        BrokerAvailabilityGuard guard = new BrokerAvailabilityGuard();
+        BrokerLeaseService service = new BrokerLeaseService(
+                leaseConfig(),
+                new ClusterController(new MetadataStore(tempDir)),
+                guard,
+                () -> fake,
+                now::get,
+                new ScheduledThreadPoolExecutor(1));
+        service.initialize();
+
+        now.set(TimeUnit.MILLISECONDS.toNanos(100));
+        fake.heartbeatFailure = new IllegalStateException("controller unavailable");
+        service.runOnce();
+        assertEquals(BrokerAvailabilityGuard.State.ACTIVE, guard.state());
+
+        fake.heartbeatFailure = null;
+        fake.afterConnect = () -> now.set(TimeUnit.MILLISECONDS.toNanos(290));
+        service.runOnce();
+
+        assertEquals(10L, fake.heartbeatTimeoutMs);
+        service.close();
+    }
+
+    @Test
+    void failedHeartbeatBoundsClientCloseBySelfFenceDeadline() throws Exception {
+        AtomicLong now = new AtomicLong();
+        FakeControllerClient fake = new FakeControllerClient();
+        BrokerAvailabilityGuard guard = new BrokerAvailabilityGuard();
+        BrokerLeaseService service = new BrokerLeaseService(
+                leaseConfig(),
+                new ClusterController(new MetadataStore(tempDir)),
+                guard,
+                () -> fake,
+                now::get,
+                new ScheduledThreadPoolExecutor(1));
+        service.initialize();
+
+        now.set(TimeUnit.MILLISECONDS.toNanos(100));
+        fake.heartbeatFailure = new IllegalStateException("controller unavailable");
+        fake.afterClose = () -> now.set(TimeUnit.MILLISECONDS.toNanos(300));
+        service.runOnce();
+
+        assertEquals(200L, fake.closeTimeoutMs);
+        assertEquals(BrokerAvailabilityGuard.State.FENCED, guard.state());
+        service.close();
+    }
+
     private BrokerConfig leaseConfig() {
         return BrokerConfig.parse(new String[] {
                 "--broker-id", "1",
@@ -173,18 +224,30 @@ class BrokerLeaseServiceTest {
         private int registerCalls;
         private int heartbeatCalls;
         private long heartbeatTimeoutMs;
+        private long closeTimeoutMs = -1L;
         private boolean closed;
         private RuntimeException registrationFailure;
         private RuntimeException heartbeatFailure;
+        private Runnable afterConnect = () -> {
+        };
         private Runnable afterHeartbeat = () -> {
         };
         private Runnable afterFetchMetadata = () -> {
+        };
+        private Runnable afterClose = () -> {
         };
         private RegisterBrokerResponse nextRegistration = new RegisterBrokerResponse(1L, 5_000L);
 
         @Override
         public void connect(String host, int port) {
             connectCalls++;
+            afterConnect.run();
+        }
+
+        @Override
+        public void connect(String host, int port, long timeoutMs) {
+            connectCalls++;
+            afterConnect.run();
         }
 
         @Override
@@ -221,6 +284,13 @@ class BrokerLeaseServiceTest {
 
         @Override
         public void close() {
+            closed = true;
+        }
+
+        @Override
+        public void close(long timeoutMs) {
+            closeTimeoutMs = timeoutMs;
+            afterClose.run();
             closed = true;
         }
     }

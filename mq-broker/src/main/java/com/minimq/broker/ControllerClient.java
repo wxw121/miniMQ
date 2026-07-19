@@ -34,6 +34,13 @@ public class ControllerClient implements AutoCloseable {
     private final ArrayBlockingQueue<ByteBuf> responses = new ArrayBlockingQueue<>(16);
 
     public void connect(String host, int port) throws InterruptedException {
+        connect(host, port, TimeUnit.SECONDS.toMillis(5));
+    }
+
+    public void connect(String host, int port, long timeoutMs) throws InterruptedException {
+        if (timeoutMs <= 0) {
+            throw new IllegalArgumentException("Controller connect timeout must be positive");
+        }
         Bootstrap bootstrap = new Bootstrap()
                 .group(group)
                 .channel(NioSocketChannel.class)
@@ -51,7 +58,16 @@ public class ControllerClient implements AutoCloseable {
                         }, new MqEncoder());
                     }
                 });
-        channel = bootstrap.connect(host, port).sync().channel();
+        ChannelFuture connectFuture = bootstrap.connect(host, port);
+        if (!connectFuture.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+            connectFuture.cancel(false);
+            connectFuture.channel().close();
+            throw new IllegalStateException("Timeout connecting to Controller");
+        }
+        if (!connectFuture.isSuccess()) {
+            throw new IllegalStateException("Failed to connect to Controller", connectFuture.cause());
+        }
+        channel = connectFuture.channel();
     }
 
     public synchronized RegisterBrokerResponse registerBroker(RegisterBrokerRequest request)
@@ -128,9 +144,25 @@ public class ControllerClient implements AutoCloseable {
 
     @Override
     public void close() throws InterruptedException {
-        if (channel != null) {
-            channel.close().sync();
+        close(TimeUnit.SECONDS.toMillis(5));
+    }
+
+    public void close(long timeoutMs) throws InterruptedException {
+        if (timeoutMs <= 0) {
+            throw new IllegalArgumentException("Controller close timeout must be positive");
         }
-        group.shutdownGracefully().sync();
+        long timeoutNanos = TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+        long startedNanos = System.nanoTime();
+        if (channel != null) {
+            channel.close().await(timeoutNanos, TimeUnit.NANOSECONDS);
+        }
+        long remainingNanos = timeoutNanos - (System.nanoTime() - startedNanos);
+        var shutdown = group.shutdownGracefully(
+                0L,
+                Math.max(1L, remainingNanos),
+                TimeUnit.NANOSECONDS);
+        if (remainingNanos > 0) {
+            shutdown.await(remainingNanos, TimeUnit.NANOSECONDS);
+        }
     }
 }
