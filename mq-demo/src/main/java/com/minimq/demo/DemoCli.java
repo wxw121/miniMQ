@@ -228,7 +228,7 @@ public final class DemoCli {
     private static void printUsage() {
         System.out.println("""
                 Usage:
-                  java -jar mq-demo.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller
+                  java -jar mq-demo.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller --admin-token <secret>
                   java -jar mq-demo.jar create-topic --brokers localhost:9092 --name orders --partitions 3
                   java -jar mq-demo.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
                   java -jar mq-demo.jar consume --brokers localhost:9092 --topic orders --group demo-group

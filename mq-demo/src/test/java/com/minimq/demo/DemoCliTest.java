@@ -30,6 +30,10 @@ class DemoCliTest {
         assertTrue(unknown.contains("benchmark-fetch"));
         assertTrue(noArgs.contains("maintenance-report"));
         assertTrue(unknown.contains("maintenance-metrics"));
+        String brokerUsage =
+                "broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller --admin-token <secret>";
+        assertTrue(noArgs.contains(brokerUsage));
+        assertTrue(unknown.contains(brokerUsage));
         assertTrue(noArgs.contains("--broker localhost:9092 --admin-token"));
     }
 
