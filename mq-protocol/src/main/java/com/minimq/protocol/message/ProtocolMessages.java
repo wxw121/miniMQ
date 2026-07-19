@@ -109,7 +109,16 @@ public final class ProtocolMessages {
     public record RegisterBrokerRequest(int brokerId, String host, int port) {
     }
 
-    public record RegisterBrokerResponse() {
+    public record RegisterBrokerResponse(long brokerEpoch, long leaseTimeoutMs) {
+        public RegisterBrokerResponse() {
+            this(0L, 0L);
+        }
+    }
+
+    public record BrokerHeartbeatRequest(int brokerId, long brokerEpoch) {
+    }
+
+    public record BrokerHeartbeatResponse() {
     }
 
     public record ReplicaFetchRequest(

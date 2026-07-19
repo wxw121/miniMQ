@@ -12,7 +12,9 @@ public enum ErrorCode {
     GROUP_NOT_FOUND(5),
     REBALANCE_IN_PROGRESS(6),
     UNAUTHORIZED(7),
-    MAINTENANCE_BUSY(8);
+    MAINTENANCE_BUSY(8),
+    BROKER_FENCED(9),
+    BROKER_ID_IN_USE(10);
 
     public final short code;
 

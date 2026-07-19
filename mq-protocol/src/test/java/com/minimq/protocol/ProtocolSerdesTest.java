@@ -112,6 +112,7 @@ class ProtocolSerdesTest {
                 new RequestCase(ApiKeys.MAINTENANCE_REPORT, new MaintenanceReportRequest("report-token")),
                 new RequestCase(ApiKeys.MAINTENANCE_RUN, new MaintenanceRunRequest("run-token")),
                 new RequestCase(ApiKeys.MAINTENANCE_METRICS, new MaintenanceMetricsRequest("metrics-token")),
+                new RequestCase(ApiKeys.BROKER_HEARTBEAT, new BrokerHeartbeatRequest(1, 7L)),
                 new RequestCase(ApiKeys.REGISTER_BROKER, new RegisterBrokerRequest(1, "localhost", 9093)));
 
         for (RequestCase requestCase : cases) {
@@ -149,7 +150,8 @@ class ProtocolSerdesTest {
                 new ResponseCase(ApiKeys.HEARTBEAT, new HeartbeatResponse()),
                 new ResponseCase(ApiKeys.OFFSET_COMMIT, new OffsetCommitResponse()),
                 new ResponseCase(ApiKeys.OFFSET_FETCH, new OffsetFetchResponse(42L)),
-                new ResponseCase(ApiKeys.REGISTER_BROKER, new RegisterBrokerResponse()),
+                new ResponseCase(ApiKeys.REGISTER_BROKER, new RegisterBrokerResponse(7L, 5_000L)),
+                new ResponseCase(ApiKeys.BROKER_HEARTBEAT, new BrokerHeartbeatResponse()),
                 new ResponseCase(ApiKeys.REPLICA_FETCH, new ReplicaFetchResponse("orders", 0, 12L,
                         List.of(new FetchedRecord(11L, bytes("k"), bytes("v"))))),
                 new ResponseCase(ApiKeys.MARK_BROKER_OFFLINE, new MarkBrokerOfflineResponse()),
@@ -225,6 +227,23 @@ class ProtocolSerdesTest {
                 MqDecoder.DecodedResponse decoded =
                         MqDecoder.decodeResponse(payload, ApiKeys.MAINTENANCE_RUN);
                 assertEquals(17, decoded.header().correlationId());
+                assertEquals(errorCode, decoded.header().errorCode());
+                assertNull(decoded.body());
+            } finally {
+                payload.release();
+                frame.release();
+            }
+        }
+    }
+
+    @Test
+    void brokerLeaseErrorsRoundTripWithoutBodies() {
+        for (ErrorCode errorCode : List.of(ErrorCode.BROKER_FENCED, ErrorCode.BROKER_ID_IN_USE)) {
+            var frame = ProtocolSerdes.encodeResponse(new MqResponseHeader(21, errorCode), null);
+            var payload = unwrapRetainedPayload(frame);
+            try {
+                var decoded = MqDecoder.decodeResponse(payload, ApiKeys.BROKER_HEARTBEAT);
+                assertEquals(21, decoded.header().correlationId());
                 assertEquals(errorCode, decoded.header().errorCode());
                 assertNull(decoded.body());
             } finally {
