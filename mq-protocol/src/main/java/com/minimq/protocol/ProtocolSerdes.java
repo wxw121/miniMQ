@@ -119,9 +119,12 @@ public final class ProtocolSerdes {
                     payload.readInt(),
                     payload.readInt(),
                     payload.readLong());
-            case ApiKeys.MAINTENANCE_REPORT -> new MaintenanceReportRequest();
-            case ApiKeys.MAINTENANCE_RUN -> new MaintenanceRunRequest();
-            case ApiKeys.MAINTENANCE_METRICS -> new MaintenanceMetricsRequest();
+            case ApiKeys.MAINTENANCE_REPORT ->
+                    new MaintenanceReportRequest(ByteBufSerde.readString(payload));
+            case ApiKeys.MAINTENANCE_RUN ->
+                    new MaintenanceRunRequest(ByteBufSerde.readString(payload));
+            case ApiKeys.MAINTENANCE_METRICS ->
+                    new MaintenanceMetricsRequest(ByteBufSerde.readString(payload));
             default -> throw new IllegalArgumentException("Unknown apiKey: " + apiKey);
         };
     }
@@ -218,9 +221,12 @@ public final class ProtocolSerdes {
                 buf.writeInt(req.replicaBrokerId());
                 buf.writeLong(req.logEndOffset());
             }
-            case ApiKeys.MAINTENANCE_REPORT, ApiKeys.MAINTENANCE_RUN, ApiKeys.MAINTENANCE_METRICS -> {
-                // Empty admin request body; apiKey carries the operation.
-            }
+            case ApiKeys.MAINTENANCE_REPORT ->
+                    ByteBufSerde.writeString(buf, ((MaintenanceReportRequest) body).adminToken());
+            case ApiKeys.MAINTENANCE_RUN ->
+                    ByteBufSerde.writeString(buf, ((MaintenanceRunRequest) body).adminToken());
+            case ApiKeys.MAINTENANCE_METRICS ->
+                    ByteBufSerde.writeString(buf, ((MaintenanceMetricsRequest) body).adminToken());
             default -> throw new IllegalArgumentException("Unknown apiKey: " + apiKey);
         }
     }

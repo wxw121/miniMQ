@@ -109,9 +109,9 @@ class ProtocolSerdesTest {
                 new RequestCase(ApiKeys.MARK_BROKER_OFFLINE, new MarkBrokerOfflineRequest(2)),
                 new RequestCase(ApiKeys.UPDATE_REPLICA_LEO,
                         new UpdateReplicaLeoRequest("orders", 0, 1, 9L)),
-                new RequestCase(ApiKeys.MAINTENANCE_REPORT, new MaintenanceReportRequest()),
-                new RequestCase(ApiKeys.MAINTENANCE_RUN, new MaintenanceRunRequest()),
-                new RequestCase(ApiKeys.MAINTENANCE_METRICS, new MaintenanceMetricsRequest()),
+                new RequestCase(ApiKeys.MAINTENANCE_REPORT, new MaintenanceReportRequest("report-token")),
+                new RequestCase(ApiKeys.MAINTENANCE_RUN, new MaintenanceRunRequest("run-token")),
+                new RequestCase(ApiKeys.MAINTENANCE_METRICS, new MaintenanceMetricsRequest("metrics-token")),
                 new RequestCase(ApiKeys.REGISTER_BROKER, new RegisterBrokerRequest(1, "localhost", 9093)));
 
         for (RequestCase requestCase : cases) {
@@ -213,6 +213,24 @@ class ProtocolSerdesTest {
         } finally {
             payload.release();
             frame.release();
+        }
+    }
+
+    @Test
+    void maintenanceAuthorizationErrorsRoundTripWithoutBodies() {
+        for (ErrorCode errorCode : List.of(ErrorCode.UNAUTHORIZED, ErrorCode.MAINTENANCE_BUSY)) {
+            var frame = ProtocolSerdes.encodeResponse(new MqResponseHeader(17, errorCode), null);
+            var payload = unwrapRetainedPayload(frame);
+            try {
+                MqDecoder.DecodedResponse decoded =
+                        MqDecoder.decodeResponse(payload, ApiKeys.MAINTENANCE_RUN);
+                assertEquals(17, decoded.header().correlationId());
+                assertEquals(errorCode, decoded.header().errorCode());
+                assertNull(decoded.body());
+            } finally {
+                payload.release();
+                frame.release();
+            }
         }
     }
 

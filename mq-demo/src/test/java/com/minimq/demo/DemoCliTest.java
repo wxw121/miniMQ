@@ -61,7 +61,8 @@ class DemoCliTest {
                 "--host", "127.0.0.1",
                 "--port", "19092",
                 "--data-dir", "./tmp/broker-3",
-                "--controller"
+                "--controller",
+                "--admin-token", "test-admin-token"
         });
 
         assertEquals(3, config.brokerId());

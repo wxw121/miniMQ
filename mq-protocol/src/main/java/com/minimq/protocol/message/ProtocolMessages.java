@@ -143,13 +143,22 @@ public final class ProtocolMessages {
     public record UpdateReplicaLeoResponse() {
     }
 
-    public record MaintenanceReportRequest() {
+    public record MaintenanceReportRequest(String adminToken) {
+        public MaintenanceReportRequest() {
+            this("");
+        }
     }
 
-    public record MaintenanceRunRequest() {
+    public record MaintenanceRunRequest(String adminToken) {
+        public MaintenanceRunRequest() {
+            this("");
+        }
     }
 
-    public record MaintenanceMetricsRequest() {
+    public record MaintenanceMetricsRequest(String adminToken) {
+        public MaintenanceMetricsRequest() {
+            this("");
+        }
     }
 
     public record MaintenanceSegmentInfo(

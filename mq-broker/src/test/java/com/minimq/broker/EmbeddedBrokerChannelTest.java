@@ -4,6 +4,7 @@ import com.minimq.broker.controller.ClusterController;
 import com.minimq.broker.controller.GroupCoordinator;
 import com.minimq.broker.handler.MqRequestHandler;
 import com.minimq.broker.metadata.MetadataStore;
+import com.minimq.broker.support.BrokerTestHarness;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.protocol.ApiKeys;
 import com.minimq.protocol.MqFrame;
@@ -59,7 +60,9 @@ class EmbeddedBrokerChannelTest {
         GroupCoordinator groupCoordinator = new GroupCoordinator(clusterController);
         LogManager logManager = new LogManager(tempDir);
         PartitionManager partitionManager = new PartitionManager(logManager);
-        BrokerConfig config = new BrokerConfig(0, "127.0.0.1", 9092, tempDir, true, "127.0.0.1", 9092, false);
+        BrokerConfig config = new BrokerConfig(
+                0, "127.0.0.1", 9092, tempDir, true, "127.0.0.1", 9092, false,
+                BrokerTestHarness.ADMIN_TOKEN);
 
         EmbeddedChannel channel = new EmbeddedChannel(
                 new MqDecoder(),
@@ -83,7 +86,9 @@ class EmbeddedBrokerChannelTest {
         GroupCoordinator groupCoordinator = new GroupCoordinator(clusterController);
         LogManager logManager = new LogManager(tempDir);
         PartitionManager partitionManager = new PartitionManager(logManager);
-        BrokerConfig config = new BrokerConfig(0, "127.0.0.1", 9092, tempDir, true, "127.0.0.1", 9092, false);
+        BrokerConfig config = new BrokerConfig(
+                0, "127.0.0.1", 9092, tempDir, true, "127.0.0.1", 9092, false,
+                BrokerTestHarness.ADMIN_TOKEN);
 
         EmbeddedChannel channel = new EmbeddedChannel(
                 new MqDecoder(),
@@ -288,7 +293,8 @@ class EmbeddedBrokerChannelTest {
         EmbeddedChannel channel = newChannel(clusterController, true);
 
         MqDecoder.DecodedResponse reportResponse = send(
-                channel, ApiKeys.MAINTENANCE_REPORT, new MaintenanceReportRequest());
+                channel, ApiKeys.MAINTENANCE_REPORT,
+                new MaintenanceReportRequest(BrokerTestHarness.ADMIN_TOKEN));
         assertEquals(ErrorCode.NONE, reportResponse.header().errorCode());
         MaintenanceReportResponse dryRun = (MaintenanceReportResponse) reportResponse.body();
         assertEquals(true, dryRun.dryRun());
@@ -296,14 +302,16 @@ class EmbeddedBrokerChannelTest {
         assertEquals(0, dryRun.segmentReports().size());
 
         MqDecoder.DecodedResponse runResponse = send(
-                channel, ApiKeys.MAINTENANCE_RUN, new MaintenanceRunRequest());
+                channel, ApiKeys.MAINTENANCE_RUN,
+                new MaintenanceRunRequest(BrokerTestHarness.ADMIN_TOKEN));
         assertEquals(ErrorCode.NONE, runResponse.header().errorCode());
         MaintenanceReportResponse run = (MaintenanceReportResponse) runResponse.body();
         assertEquals(false, run.dryRun());
         assertEquals("SKIPPED_DISABLED", run.status());
 
         MqDecoder.DecodedResponse metricsResponse = send(
-                channel, ApiKeys.MAINTENANCE_METRICS, new MaintenanceMetricsRequest());
+                channel, ApiKeys.MAINTENANCE_METRICS,
+                new MaintenanceMetricsRequest(BrokerTestHarness.ADMIN_TOKEN));
         assertEquals(ErrorCode.NONE, metricsResponse.header().errorCode());
         MaintenanceMetricsResponse metrics = (MaintenanceMetricsResponse) metricsResponse.body();
         assertEquals(0L, metrics.runs());
@@ -321,7 +329,8 @@ class EmbeddedBrokerChannelTest {
         LogManager logManager = new LogManager(tempDir);
         PartitionManager partitionManager = new PartitionManager(logManager);
         BrokerConfig config = new BrokerConfig(
-                brokerId, "127.0.0.1", 9092, tempDir, controller, "127.0.0.1", 9092, false);
+                brokerId, "127.0.0.1", 9092, tempDir, controller, "127.0.0.1", 9092, false,
+                BrokerTestHarness.ADMIN_TOKEN);
         return new EmbeddedChannel(
                 new MqDecoder(),
                 new MqRequestHandler(config, clusterController, groupCoordinator, partitionManager),

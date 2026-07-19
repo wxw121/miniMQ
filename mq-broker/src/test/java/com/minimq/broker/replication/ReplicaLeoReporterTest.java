@@ -30,7 +30,8 @@ class ReplicaLeoReporterTest {
         controller.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092));
         controller.createTopic(new CreateTopicRequest("orders", 1));
         BrokerConfig config = new BrokerConfig(
-                0, "127.0.0.1", 9092, tempDir, true, "127.0.0.1", 9092, false);
+                0, "127.0.0.1", 9092, tempDir, true, "127.0.0.1", 9092, false,
+                BrokerTestHarness.ADMIN_TOKEN);
 
         try (ReplicaLeoReporter reporter = new ReplicaLeoReporter(config, controller)) {
             assertEquals(ErrorCode.NONE, reporter.report("orders", 0, 0, 7L));
@@ -60,7 +61,8 @@ class ReplicaLeoReporterTest {
                     false,
                     "127.0.0.1",
                     controller.port(),
-                    false);
+                    false,
+                    BrokerTestHarness.ADMIN_TOKEN);
             ClusterController followerMetadata =
                     new ClusterController(new MetadataStore(tempDir.resolve("follower")));
             try (ReplicaLeoReporter reporter =
@@ -91,7 +93,8 @@ class ReplicaLeoReporterTest {
                 false,
                 "127.0.0.1",
                 controllerPort,
-                false);
+                false,
+                BrokerTestHarness.ADMIN_TOKEN);
         ClusterController followerMetadata = new ClusterController(
                 new MetadataStore(tempDir.resolve("recovering-follower")));
 
@@ -109,7 +112,8 @@ class ReplicaLeoReporterTest {
                     true,
                     "127.0.0.1",
                     controllerPort,
-                    false);
+                    false,
+                    BrokerTestHarness.ADMIN_TOKEN);
             try (BrokerTestHarness controller = BrokerTestHarness.start(controllerConfig);
                  TestNetworkClient admin = new TestNetworkClient()) {
                 admin.connect("127.0.0.1", controller.port());
@@ -149,7 +153,8 @@ class ReplicaLeoReporterTest {
                     false,
                     "127.0.0.1",
                     controller.port(),
-                    false);
+                    false,
+                    BrokerTestHarness.ADMIN_TOKEN);
             ClusterController followerMetadata = new ClusterController(
                     new MetadataStore(tempDir.resolve("deduplicate-follower")));
             try (ReplicaLeoReporter reporter =
