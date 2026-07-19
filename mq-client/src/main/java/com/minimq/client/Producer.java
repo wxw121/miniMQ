@@ -47,14 +47,16 @@ public class Producer implements AutoCloseable {
                     List.of(new ProduceRecord(record.key(), record.value())));
             MqDecoder.DecodedResponse response = sendProduce(route.leader(), request);
             MqResponseHeader header = response.header();
-            if (header.errorCode() == ErrorCode.NOT_LEADER && attempt == 0) {
+            if (isStaleLeaderError(header.errorCode()) && attempt == 0) {
                 invalidateMetadata(record.topic());
                 invalidateBrokerClient(route.leader().brokerId());
                 metadata = refreshMetadata(record.topic());
                 continue;
             }
             client.ensureSuccess(response, "PRODUCE topic=" + record.topic()
-                    + " partition=" + route.partitionId() + " attempt=" + (attempt + 1) + "/2");
+                    + " partition=" + route.partitionId()
+                    + " broker=" + route.leader().brokerId()
+                    + " attempt=" + (attempt + 1) + "/2");
             ProduceResponse produceResponse = (ProduceResponse) response.body();
             return new ProduceResult(
                     produceResponse.topicName(),
@@ -62,6 +64,10 @@ public class Producer implements AutoCloseable {
                     produceResponse.baseOffset());
         }
         throw new IllegalStateException("unreachable");
+    }
+
+    private static boolean isStaleLeaderError(ErrorCode errorCode) {
+        return errorCode == ErrorCode.NOT_LEADER || errorCode == ErrorCode.BROKER_FENCED;
     }
 
     private MetadataResponse cachedMetadata(String topicName) throws InterruptedException {

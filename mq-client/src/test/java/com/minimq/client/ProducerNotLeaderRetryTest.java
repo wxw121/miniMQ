@@ -60,6 +60,33 @@ class ProducerNotLeaderRetryTest {
     }
 
     @Test
+    void sendRefreshesMetadataAndRetriesOnceAfterBrokerFenced() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("producer-broker-fenced");
+        try (BrokerTestHarness controller = BrokerTestHarness.startController(dataDir);
+             NetworkClient admin = new NetworkClient("admin");
+             TestableProducer producer = new TestableProducer(controller.bootstrapServers(), "producer-fenced")) {
+            admin.connect("127.0.0.1", controller.port());
+            admin.ensureSuccess(admin.send(
+                    ApiKeys.CREATE_TOPIC, new CreateTopicRequest("orders", 1)));
+
+            producer.start();
+            MetadataResponse freshMetadata = (MetadataResponse) admin.send(
+                    ApiKeys.METADATA, new MetadataRequest("orders"))
+                    .body();
+            producer.enqueueProduceResponse(new MqDecoder.DecodedResponse(
+                    new MqResponseHeader(1, ErrorCode.BROKER_FENCED),
+                    null));
+            producer.enqueueProduceResponse(successResponse(7));
+            producer.enqueueMetadata(freshMetadata);
+
+            assertEquals(7, send(producer).offset());
+            assertEquals(2, producer.produceAttempts());
+            assertEquals(2, producer.metadataFetches());
+            assertEquals(1, producer.invalidatedBrokerClients());
+        }
+    }
+
+    @Test
     void sendReusesMetadataCacheUntilNotLeaderInvalidatesIt() throws Exception {
         Path dataDir = BrokerTestHarness.newDataDir("producer-metadata-cache");
         try (BrokerTestHarness controller = BrokerTestHarness.startController(dataDir);
@@ -120,7 +147,45 @@ class ProducerNotLeaderRetryTest {
             MiniMqServerException ex = assertThrows(MiniMqServerException.class, () -> send(producer));
 
             assertEquals(ErrorCode.NOT_LEADER, ex.errorCode());
-            assertEquals("PRODUCE topic=orders partition=0 attempt=2/2 failed: NOT_LEADER", ex.getMessage());
+            assertEquals(
+                    "PRODUCE topic=orders partition=0 broker=0 attempt=2/2 failed: NOT_LEADER",
+                    ex.getMessage());
+            assertEquals(2, producer.metadataFetches());
+            assertEquals(2, producer.produceAttempts());
+            assertEquals(1, producer.invalidatedBrokerClients());
+        }
+    }
+
+    @Test
+    void sendRetriesBrokerFencedOnlyOnceAndReportsContext() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("producer-broker-fenced-budget");
+        try (BrokerTestHarness controller = BrokerTestHarness.startController(dataDir);
+             NetworkClient admin = new NetworkClient("admin");
+             TestableProducer producer = new TestableProducer(
+                     controller.bootstrapServers(), "producer-fenced-budget")) {
+            admin.connect("127.0.0.1", controller.port());
+            admin.ensureSuccess(admin.send(
+                    ApiKeys.CREATE_TOPIC, new CreateTopicRequest("orders", 1)));
+
+            producer.start();
+            MetadataResponse freshMetadata = (MetadataResponse) admin.send(
+                    ApiKeys.METADATA, new MetadataRequest("orders"))
+                    .body();
+            producer.enqueueMetadata(freshMetadata);
+            producer.enqueueMetadata(freshMetadata);
+            producer.enqueueProduceResponse(new MqDecoder.DecodedResponse(
+                    new MqResponseHeader(1, ErrorCode.BROKER_FENCED),
+                    null));
+            producer.enqueueProduceResponse(new MqDecoder.DecodedResponse(
+                    new MqResponseHeader(2, ErrorCode.BROKER_FENCED),
+                    null));
+
+            MiniMqServerException ex = assertThrows(MiniMqServerException.class, () -> send(producer));
+
+            assertEquals(ErrorCode.BROKER_FENCED, ex.errorCode());
+            assertEquals(
+                    "PRODUCE topic=orders partition=0 broker=0 attempt=2/2 failed: BROKER_FENCED",
+                    ex.getMessage());
             assertEquals(2, producer.metadataFetches());
             assertEquals(2, producer.produceAttempts());
             assertEquals(1, producer.invalidatedBrokerClients());

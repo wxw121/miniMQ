@@ -69,6 +69,38 @@ class ConsumerNotLeaderRetryTest {
     }
 
     @Test
+    void pollRefreshesMetadataAndRetriesOnceAfterBrokerFenced() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("consumer-broker-fenced");
+        try (BrokerTestHarness controller = BrokerTestHarness.startController(dataDir);
+             NetworkClient admin = new NetworkClient("admin");
+             TestableConsumer consumer = new TestableConsumer(
+                     controller.bootstrapServers(), "fenced-group", "consumer-fenced")) {
+            admin.connect("127.0.0.1", controller.port());
+            admin.ensureSuccess(admin.send(
+                    ApiKeys.CREATE_TOPIC, new CreateTopicRequest("orders", 1)));
+            MetadataResponse freshMetadata = (MetadataResponse) admin.send(
+                    ApiKeys.METADATA, new MetadataRequest("orders"))
+                    .body();
+
+            consumer.subscribe("orders");
+            consumer.enqueueMetadata(freshMetadata);
+            consumer.countMetadataFetchesDuringPoll();
+            consumer.enqueueFetchResponse(new MqDecoder.DecodedResponse(
+                    new MqResponseHeader(1, ErrorCode.BROKER_FENCED),
+                    null));
+            consumer.enqueueFetchResponse(successResponse(0));
+            consumer.enqueueFetchResponse(successResponse(1));
+
+            assertEquals(1, consumer.poll(Duration.ofMillis(10)).size());
+            assertEquals(1, consumer.poll(Duration.ofMillis(10)).size());
+            assertEquals(List.of(0L, 0L, 1L), consumer.fetchOffsets());
+            assertEquals(3, consumer.fetchAttempts());
+            assertEquals(1, consumer.metadataFetchesDuringPoll());
+            assertEquals(1, consumer.invalidatedBrokerClients());
+        }
+    }
+
+    @Test
     void pollReusesMetadataCacheUntilNotLeaderInvalidatesIt() throws Exception {
         Path dataDir = BrokerTestHarness.newDataDir("consumer-metadata-cache");
         try (BrokerTestHarness controller = BrokerTestHarness.startController(dataDir);
@@ -133,7 +165,48 @@ class ConsumerNotLeaderRetryTest {
                     () -> consumer.poll(Duration.ofMillis(10)));
 
             assertEquals(ErrorCode.NOT_LEADER, ex.errorCode());
-            assertEquals("FETCH topic=orders partition=0 attempt=2/2 failed: NOT_LEADER", ex.getMessage());
+            assertEquals(
+                    "FETCH topic=orders partition=0 broker=0 attempt=2/2 failed: NOT_LEADER",
+                    ex.getMessage());
+            assertEquals(1, consumer.metadataFetchesDuringPoll());
+            assertEquals(2, consumer.fetchAttempts());
+            assertEquals(1, consumer.invalidatedBrokerClients());
+        }
+    }
+
+    @Test
+    void pollRetriesBrokerFencedOnlyOnceWithoutAdvancingOffset() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("consumer-broker-fenced-budget");
+        try (BrokerTestHarness controller = BrokerTestHarness.startController(dataDir);
+             NetworkClient admin = new NetworkClient("admin");
+             TestableConsumer consumer = new TestableConsumer(
+                     controller.bootstrapServers(), "fenced-budget-group", "consumer-fenced-budget")) {
+            admin.connect("127.0.0.1", controller.port());
+            admin.ensureSuccess(admin.send(
+                    ApiKeys.CREATE_TOPIC, new CreateTopicRequest("orders", 1)));
+            MetadataResponse freshMetadata = (MetadataResponse) admin.send(
+                    ApiKeys.METADATA, new MetadataRequest("orders"))
+                    .body();
+
+            consumer.subscribe("orders");
+            consumer.countMetadataFetchesDuringPoll();
+            consumer.enqueueMetadata(freshMetadata);
+            consumer.enqueueFetchResponse(new MqDecoder.DecodedResponse(
+                    new MqResponseHeader(1, ErrorCode.BROKER_FENCED),
+                    null));
+            consumer.enqueueFetchResponse(new MqDecoder.DecodedResponse(
+                    new MqResponseHeader(2, ErrorCode.BROKER_FENCED),
+                    null));
+
+            MiniMqServerException ex = assertThrows(
+                    MiniMqServerException.class,
+                    () -> consumer.poll(Duration.ofMillis(10)));
+
+            assertEquals(ErrorCode.BROKER_FENCED, ex.errorCode());
+            assertEquals(
+                    "FETCH topic=orders partition=0 broker=0 attempt=2/2 failed: BROKER_FENCED",
+                    ex.getMessage());
+            assertEquals(List.of(0L, 0L), consumer.fetchOffsets());
             assertEquals(1, consumer.metadataFetchesDuringPoll());
             assertEquals(2, consumer.fetchAttempts());
             assertEquals(1, consumer.invalidatedBrokerClients());
@@ -234,6 +307,7 @@ class ConsumerNotLeaderRetryTest {
         private final Queue<MetadataResponse> metadataResponses = new ArrayDeque<>();
         private final Queue<MqDecoder.DecodedResponse> fetchResponses = new ArrayDeque<>();
         private final List<Integer> fetchLeaderBrokerIds = new ArrayList<>();
+        private final List<Long> fetchOffsets = new ArrayList<>();
         private int metadataFetchesDuringPoll;
         private int fetchAttempts;
         private int invalidatedBrokerClients;
@@ -271,6 +345,10 @@ class ConsumerNotLeaderRetryTest {
             return fetchLeaderBrokerIds;
         }
 
+        private List<Long> fetchOffsets() {
+            return fetchOffsets;
+        }
+
         @Override
         protected MetadataResponse fetchMetadata(String topicName) throws InterruptedException {
             if (countMetadataFetchesDuringPoll) {
@@ -288,6 +366,7 @@ class ConsumerNotLeaderRetryTest {
                 FetchRequest request) {
             fetchAttempts++;
             fetchLeaderBrokerIds.add(leader.brokerId());
+            fetchOffsets.add(request.fetchOffset());
             return fetchResponses.remove();
         }
 
