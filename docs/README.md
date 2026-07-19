@@ -98,9 +98,9 @@ mq-demo/target/site/jacoco/index.html
 Start a three-broker demo cluster / 启动三节点 Broker 演示集群：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-2.4.0.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller
-java -jar mq-demo/target/mq-demo-2.4.0.jar broker --broker-id 1 --port 9093 --data-dir ./data/broker-1 --controller-addr localhost:9092
-java -jar mq-demo/target/mq-demo-2.4.0.jar broker --broker-id 2 --port 9094 --data-dir ./data/broker-2 --controller-addr localhost:9092
+java -jar mq-demo/target/mq-demo-2.4.0.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller --admin-token <secret>
+java -jar mq-demo/target/mq-demo-2.4.0.jar broker --broker-id 1 --port 9093 --data-dir ./data/broker-1 --controller-addr localhost:9092 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-2.4.0.jar broker --broker-id 2 --port 9094 --data-dir ./data/broker-2 --controller-addr localhost:9092 --admin-token <secret>
 ```
 
 Create, produce, and consume / 创建 Topic、生产消息、消费消息：
@@ -114,10 +114,12 @@ java -jar mq-demo/target/mq-demo-2.4.0.jar consume --brokers localhost:9092 --to
 Inspect and run storage maintenance / 查看并执行存储维护：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-2.4.0.jar maintenance-report --brokers localhost:9092
-java -jar mq-demo/target/mq-demo-2.4.0.jar maintenance-run --brokers localhost:9092
-java -jar mq-demo/target/mq-demo-2.4.0.jar maintenance-metrics --brokers localhost:9092
+java -jar mq-demo/target/mq-demo-2.4.0.jar maintenance-report --broker localhost:9092 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-2.4.0.jar maintenance-run --broker localhost:9092 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-2.4.0.jar maintenance-metrics --broker localhost:9092 --admin-token <secret>
 ```
+
+All brokers require the shared admin token. Invalid maintenance credentials return `UNAUTHORIZED`, while an overlapping destructive run returns `MAINTENANCE_BUSY`; report/run work executes on the broker's dedicated maintenance executor.
 
 Benchmark FETCH heap versus sendfile / 对比 HEAP 与 sendfile 的 FETCH 基准：
 

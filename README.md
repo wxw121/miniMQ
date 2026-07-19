@@ -45,20 +45,20 @@ mvn test -gs .mvn/settings.xml -s .mvn/settings.xml
 
 ```powershell
 # Terminal 1
-java -cp mq-demo/target/mq-demo-2.0.0-SNAPSHOT.jar com.minimq.demo.BrokerMain --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller
+java -cp mq-demo/target/mq-demo-2.0.0-SNAPSHOT.jar com.minimq.demo.BrokerMain --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller --admin-token <secret>
 
 # Terminal 2
-java -cp mq-demo/target/mq-demo-2.0.0-SNAPSHOT.jar com.minimq.demo.BrokerMain --broker-id 1 --port 9093 --data-dir ./data/broker-1 --controller-addr localhost:9092
+java -cp mq-demo/target/mq-demo-2.0.0-SNAPSHOT.jar com.minimq.demo.BrokerMain --broker-id 1 --port 9093 --data-dir ./data/broker-1 --controller-addr localhost:9092 --admin-token <secret>
 
 # Terminal 3
-java -cp mq-demo/target/mq-demo-2.0.0-SNAPSHOT.jar com.minimq.demo.BrokerMain --broker-id 2 --port 9094 --data-dir ./data/broker-2 --controller-addr localhost:9092
+java -cp mq-demo/target/mq-demo-2.0.0-SNAPSHOT.jar com.minimq.demo.BrokerMain --broker-id 2 --port 9094 --data-dir ./data/broker-2 --controller-addr localhost:9092 --admin-token <secret>
 ```
 
 或使用 fat jar：
 
 ```bash
 mvn -pl mq-demo package
-java -jar mq-demo/target/mq-demo-2.0.0-SNAPSHOT.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller
+java -jar mq-demo/target/mq-demo-2.0.0-SNAPSHOT.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller --admin-token <secret>
 ```
 
 ## Demo 流程

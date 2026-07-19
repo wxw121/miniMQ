@@ -25,7 +25,7 @@ MiniMQ 的测试按风险组织。协议和存储属于低层核心模块，小 
 Run all tests / 运行全部测试：
 
 ```powershell
-mvn verify -gs .mvn/settings.xml -s .mvn/settings.xml
+mvn clean verify -gs .mvn/settings.xml -s .mvn/settings.xml
 ```
 
 Run tests quietly / 静默运行测试：
@@ -58,33 +58,33 @@ Latest result / 最近结果：
 
 | Metric / 指标 | Value / 数值 |
 | --- | ---: |
-| Tests run / 测试总数 | 279 |
+| Tests run / 测试总数 | 292 |
 | Failures / 失败数 | 0 |
 | Errors / 错误数 | 0 |
 | Skipped / 跳过数 | 0 |
-| Overall line coverage / 总体行覆盖率 | 91.60% |
-| Overall instruction coverage / 总体指令覆盖率 | 92.75% |
-| Overall branch coverage / 总体分支覆盖率 | 80.64% |
-| Overall method coverage / 总体方法覆盖率 | 97.19% |
+| Overall line coverage / 总体行覆盖率 | 91.76% |
+| Overall instruction coverage / 总体指令覆盖率 | 92.98% |
+| Overall branch coverage / 总体分支覆盖率 | 80.62% |
+| Overall method coverage / 总体方法覆盖率 | 97.02% |
 | Overall class coverage / 总体类覆盖率 | 100.00% |
 
 ## 5. Coverage By Module / 模块覆盖率
 
 | Module / 模块 | Instruction / 指令 | Branch / 分支 | Line / 行 | Method / 方法 | Class / 类 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `mq-broker` | 94.20% | 78.72% | 92.10% | 95.59% | 100.00% |
-| `mq-client` | 92.27% | 76.52% | 90.00% | 92.68% | 100.00% |
-| `mq-common` | 96.84% | 84.38% | 97.84% | 100.00% | 100.00% |
-| `mq-demo` | 95.64% | 75.50% | 93.14% | 96.15% | 100.00% |
-| `mq-protocol` | 92.51% | 78.83% | 91.71% | 100.00% | 100.00% |
-| `mq-storage` | 90.63% | 82.11% | 90.26% | 97.68% | 100.00% |
+| `mq-broker` | 94.14% | 78.84% | 92.59% | 98.65% | 100.00% |
+| `mq-client` | 92.28% | 77.12% | 90.08% | 92.68% | 100.00% |
+| `mq-common` | 96.90% | 84.38% | 97.87% | 100.00% | 100.00% |
+| `mq-demo` | 96.27% | 77.06% | 94.07% | 96.43% | 100.00% |
+| `mq-protocol` | 94.00% | 82.58% | 92.74% | 95.83% | 100.00% |
+| `mq-storage` | 90.52% | 82.46% | 90.03% | 97.37% | 100.00% |
 
 ```mermaid
 xychart-beta
     title "Line Coverage By Module / 模块行覆盖率"
     x-axis ["broker/代理", "client/客户端", "common/公共", "demo/演示", "protocol/协议", "storage/存储"]
     y-axis "Line % / 行覆盖率 %" 0 --> 100
-    bar [92.10, 90.00, 97.84, 93.14, 91.71, 90.26]
+    bar [92.59, 90.08, 97.87, 94.07, 92.74, 90.03]
 ```
 
 ```mermaid
@@ -92,7 +92,7 @@ xychart-beta
     title "Overall Coverage / 总体覆盖率"
     x-axis ["Instruction/指令", "Branch/分支", "Line/行", "Method/方法", "Class/类"]
     y-axis "Coverage % / 覆盖率 %" 0 --> 100
-    bar [92.54, 80.23, 91.33, 96.76, 100.00]
+    bar [92.98, 80.62, 91.76, 97.02, 100.00]
 ```
 
 
@@ -151,14 +151,15 @@ The numeric baseline above and the closeout report are the source of truth for t
 | `mq-storage` | `LogManagerMaintenanceTest` | Unit / 单元测试 | Accurate dry-run ordering, action/byte/offset reports, metrics, reader skips, UTC windows, manual execution, checkpointing, and WAL replay after retention or compaction holes. / 精确 dry-run 顺序、动作/字节/offset 报告、指标、reader 跳过、UTC 窗口、手动执行、checkpoint，以及 retention 或 compaction 空洞后的 WAL replay。 |
 | `mq-storage` | `SegmentedPartitionLogFetchPlanTest` | Unit / 单元测试 | Cross-segment fetch plans, high-watermark snapshots, reader-lease retention deferral, compaction holes, and exact byte budgets. / 跨 segment FETCH 计划、high watermark 快照、读租约推迟 retention、compaction 空洞和精确字节预算。 |
 | `mq-protocol` | `ProtocolSerdesTest` | Unit / 单元测试 | Request/response round trips, FETCH prefix equivalence, malformed collection counts, frame limits, encoder. / 请求/响应往返、FETCH 前缀等价、畸形集合 count、帧限制和编码器。 |
-| `mq-broker` | `BrokerConfigTest` | Unit / 单元测试 | Broker argument parsing and validation, including flush/checkpoint, segment, retention, compaction, maintenance, and fetch-transfer options. / Broker 参数解析与校验，包括刷盘、checkpoint、segment、保留策略、压缩、维护和 FETCH 传输选项。 |
+| `mq-broker` | `BrokerConfigTest` | Unit / 单元测试 | Broker argument parsing and validation, including the required maintenance admin token and storage/fetch options. / Broker 参数解析与校验，包括必填维护管理令牌以及存储、FETCH 选项。 |
 | `mq-broker` | `FetchTransferMetricsTest` | Unit / 单元测试 | Sendfile/heap/fallback/failure/timeout counters and immutable snapshots. / sendfile/heap/回退/失败/超时计数与不可变快照。 |
 | `mq-broker` | `MetadataStoreTest` | Unit / 单元测试 | Metadata safe writes, load validation, corrupt-file failure, and quarantine recovery. / 元数据安全写入、加载校验、损坏文件失败与隔离恢复。 |
 | `mq-broker` | `ClusterControllerTest` | Unit / 单元测试 | Topic creation, replica/ISR metadata, offline election, snapshot isolation. / Topic 创建、副本/ISR 元数据、离线选举、快照隔离。 |
 | `mq-broker` | `ReplicaStateManagerTest` | Unit / 单元测试 | ISR minimum high watermark math. / ISR 最小 high watermark 计算。 |
 | `mq-broker` | `ReplicationIntegrationTest` | Integration / 集成测试 | Follower catch-up, replication-aware client FETCH, leader failover, and `NOT_LEADER` redirects. / Follower 追平、复制感知客户端 FETCH、Leader 故障转移与 `NOT_LEADER` 重定向。 |
 | `mq-broker` | `GroupCoordinatorTest` | Unit / 单元测试 | Join/sync assignment, heartbeat, offset commit/fetch. / 加组、同步分配、心跳、offset 提交/拉取。 |
-| `mq-broker` | `EmbeddedBrokerChannelTest` | Component / 组件测试 | Handler behavior through Netty `EmbeddedChannel`, including maintenance report/run/metrics admin APIs. / 通过 Netty `EmbeddedChannel` 验证 handler 行为，包括维护报告、执行和指标管理 API。 |
+| `mq-broker` | `MaintenanceAdminServiceTest` | Unit / 单元测试 | Constant-time token authorization, single-run admission, dedicated executor threading, rejection recovery, and idempotent shutdown. / 常量时间令牌鉴权、单次执行准入、专用执行器线程、拒绝恢复与幂等关闭。 |
+| `mq-broker` | `EmbeddedBrokerChannelTest` | Component / 组件测试 | Authorized async maintenance report/run routing, error mapping, correlation IDs, metrics, and enabled segment actions through Netty `EmbeddedChannel`. / 通过 Netty `EmbeddedChannel` 验证鉴权后的异步维护报告/执行路由、错误映射、关联 ID、指标与已启用的 segment 动作。 |
 | `mq-broker` | `FetchResponseWriterTest` | Component / 组件测试 | AUTO/HEAP selection, DefaultFileRegion outbound messages, unsupported fallbacks, and transfer-timeout lease release. / AUTO/HEAP 选择、DefaultFileRegion 出站消息、不支持回退，以及传输超时释放读租约。 |
 | `mq-broker` | `ProduceFetchIntegrationTest` | Integration / 集成测试 | Real broker produce/fetch and not-leader behavior. / 真实 Broker 生产、拉取与非 leader 行为。 |
 | `mq-broker` | `ZeroCopyFetchIntegrationTest` | Integration / 集成测试 | Real loopback TCP AUTO sendfile FETCH, HEAP equivalence, and transfer metrics. / 真实回环 TCP AUTO sendfile FETCH、HEAP 等价与传输指标。 |
@@ -168,7 +169,7 @@ The numeric baseline above and the closeout report are the source of truth for t
 | `mq-client` | `NetworkClientRetryTest` | Unit / 单元测试 | Connect retry attempt budget and fixed backoff validation. / 连接重试次数预算与固定退避参数校验。 |
 | `mq-client` | `ProducerIntegrationTest` | Integration / 集成测试 | Producer offsets increase across sends. / Producer 多次发送后 offset 递增。 |
 | `mq-client` | `ConsumerIntegrationTest` | Integration / 集成测试 | Consumer poll and commit behavior. / Consumer poll 与提交行为。 |
-| `mq-demo` | `DemoCliTest` | Component/Integration / 组件/集成测试 | CLI validation, maintenance report/run/metrics commands, benchmark-fetch usage text, and create/produce/consume path. / CLI 校验、维护报告/执行/指标命令、benchmark-fetch 用法文本与创建/生产/消费链路。 |
+| `mq-demo` | `DemoCliTest` | Component/Integration / 组件/集成测试 | Single-broker/token validation, unauthorized responses, and real TCP enabled retention/compaction output alongside create/produce/consume. / 单 Broker/令牌校验、未授权响应，以及真实 TCP 下启用 retention/compaction 的输出和创建/生产/消费链路。 |
 | `mq-demo` | `FetchBenchmarkTest` | Unit / 单元测试 | Benchmark argument parsing and latency percentile summarization. / 基准参数解析与延迟百分位汇总。 |
 | `mq-demo` | `MiniMqE2ETest` | E2E / 端到端测试 | Three-broker cluster with two consumers. / 三节点 Broker 集群与两个 Consumer。 |
 | `mq-demo` | `MiniMqWebAppTest` | Web integration / Web 集成测试 | Static assets, real Web flow, mock fallback, HTTP errors, runtime reuse, concurrent request isolation, stale runtime rebuild, and LRU runtime eviction. / 静态资源、真实 Web 主流程、mock fallback、HTTP 错误、runtime 复用、并发请求隔离、旧 runtime 重建和 LRU runtime 淘汰。 |
@@ -227,9 +228,22 @@ mvn -q -gs .mvn/settings.xml -s .mvn/settings.xml -pl mq-broker -am -Dtest=Clust
 
 ### 7.6 V2.4.0 Maintenance Operations Closeout / V2.4.0 维护运维入口收口
 
-V2.4.0 adds broker admin protocol APIs 13-15 plus `maintenance-report`, `maintenance-run`, and `maintenance-metrics` CLI commands. `ProtocolSerdesTest` covers request/response round trips, `EmbeddedBrokerChannelTest` covers handler mapping, and `DemoCliTest` covers real TCP command output.
+V2.4.0 hardens broker admin protocol APIs 13-15 with a shared token, `UNAUTHORIZED` and `MAINTENANCE_BUSY` responses, and a broker-scoped maintenance executor. Report/run work is kept off the Netty EventLoop, while the CLI requires one explicit `--broker` target and `--admin-token`.
 
-V2.4.0 增加 Broker 管理协议 API 13-15，以及 `maintenance-report`、`maintenance-run` 和 `maintenance-metrics` CLI 命令。`ProtocolSerdesTest` 覆盖请求/响应往返，`EmbeddedBrokerChannelTest` 覆盖 handler 映射，`DemoCliTest` 覆盖真实 TCP 命令输出。
+V2.4.0 使用共享令牌加固 Broker 管理协议 API 13-15，增加 `UNAUTHORIZED`、`MAINTENANCE_BUSY` 响应和 Broker 级维护执行器。报告/执行任务不会阻塞 Netty EventLoop，CLI 必须显式提供单一 `--broker` 目标和 `--admin-token`。
+
+Operator commands / 运维命令：
+
+```text
+broker ... --admin-token <secret>
+maintenance-report --broker 127.0.0.1:9092 --admin-token <secret>
+maintenance-run --broker 127.0.0.1:9092 --admin-token <secret>
+maintenance-metrics --broker 127.0.0.1:9092 --admin-token <secret>
+```
+
+`ProtocolSerdesTest`, `MaintenanceAdminServiceTest`, and `EmbeddedBrokerChannelTest` cover authorization, admission, asynchronous routing, and protocol responses. `DemoCliTest` reaches a real TCP broker and verifies non-empty enabled retention and compaction segment actions.
+
+`ProtocolSerdesTest`、`MaintenanceAdminServiceTest` 与 `EmbeddedBrokerChannelTest` 覆盖鉴权、准入、异步路由和协议响应；`DemoCliTest` 连接真实 TCP Broker，验证已启用 retention 与 compaction 时返回非空 segment 动作。
 
 Verification evidence / 验证证据：`docs/test-report-2026-07-19-v2.4.0-maintenance-ops.md`。
 
