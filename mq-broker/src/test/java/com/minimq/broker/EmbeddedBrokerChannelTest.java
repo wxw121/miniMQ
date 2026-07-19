@@ -36,7 +36,13 @@ import com.minimq.protocol.message.ProtocolMessages.ReplicaFetchResponse;
 import com.minimq.protocol.message.ProtocolMessages.SyncGroupRequest;
 import com.minimq.protocol.message.ProtocolMessages.SyncGroupResponse;
 import com.minimq.protocol.message.ProtocolMessages.UpdateReplicaLeoRequest;
+import com.minimq.storage.CompactionPolicy;
+import com.minimq.storage.FlushPolicy;
+import com.minimq.storage.LogMaintenanceConfig;
 import com.minimq.storage.LogManager;
+import com.minimq.storage.LogManagerConfig;
+import com.minimq.storage.RetentionPolicy;
+import com.minimq.storage.SegmentedLogConfig;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.embedded.EmbeddedChannel;
 import org.junit.jupiter.api.AfterEach;
@@ -50,6 +56,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
@@ -356,6 +363,69 @@ class EmbeddedBrokerChannelTest {
         assertEquals(ErrorCode.UNAUTHORIZED, response.header().errorCode());
         assertNull(response.body());
         channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void maintenanceReportIncludesEnabledSegmentActions() throws Exception {
+        Path dataDir = tempDir.resolve("enabled-maintenance");
+        LogManager logManager = new LogManager(
+                dataDir,
+                new LogManagerConfig(
+                        FlushPolicy.manualOnClose(),
+                        0,
+                        new SegmentedLogConfig(128, 1),
+                        LogMaintenanceConfig.of(
+                                RetentionPolicy.of(0, 256),
+                                CompactionPolicy.disabled(),
+                                0)));
+        PartitionManager partitionManager = new PartitionManager(logManager);
+        ClusterController clusterController =
+                new ClusterController(new MetadataStore(dataDir.resolve("metadata")));
+        GroupCoordinator groupCoordinator = new GroupCoordinator(clusterController);
+        BrokerConfig config = new BrokerConfig(
+                0,
+                "127.0.0.1",
+                9092,
+                dataDir,
+                true,
+                "127.0.0.1",
+                9092,
+                false,
+                BrokerTestHarness.ADMIN_TOKEN);
+        MaintenanceAdminService service =
+                new MaintenanceAdminService(config.adminToken(), partitionManager);
+        EmbeddedChannel channel = new EmbeddedChannel(
+                new MqDecoder(),
+                new MqRequestHandler(
+                        config,
+                        clusterController,
+                        groupCoordinator,
+                        partitionManager,
+                        service),
+                new MqEncoder());
+        try {
+            for (int i = 0; i < 6; i++) {
+                partitionManager.append(
+                        "orders",
+                        0,
+                        "shared-key".getBytes(),
+                        ("value-" + i + "-" + "x".repeat(96)).getBytes());
+            }
+
+            MqDecoder.DecodedResponse response = send(
+                    channel,
+                    ApiKeys.MAINTENANCE_REPORT,
+                    new MaintenanceReportRequest(BrokerTestHarness.ADMIN_TOKEN));
+            MaintenanceReportResponse report = (MaintenanceReportResponse) response.body();
+
+            assertEquals(ErrorCode.NONE, response.header().errorCode());
+            assertFalse(report.segmentReports().isEmpty());
+            assertEquals("RETENTION_DELETE", report.segmentReports().get(0).action());
+        } finally {
+            channel.finishAndReleaseAll();
+            service.close();
+            partitionManager.close();
+        }
     }
 
     private EmbeddedChannel newChannel(ClusterController clusterController, boolean controller) {
