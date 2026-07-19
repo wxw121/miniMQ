@@ -33,6 +33,16 @@ public final class MetadataSync {
         }
     }
 
+    public static void refresh(BrokerConfig config, ClusterController controller) throws InterruptedException {
+        if (config.controller()) {
+            return;
+        }
+        try (ControllerClient client = new ControllerClient()) {
+            client.connect(config.controllerHost(), config.controllerPort());
+            applyMetadata(controller, client.fetchMetadata());
+        }
+    }
+
     static void applyMetadata(ClusterController controller, MetadataResponse metadata) {
         controller.updateMetadata(snapshot -> {
             snapshot.brokers.clear();
@@ -57,6 +67,7 @@ public final class MetadataSync {
                     partitionEntry.isrBrokerIds = new ArrayList<>(partition.isrBrokerIds());
                     partitionEntry.replicaLogEndOffsets =
                             new HashMap<>(partition.replicaLogEndOffsets());
+                    partitionEntry.frozen = partition.frozen();
                     entry.partitions.add(partitionEntry);
                 }
                 snapshot.topics.put(entry.topicName, entry);

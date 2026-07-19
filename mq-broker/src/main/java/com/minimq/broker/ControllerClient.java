@@ -9,7 +9,9 @@ import com.minimq.protocol.codec.MqEncoder;
 import com.minimq.protocol.message.MqRequestHeader;
 import com.minimq.protocol.message.ProtocolMessages.MetadataRequest;
 import com.minimq.protocol.message.ProtocolMessages.MetadataResponse;
+import com.minimq.protocol.message.ProtocolMessages.BrokerHeartbeatRequest;
 import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
+import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerResponse;
 import com.minimq.protocol.message.ProtocolMessages.UpdateReplicaLeoRequest;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
@@ -52,12 +54,20 @@ public class ControllerClient implements AutoCloseable {
         channel = bootstrap.connect(host, port).sync().channel();
     }
 
-    public void registerBroker(RegisterBrokerRequest request) throws InterruptedException {
+    public synchronized RegisterBrokerResponse registerBroker(RegisterBrokerRequest request)
+            throws InterruptedException {
         send(ApiKeys.REGISTER_BROKER, request);
-        ensureSuccess(awaitResponse(ApiKeys.REGISTER_BROKER));
+        MqDecoder.DecodedResponse response = awaitResponse(ApiKeys.REGISTER_BROKER);
+        ensureSuccess(response);
+        return (RegisterBrokerResponse) response.body();
     }
 
-    public MetadataResponse fetchMetadata() throws InterruptedException {
+    public synchronized void heartbeatBroker(BrokerHeartbeatRequest request) throws InterruptedException {
+        send(ApiKeys.BROKER_HEARTBEAT, request);
+        ensureSuccess(awaitResponse(ApiKeys.BROKER_HEARTBEAT));
+    }
+
+    public synchronized MetadataResponse fetchMetadata() throws InterruptedException {
         send(ApiKeys.METADATA, new MetadataRequest(""));
         MqDecoder.DecodedResponse decoded = awaitResponse(ApiKeys.METADATA);
         ensureSuccess(decoded);
@@ -89,7 +99,20 @@ public class ControllerClient implements AutoCloseable {
     private void ensureSuccess(MqDecoder.DecodedResponse response) {
         MqResponseHeader header = response.header();
         if (header.errorCode() != ErrorCode.NONE) {
-            throw new IllegalStateException("Controller request failed: " + header.errorCode());
+            throw new ControllerRequestException(header.errorCode());
+        }
+    }
+
+    public static final class ControllerRequestException extends IllegalStateException {
+        private final ErrorCode errorCode;
+
+        ControllerRequestException(ErrorCode errorCode) {
+            super("Controller request failed: " + errorCode);
+            this.errorCode = errorCode;
+        }
+
+        public ErrorCode errorCode() {
+            return errorCode;
         }
     }
 

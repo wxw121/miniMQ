@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MetadataSyncTest {
 
@@ -21,7 +22,7 @@ class MetadataSyncTest {
     Path tempDir;
 
     @Test
-    void applyMetadataCopiesReplicaLogEndOffsets() {
+    void applyMetadataCopiesReplicaLogEndOffsetsAndFrozenState() {
         ClusterController controller = new ClusterController(new MetadataStore(tempDir));
         MetadataResponse response = new MetadataResponse(
                 List.of(
@@ -33,13 +34,16 @@ class MetadataSyncTest {
                                 0,
                                 0,
                                 List.of(0, 1),
-                                List.of(0, 1),
-                                Map.of(0, 12L, 1, 9L))))));
+                                List.of(),
+                                Map.of(0, 12L, 1, 9L),
+                                true)))));
 
         MetadataSync.applyMetadata(controller, response);
 
         assertEquals(
                 Map.of(0, 12L, 1, 9L),
                 controller.snapshot().topics.get("orders").partitions.get(0).replicaLogEndOffsets);
+        assertTrue(controller.snapshot().topics.get("orders").partitions.get(0).frozen);
+        assertTrue(controller.snapshot().topics.get("orders").partitions.get(0).isrBrokerIds.isEmpty());
     }
 }
