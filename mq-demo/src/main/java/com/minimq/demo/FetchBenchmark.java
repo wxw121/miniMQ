@@ -66,7 +66,8 @@ final class FetchBenchmark {
                 "--sparse-index-interval-records", "1",
                 "--segment-max-bytes", Long.toString(config.segmentBytes()),
                 "--fetch-transfer-mode", mode == FetchTransferMode.AUTO ? "auto" : "heap",
-                "--fetch-transfer-timeout-ms", "30000"
+                "--fetch-transfer-timeout-ms", "30000",
+                "--admin-token", "benchmark-admin"
         });
         BrokerServer server = new BrokerServer(brokerConfig);
         server.start();

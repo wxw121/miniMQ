@@ -4,6 +4,9 @@ import com.minimq.client.exception.MiniMqRequestTimeoutException;
 import com.minimq.protocol.ApiKeys;
 import com.minimq.protocol.message.ProtocolMessages.HeartbeatRequest;
 import com.minimq.protocol.message.ProtocolMessages.JoinGroupRequest;
+import com.minimq.protocol.message.ProtocolMessages.MaintenanceMetricsRequest;
+import com.minimq.protocol.message.ProtocolMessages.MaintenanceReportRequest;
+import com.minimq.protocol.message.ProtocolMessages.MaintenanceRunRequest;
 import com.minimq.protocol.message.ProtocolMessages.MetadataRequest;
 import com.minimq.protocol.message.ProtocolMessages.OffsetCommitRequest;
 import com.minimq.protocol.message.ProtocolMessages.OffsetFetchRequest;
@@ -117,7 +120,14 @@ class NetworkClientTimeoutTest {
                 new TimeoutRequest(ApiKeys.HEARTBEAT, new HeartbeatRequest("g", "m"), "HEARTBEAT"),
                 new TimeoutRequest(ApiKeys.OFFSET_COMMIT, new OffsetCommitRequest("g", "orders", 0, 1), "OFFSET_COMMIT"),
                 new TimeoutRequest(ApiKeys.OFFSET_FETCH, new OffsetFetchRequest("g", "orders", 0), "OFFSET_FETCH"),
-                new TimeoutRequest(ApiKeys.REGISTER_BROKER, new RegisterBrokerRequest(1, "127.0.0.1", 19092), "REGISTER_BROKER"));
+                new TimeoutRequest(ApiKeys.REGISTER_BROKER,
+                        new RegisterBrokerRequest(1, "127.0.0.1", 19092), "REGISTER_BROKER"),
+                new TimeoutRequest(ApiKeys.MAINTENANCE_REPORT,
+                        new MaintenanceReportRequest("secret"), "MAINTENANCE_REPORT"),
+                new TimeoutRequest(ApiKeys.MAINTENANCE_RUN,
+                        new MaintenanceRunRequest("secret"), "MAINTENANCE_RUN"),
+                new TimeoutRequest(ApiKeys.MAINTENANCE_METRICS,
+                        new MaintenanceMetricsRequest("secret"), "MAINTENANCE_METRICS"));
     }
 
     private record TimeoutRequest(short apiKey, Object body, String operation) {

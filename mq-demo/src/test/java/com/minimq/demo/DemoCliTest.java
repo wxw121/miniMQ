@@ -1,6 +1,9 @@
 package com.minimq.demo;
 
+import com.minimq.broker.BrokerConfig;
 import com.minimq.broker.support.BrokerTestHarness;
+import com.minimq.client.exception.MiniMqServerException;
+import com.minimq.common.error.ErrorCode;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
@@ -10,6 +13,7 @@ import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -26,6 +30,11 @@ class DemoCliTest {
         assertTrue(unknown.contains("benchmark-fetch"));
         assertTrue(noArgs.contains("maintenance-report"));
         assertTrue(unknown.contains("maintenance-metrics"));
+        String brokerUsage =
+                "broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller --admin-token <secret>";
+        assertTrue(noArgs.contains(brokerUsage));
+        assertTrue(unknown.contains(brokerUsage));
+        assertTrue(noArgs.contains("--broker localhost:9092 --admin-token"));
     }
 
     @Test
@@ -39,12 +48,8 @@ class DemoCliTest {
         assertThrows(IllegalArgumentException.class, () -> DemoCli.main(new String[] {
                 "consume", "--brokers", "localhost", "--topic", "orders", "--group", "g1"
         }));
-        assertThrows(IllegalArgumentException.class, () -> DemoCli.main(new String[] {
-                "maintenance-report", "--brokers", "localhost"
-        }));
-        assertThrows(IllegalArgumentException.class, () -> DemoCli.main(new String[] {
-                "maintenance-metrics", "--brokers", "localhost"
-        }));
+        assertThrows(IllegalArgumentException.class,
+                () -> DemoCli.parseSingleHostPort("localhost"));
     }
 
     @Test
@@ -61,7 +66,8 @@ class DemoCliTest {
                 "--host", "127.0.0.1",
                 "--port", "19092",
                 "--data-dir", "./tmp/broker-3",
-                "--controller"
+                "--controller",
+                "--admin-token", "test-admin-token"
         });
 
         assertEquals(3, config.brokerId());
@@ -97,6 +103,26 @@ class DemoCliTest {
     }
 
     @Test
+    void maintenanceCommandsRequireOneExplicitBrokerAndToken() {
+        assertThrows(IllegalArgumentException.class, () -> DemoCli.main(new String[] {
+                "maintenance-report", "--admin-token", "secret"
+        }));
+        assertThrows(IllegalArgumentException.class, () -> DemoCli.main(new String[] {
+                "maintenance-report", "--broker", "127.0.0.1:9092"
+        }));
+        assertThrows(IllegalArgumentException.class, () -> DemoCli.main(new String[] {
+                "maintenance-report", "--broker", "a:9092,b:9093", "--admin-token", "secret"
+        }));
+        assertThrows(IllegalArgumentException.class, () -> DemoCli.main(new String[] {
+                "maintenance-report", "--broker", "localhost", "--admin-token", "secret"
+        }));
+        assertThrows(IllegalArgumentException.class,
+                () -> DemoCli.parseSingleHostPort("localhost:0"));
+        assertThrows(IllegalArgumentException.class,
+                () -> DemoCli.parseSingleHostPort("localhost:65536"));
+    }
+
+    @Test
     void createProduceAndConsumeThroughCli() throws Exception {
         Path dataDir = BrokerTestHarness.newDataDir("demo-cli");
         try (BrokerTestHarness broker = BrokerTestHarness.startController(dataDir)) {
@@ -124,16 +150,28 @@ class DemoCliTest {
         try (BrokerTestHarness broker = BrokerTestHarness.startController(dataDir)) {
             String brokers = broker.bootstrapServers();
 
+            MiniMqServerException unauthorized = assertThrows(
+                    MiniMqServerException.class,
+                    () -> captureStdout(() -> DemoCli.main(new String[] {
+                            "maintenance-report", "--broker", brokers,
+                            "--admin-token", "wrong-token"
+                    })));
+            assertEquals(ErrorCode.UNAUTHORIZED, unauthorized.errorCode());
+
             String reportOutput = captureStdout(() -> DemoCli.main(new String[] {
-                    "maintenance-report", "--brokers", brokers
+                    "maintenance-report", "--broker", brokers,
+                    "--admin-token", BrokerTestHarness.ADMIN_TOKEN
             }));
             String runOutput = captureStdout(() -> DemoCli.main(new String[] {
-                    "maintenance-run", "--brokers", brokers
+                    "maintenance-run", "--broker", brokers,
+                    "--admin-token", BrokerTestHarness.ADMIN_TOKEN
             }));
             String metricsOutput = captureStdout(() -> DemoCli.main(new String[] {
-                    "maintenance-metrics", "--brokers", brokers
+                    "maintenance-metrics", "--broker", brokers,
+                    "--admin-token", BrokerTestHarness.ADMIN_TOKEN
             }));
 
+            assertTrue(reportOutput.contains("Maintenance target: " + brokers));
             assertTrue(reportOutput.contains("Maintenance report"));
             assertTrue(reportOutput.contains("dryRun=true"));
             assertTrue(reportOutput.contains("status=SKIPPED_DISABLED"));
@@ -142,6 +180,74 @@ class DemoCliTest {
             assertTrue(metricsOutput.contains("Maintenance metrics"));
             assertTrue(metricsOutput.contains("dryRuns=1"));
             assertTrue(metricsOutput.contains("lastRunStatus=SKIPPED_DISABLED"));
+            assertFalse(reportOutput.contains(BrokerTestHarness.ADMIN_TOKEN));
+            assertFalse(runOutput.contains(BrokerTestHarness.ADMIN_TOKEN));
+            assertFalse(metricsOutput.contains(BrokerTestHarness.ADMIN_TOKEN));
+        }
+    }
+
+    @Test
+    void maintenanceReportShowsRetentionSegmentsThroughRealBroker() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("demo-cli-retention");
+        BrokerConfig config = BrokerTestHarness.controllerConfig(
+                0,
+                dataDir,
+                "--segment-max-bytes", "128",
+                "--retention-bytes", "256");
+        try (BrokerTestHarness broker = BrokerTestHarness.start(config)) {
+            captureStdout(() -> createTopicAndProduceRolledSegments(
+                    broker.bootstrapServers(), "retained", "shared-key", 6));
+
+            String output = captureStdout(() -> DemoCli.main(new String[] {
+                    "maintenance-report",
+                    "--broker", broker.bootstrapServers(),
+                    "--admin-token", BrokerTestHarness.ADMIN_TOKEN
+            }));
+
+            assertTrue(output.contains("Maintenance target: " + broker.bootstrapServers()));
+            assertTrue(output.contains("segments="));
+            assertTrue(output.contains("action=RETENTION_DELETE"));
+        }
+    }
+
+    @Test
+    void maintenanceRunShowsCompactionSegmentsThroughRealBroker() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("demo-cli-compaction");
+        BrokerConfig config = BrokerTestHarness.controllerConfig(
+                0,
+                dataDir,
+                "--segment-max-bytes", "128",
+                "--compaction-enabled",
+                "--compaction-max-segments", "4");
+        try (BrokerTestHarness broker = BrokerTestHarness.start(config)) {
+            captureStdout(() -> createTopicAndProduceRolledSegments(
+                    broker.bootstrapServers(), "compacted", "shared-key", 6));
+
+            String output = captureStdout(() -> DemoCli.main(new String[] {
+                    "maintenance-run",
+                    "--broker", broker.bootstrapServers(),
+                    "--admin-token", BrokerTestHarness.ADMIN_TOKEN
+            }));
+
+            assertTrue(output.contains("dryRun=false"));
+            assertTrue(output.contains("segments="));
+            assertTrue(output.contains("action=COMPACTION_"));
+        }
+    }
+
+    private static void createTopicAndProduceRolledSegments(
+            String brokers, String topic, String key, int recordCount) throws Exception {
+        DemoCli.main(new String[] {
+                "create-topic", "--brokers", brokers, "--name", topic, "--partitions", "1"
+        });
+        for (int i = 0; i < recordCount; i++) {
+            DemoCli.main(new String[] {
+                    "produce",
+                    "--brokers", brokers,
+                    "--topic", topic,
+                    "--key", key,
+                    "--message", "value-" + i + "-" + "x".repeat(96)
+            });
         }
     }
 

@@ -12,6 +12,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 public final class BrokerTestHarness implements AutoCloseable {
+    public static final String ADMIN_TOKEN = "test-admin-token";
+
     private final BrokerServer server;
     private final BrokerConfig config;
 
@@ -41,7 +43,8 @@ public final class BrokerTestHarness implements AutoCloseable {
                 "--host", "127.0.0.1",
                 "--port", Integer.toString(freePort()),
                 "--data-dir", dataDir.toString(),
-                "--controller"));
+                "--controller",
+                "--admin-token", ADMIN_TOKEN));
         args.addAll(List.of(extraArgs));
         return BrokerConfig.parse(args.toArray(String[]::new));
     }
@@ -50,7 +53,8 @@ public final class BrokerTestHarness implements AutoCloseable {
             int brokerId, Path dataDir, String controllerHost, int controllerPort) throws Exception {
         int port = freePort();
         BrokerConfig config = new BrokerConfig(
-                brokerId, "127.0.0.1", port, dataDir, false, controllerHost, controllerPort, false);
+                brokerId, "127.0.0.1", port, dataDir, false, controllerHost, controllerPort, false,
+                ADMIN_TOKEN);
         return start(config);
     }
 

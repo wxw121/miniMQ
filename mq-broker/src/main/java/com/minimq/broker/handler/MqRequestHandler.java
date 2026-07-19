@@ -3,6 +3,7 @@ package com.minimq.broker.handler;
 import com.minimq.broker.BrokerConfig;
 import com.minimq.broker.FetchTransferMetrics;
 import com.minimq.broker.MetadataSync;
+import com.minimq.broker.MaintenanceAdminService;
 import com.minimq.broker.PartitionManager;
 import com.minimq.broker.controller.ClusterController;
 import com.minimq.broker.controller.GroupCoordinator;
@@ -28,6 +29,7 @@ import io.netty.channel.SimpleChannelInboundHandler;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletionStage;
 
 /**
  * Broker 请求处理器，将网络帧解码成业务请求，并按 API 类型路由到存储或控制器。
@@ -41,39 +43,23 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     private final ReplicaStateManager replicaStateManager;
     private final ReplicaLeoReporter replicaLeoReporter;
     private final FetchResponseWriter fetchResponseWriter;
-
-    public MqRequestHandler(
-            BrokerConfig config,
-            ClusterController clusterController,
-            GroupCoordinator groupCoordinator,
-            PartitionManager partitionManager) {
-        this(config, clusterController, groupCoordinator, partitionManager, new ReplicaStateManager());
-    }
+    private final MaintenanceAdminService maintenanceAdminService;
 
     public MqRequestHandler(
             BrokerConfig config,
             ClusterController clusterController,
             GroupCoordinator groupCoordinator,
             PartitionManager partitionManager,
-            ReplicaStateManager replicaStateManager) {
-        this(config, clusterController, groupCoordinator, partitionManager, replicaStateManager,
-                new FetchTransferMetrics());
-    }
-
-    public MqRequestHandler(
-            BrokerConfig config,
-            ClusterController clusterController,
-            GroupCoordinator groupCoordinator,
-            PartitionManager partitionManager,
-            ReplicaStateManager replicaStateManager,
-            FetchTransferMetrics fetchTransferMetrics) {
-        this.config = config;
-        this.replicaLeoReporter = new ReplicaLeoReporter(config, clusterController);
-        this.clusterController = clusterController;
-        this.groupCoordinator = groupCoordinator;
-        this.partitionManager = partitionManager;
-        this.replicaStateManager = replicaStateManager;
-        this.fetchResponseWriter = new FetchResponseWriter(config, fetchTransferMetrics);
+            MaintenanceAdminService maintenanceAdminService) {
+        this(
+                config,
+                clusterController,
+                groupCoordinator,
+                partitionManager,
+                new ReplicaStateManager(),
+                new FetchTransferMetrics(),
+                new ReplicaLeoReporter(config, clusterController),
+                maintenanceAdminService);
     }
 
     public MqRequestHandler(
@@ -83,7 +69,8 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             PartitionManager partitionManager,
             ReplicaStateManager replicaStateManager,
             FetchTransferMetrics fetchTransferMetrics,
-            ReplicaLeoReporter replicaLeoReporter) {
+            ReplicaLeoReporter replicaLeoReporter,
+            MaintenanceAdminService maintenanceAdminService) {
         this.config = config;
         this.replicaLeoReporter = replicaLeoReporter;
         this.clusterController = clusterController;
@@ -91,6 +78,7 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         this.partitionManager = partitionManager;
         this.replicaStateManager = replicaStateManager;
         this.fetchResponseWriter = new FetchResponseWriter(config, fetchTransferMetrics);
+        this.maintenanceAdminService = maintenanceAdminService;
     }
 
     @Override
@@ -197,12 +185,27 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                     ensureController();
                     responseBody = groupCoordinator.offsetFetch((OffsetFetchRequest) requestBody);
                 }
-                case ApiKeys.MAINTENANCE_REPORT -> responseBody =
-                        toMaintenanceReportResponse(partitionManager.dryRunMaintenance());
-                case ApiKeys.MAINTENANCE_RUN -> responseBody =
-                        toMaintenanceReportResponse(partitionManager.maintain());
-                case ApiKeys.MAINTENANCE_METRICS -> responseBody =
-                        toMaintenanceMetricsResponse(partitionManager.maintenanceMetrics());
+                case ApiKeys.MAINTENANCE_REPORT -> {
+                    MaintenanceReportRequest request = (MaintenanceReportRequest) requestBody;
+                    writeAsyncMaintenanceReport(
+                            ctx, header, maintenanceAdminService.report(request.adminToken()));
+                    return;
+                }
+                case ApiKeys.MAINTENANCE_RUN -> {
+                    MaintenanceRunRequest request = (MaintenanceRunRequest) requestBody;
+                    writeAsyncMaintenanceReport(
+                            ctx, header, maintenanceAdminService.run(request.adminToken()));
+                    return;
+                }
+                case ApiKeys.MAINTENANCE_METRICS -> {
+                    MaintenanceMetricsRequest request = (MaintenanceMetricsRequest) requestBody;
+                    MaintenanceAdminService.Result<LogMaintenanceMetrics> result =
+                            maintenanceAdminService.metrics(request.adminToken());
+                    errorCode = result.errorCode();
+                    if (errorCode == ErrorCode.NONE) {
+                        responseBody = toMaintenanceMetricsResponse(result.body());
+                    }
+                }
                 default -> errorCode = ErrorCode.INVALID_REQUEST;
             }
         } catch (IllegalArgumentException | IllegalStateException | IndexOutOfBoundsException ex) {
@@ -213,6 +216,28 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         }
 
         int correlationId = header != null ? header.correlationId() : 0;
+        writeResponse(ctx, correlationId, errorCode, responseBody);
+    }
+
+    private void writeAsyncMaintenanceReport(
+            ChannelHandlerContext ctx,
+            MqRequestHeader header,
+            CompletionStage<MaintenanceAdminService.Result<LogMaintenanceReport>> stage) {
+        stage.whenComplete((result, failure) -> ctx.executor().execute(() -> {
+            if (failure != null) {
+                log.error("Maintenance request failed for apiKey={}", header.apiKey(), failure);
+                writeResponse(ctx, header.correlationId(), ErrorCode.INVALID_REQUEST, null);
+                return;
+            }
+            Object body = result.errorCode() == ErrorCode.NONE
+                    ? toMaintenanceReportResponse(result.body())
+                    : null;
+            writeResponse(ctx, header.correlationId(), result.errorCode(), body);
+        }));
+    }
+
+    private static void writeResponse(
+            ChannelHandlerContext ctx, int correlationId, ErrorCode errorCode, Object responseBody) {
         MqResponseHeader responseHeader = new MqResponseHeader(correlationId, errorCode);
         ByteBuf frame = ProtocolSerdes.encodeResponse(responseHeader, responseBody);
         ctx.writeAndFlush(frame);

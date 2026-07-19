@@ -10,7 +10,9 @@ public enum ErrorCode {
     NOT_LEADER(3),
     INVALID_REQUEST(4),
     GROUP_NOT_FOUND(5),
-    REBALANCE_IN_PROGRESS(6);
+    REBALANCE_IN_PROGRESS(6),
+    UNAUTHORIZED(7),
+    MAINTENANCE_BUSY(8);
 
     public final short code;
 

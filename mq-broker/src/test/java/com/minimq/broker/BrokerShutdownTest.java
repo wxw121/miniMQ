@@ -5,6 +5,7 @@ import com.minimq.broker.support.TestNetworkClient;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.protocol.ApiKeys;
 import com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest;
+import com.minimq.protocol.message.ProtocolMessages.MaintenanceReportRequest;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
@@ -19,6 +20,13 @@ class BrokerShutdownTest {
         BrokerConfig firstConfig = BrokerTestHarness.controllerConfig(0, dataDir);
         BrokerServer first = new BrokerServer(firstConfig);
         first.start();
+        try (TestNetworkClient client = new TestNetworkClient()) {
+            client.connect("127.0.0.1", firstConfig.port());
+            var response = client.send(
+                    ApiKeys.MAINTENANCE_REPORT,
+                    new MaintenanceReportRequest(BrokerTestHarness.ADMIN_TOKEN));
+            assertEquals(ErrorCode.NONE, response.header().errorCode());
+        }
         first.stop();
 
         BrokerServer second = new BrokerServer(firstConfig);

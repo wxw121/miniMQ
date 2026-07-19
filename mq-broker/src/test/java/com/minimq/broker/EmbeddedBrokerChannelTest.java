@@ -4,6 +4,7 @@ import com.minimq.broker.controller.ClusterController;
 import com.minimq.broker.controller.GroupCoordinator;
 import com.minimq.broker.handler.MqRequestHandler;
 import com.minimq.broker.metadata.MetadataStore;
+import com.minimq.broker.support.BrokerTestHarness;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.protocol.ApiKeys;
 import com.minimq.protocol.MqFrame;
@@ -35,22 +36,42 @@ import com.minimq.protocol.message.ProtocolMessages.ReplicaFetchResponse;
 import com.minimq.protocol.message.ProtocolMessages.SyncGroupRequest;
 import com.minimq.protocol.message.ProtocolMessages.SyncGroupResponse;
 import com.minimq.protocol.message.ProtocolMessages.UpdateReplicaLeoRequest;
+import com.minimq.storage.CompactionPolicy;
+import com.minimq.storage.FlushPolicy;
+import com.minimq.storage.LogMaintenanceConfig;
 import com.minimq.storage.LogManager;
+import com.minimq.storage.LogManagerConfig;
+import com.minimq.storage.RetentionPolicy;
+import com.minimq.storage.SegmentedLogConfig;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.embedded.EmbeddedChannel;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 class EmbeddedBrokerChannelTest {
+    private final List<MaintenanceAdminService> maintenanceServices = new ArrayList<>();
 
     @TempDir
     Path tempDir;
+
+    @AfterEach
+    void closeMaintenanceServices() throws InterruptedException {
+        for (MaintenanceAdminService service : maintenanceServices) {
+            service.close();
+        }
+    }
 
     @Test
     void createTopicOverEmbeddedChannel() {
@@ -59,11 +80,18 @@ class EmbeddedBrokerChannelTest {
         GroupCoordinator groupCoordinator = new GroupCoordinator(clusterController);
         LogManager logManager = new LogManager(tempDir);
         PartitionManager partitionManager = new PartitionManager(logManager);
-        BrokerConfig config = new BrokerConfig(0, "127.0.0.1", 9092, tempDir, true, "127.0.0.1", 9092, false);
+        BrokerConfig config = new BrokerConfig(
+                0, "127.0.0.1", 9092, tempDir, true, "127.0.0.1", 9092, false,
+                BrokerTestHarness.ADMIN_TOKEN);
 
         EmbeddedChannel channel = new EmbeddedChannel(
                 new MqDecoder(),
-                new MqRequestHandler(config, clusterController, groupCoordinator, partitionManager),
+                new MqRequestHandler(
+                        config,
+                        clusterController,
+                        groupCoordinator,
+                        partitionManager,
+                        maintenanceServiceFor(config, partitionManager)),
                 new MqEncoder());
 
         MqRequestHeader header = new MqRequestHeader(ApiKeys.CREATE_TOPIC, 1, "test");
@@ -83,11 +111,18 @@ class EmbeddedBrokerChannelTest {
         GroupCoordinator groupCoordinator = new GroupCoordinator(clusterController);
         LogManager logManager = new LogManager(tempDir);
         PartitionManager partitionManager = new PartitionManager(logManager);
-        BrokerConfig config = new BrokerConfig(0, "127.0.0.1", 9092, tempDir, true, "127.0.0.1", 9092, false);
+        BrokerConfig config = new BrokerConfig(
+                0, "127.0.0.1", 9092, tempDir, true, "127.0.0.1", 9092, false,
+                BrokerTestHarness.ADMIN_TOKEN);
 
         EmbeddedChannel channel = new EmbeddedChannel(
                 new MqDecoder(),
-                new MqRequestHandler(config, clusterController, groupCoordinator, partitionManager),
+                new MqRequestHandler(
+                        config,
+                        clusterController,
+                        groupCoordinator,
+                        partitionManager,
+                        maintenanceServiceFor(config, partitionManager)),
                 new MqEncoder());
 
         ByteBuf payload = channel.alloc().buffer();
@@ -288,28 +323,109 @@ class EmbeddedBrokerChannelTest {
         EmbeddedChannel channel = newChannel(clusterController, true);
 
         MqDecoder.DecodedResponse reportResponse = send(
-                channel, ApiKeys.MAINTENANCE_REPORT, new MaintenanceReportRequest());
+                channel, ApiKeys.MAINTENANCE_REPORT,
+                new MaintenanceReportRequest(BrokerTestHarness.ADMIN_TOKEN));
         assertEquals(ErrorCode.NONE, reportResponse.header().errorCode());
+        assertEquals(11, reportResponse.header().correlationId());
         MaintenanceReportResponse dryRun = (MaintenanceReportResponse) reportResponse.body();
         assertEquals(true, dryRun.dryRun());
         assertEquals("SKIPPED_DISABLED", dryRun.status());
         assertEquals(0, dryRun.segmentReports().size());
 
         MqDecoder.DecodedResponse runResponse = send(
-                channel, ApiKeys.MAINTENANCE_RUN, new MaintenanceRunRequest());
+                channel, ApiKeys.MAINTENANCE_RUN,
+                new MaintenanceRunRequest(BrokerTestHarness.ADMIN_TOKEN));
         assertEquals(ErrorCode.NONE, runResponse.header().errorCode());
         MaintenanceReportResponse run = (MaintenanceReportResponse) runResponse.body();
         assertEquals(false, run.dryRun());
         assertEquals("SKIPPED_DISABLED", run.status());
 
         MqDecoder.DecodedResponse metricsResponse = send(
-                channel, ApiKeys.MAINTENANCE_METRICS, new MaintenanceMetricsRequest());
+                channel, ApiKeys.MAINTENANCE_METRICS,
+                new MaintenanceMetricsRequest(BrokerTestHarness.ADMIN_TOKEN));
         assertEquals(ErrorCode.NONE, metricsResponse.header().errorCode());
         MaintenanceMetricsResponse metrics = (MaintenanceMetricsResponse) metricsResponse.body();
         assertEquals(0L, metrics.runs());
         assertEquals(1L, metrics.dryRuns());
         assertEquals("SKIPPED_DISABLED", metrics.lastRunStatus());
         channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void maintenanceAdminApisRejectInvalidToken() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
+        EmbeddedChannel channel = newChannel(clusterController, true);
+
+        MqDecoder.DecodedResponse response = send(
+                channel, ApiKeys.MAINTENANCE_RUN, new MaintenanceRunRequest("wrong-token"));
+
+        assertEquals(11, response.header().correlationId());
+        assertEquals(ErrorCode.UNAUTHORIZED, response.header().errorCode());
+        assertNull(response.body());
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void maintenanceReportIncludesEnabledSegmentActions() throws Exception {
+        Path dataDir = tempDir.resolve("enabled-maintenance");
+        LogManager logManager = new LogManager(
+                dataDir,
+                new LogManagerConfig(
+                        FlushPolicy.manualOnClose(),
+                        0,
+                        new SegmentedLogConfig(128, 1),
+                        LogMaintenanceConfig.of(
+                                RetentionPolicy.of(0, 256),
+                                CompactionPolicy.disabled(),
+                                0)));
+        PartitionManager partitionManager = new PartitionManager(logManager);
+        ClusterController clusterController =
+                new ClusterController(new MetadataStore(dataDir.resolve("metadata")));
+        GroupCoordinator groupCoordinator = new GroupCoordinator(clusterController);
+        BrokerConfig config = new BrokerConfig(
+                0,
+                "127.0.0.1",
+                9092,
+                dataDir,
+                true,
+                "127.0.0.1",
+                9092,
+                false,
+                BrokerTestHarness.ADMIN_TOKEN);
+        MaintenanceAdminService service =
+                new MaintenanceAdminService(config.adminToken(), partitionManager);
+        EmbeddedChannel channel = new EmbeddedChannel(
+                new MqDecoder(),
+                new MqRequestHandler(
+                        config,
+                        clusterController,
+                        groupCoordinator,
+                        partitionManager,
+                        service),
+                new MqEncoder());
+        try {
+            for (int i = 0; i < 6; i++) {
+                partitionManager.append(
+                        "orders",
+                        0,
+                        "shared-key".getBytes(),
+                        ("value-" + i + "-" + "x".repeat(96)).getBytes());
+            }
+
+            MqDecoder.DecodedResponse response = send(
+                    channel,
+                    ApiKeys.MAINTENANCE_REPORT,
+                    new MaintenanceReportRequest(BrokerTestHarness.ADMIN_TOKEN));
+            MaintenanceReportResponse report = (MaintenanceReportResponse) response.body();
+
+            assertEquals(ErrorCode.NONE, response.header().errorCode());
+            assertFalse(report.segmentReports().isEmpty());
+            assertEquals("RETENTION_DELETE", report.segmentReports().get(0).action());
+        } finally {
+            channel.finishAndReleaseAll();
+            service.close();
+            partitionManager.close();
+        }
     }
 
     private EmbeddedChannel newChannel(ClusterController clusterController, boolean controller) {
@@ -321,17 +437,39 @@ class EmbeddedBrokerChannelTest {
         LogManager logManager = new LogManager(tempDir);
         PartitionManager partitionManager = new PartitionManager(logManager);
         BrokerConfig config = new BrokerConfig(
-                brokerId, "127.0.0.1", 9092, tempDir, controller, "127.0.0.1", 9092, false);
+                brokerId, "127.0.0.1", 9092, tempDir, controller, "127.0.0.1", 9092, false,
+                BrokerTestHarness.ADMIN_TOKEN);
         return new EmbeddedChannel(
                 new MqDecoder(),
-                new MqRequestHandler(config, clusterController, groupCoordinator, partitionManager),
+                new MqRequestHandler(
+                        config,
+                        clusterController,
+                        groupCoordinator,
+                        partitionManager,
+                        maintenanceServiceFor(config, partitionManager)),
                 new MqEncoder());
+    }
+
+    private MaintenanceAdminService maintenanceServiceFor(
+            BrokerConfig config, PartitionManager partitionManager) {
+        MaintenanceAdminService service =
+                new MaintenanceAdminService(config.adminToken(), partitionManager);
+        maintenanceServices.add(service);
+        return service;
     }
 
     private static MqDecoder.DecodedResponse send(EmbeddedChannel channel, short apiKey, Object body) {
         MqRequestHeader header = new MqRequestHeader(apiKey, 11, "test");
         channel.writeInbound(ProtocolSerdes.encodeRequest(header, body));
-        ByteBuf responseFrame = channel.readOutbound();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        ByteBuf responseFrame;
+        while ((responseFrame = channel.readOutbound()) == null) {
+            channel.runPendingTasks();
+            if (System.nanoTime() >= deadline) {
+                throw new AssertionError("timed out waiting for broker response");
+            }
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));
+        }
         try {
             return MqDecoder.decodeResponse(unwrapPayload(responseFrame), apiKey);
         } finally {
