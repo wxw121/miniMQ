@@ -1,6 +1,7 @@
 package com.minimq.broker;
 
 import com.minimq.broker.support.BrokerTestHarness;
+import com.minimq.broker.support.ControllerConnectionProxy;
 import com.minimq.broker.support.TestNetworkClient;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.protocol.ApiKeys;
@@ -11,18 +12,30 @@ import com.minimq.protocol.message.ProtocolMessages.FetchResponse;
 import com.minimq.protocol.message.ProtocolMessages.MarkBrokerOfflineRequest;
 import com.minimq.protocol.message.ProtocolMessages.MetadataRequest;
 import com.minimq.protocol.message.ProtocolMessages.MetadataResponse;
+import com.minimq.protocol.message.ProtocolMessages.PartitionMetadata;
 import com.minimq.protocol.message.ProtocolMessages.ProduceRecord;
 import com.minimq.protocol.message.ProtocolMessages.ProduceRequest;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ReplicationIntegrationTest {
+    private static final String[] FAST_LEASE_ARGS = {
+            "--broker-heartbeat-interval-ms", "50",
+            "--broker-self-fence-timeout-ms", "150",
+            "--controller-broker-lease-timeout-ms", "300"
+    };
 
     @Test
     void clientFetchWaitsForReplicationHighWatermark() throws Exception {
@@ -35,7 +48,7 @@ class ReplicationIntegrationTest {
              TestNetworkClient admin = new TestNetworkClient();
              TestNetworkClient leaderClient = new TestNetworkClient()) {
             admin.connect("127.0.0.1", controller.port());
-            registerBrokers(admin, controller, broker1, broker2);
+            waitForOnlineBrokers(admin, 0, 1, 2);
             createTopic(admin, "orders", 1, 3);
             leaderClient.connect("127.0.0.1", controller.port());
             produce(leaderClient, "orders", 0, "unreplicated");
@@ -59,7 +72,7 @@ class ReplicationIntegrationTest {
              BrokerTestHarness broker2 = BrokerTestHarness.startFollower(2, dir2, "127.0.0.1", controller.port());
              TestNetworkClient admin = new TestNetworkClient()) {
             admin.connect("127.0.0.1", controller.port());
-            registerBrokers(admin, controller, broker1, broker2);
+            waitForOnlineBrokers(admin, 0, 1, 2);
             createTopic(admin, "orders", 1, 3);
 
             TestNetworkClient leaderClient = new TestNetworkClient();
@@ -89,7 +102,7 @@ class ReplicationIntegrationTest {
              BrokerTestHarness broker2 = BrokerTestHarness.startFollower(2, dir2, "127.0.0.1", controller.port());
              TestNetworkClient admin = new TestNetworkClient()) {
             admin.connect("127.0.0.1", controller.port());
-            registerBrokers(admin, controller, broker1, broker2);
+            waitForOnlineBrokers(admin, 0, 1, 2);
             createTopic(admin, "orders", 1, 3);
 
             TestNetworkClient leaderClient = new TestNetworkClient();
@@ -123,7 +136,7 @@ class ReplicationIntegrationTest {
              BrokerTestHarness broker2 = BrokerTestHarness.startFollower(2, dir2, "127.0.0.1", controller.port());
              TestNetworkClient admin = new TestNetworkClient()) {
             admin.connect("127.0.0.1", controller.port());
-            registerBrokers(admin, controller, broker1, broker2);
+            waitForOnlineBrokers(admin, 0, 1, 2);
             createTopic(admin, "orders", 1, 3);
 
             TestNetworkClient leaderClient = new TestNetworkClient();
@@ -160,7 +173,7 @@ class ReplicationIntegrationTest {
              TestNetworkClient admin = new TestNetworkClient();
              TestNetworkClient followerClient = new TestNetworkClient()) {
             admin.connect("127.0.0.1", controller.port());
-            registerBrokers(admin, controller, broker1);
+            waitForOnlineBrokers(admin, 0, 1);
             createTopic(admin, "orders", 1, 2);
 
             followerClient.connect("127.0.0.1", broker1.port());
@@ -174,24 +187,199 @@ class ReplicationIntegrationTest {
         }
     }
 
-    private static void registerBrokers(
-            TestNetworkClient admin,
-            BrokerTestHarness controller,
-            BrokerTestHarness... followers) throws InterruptedException {
-        assertEquals(
-                ErrorCode.NONE,
-                admin.send(ApiKeys.REGISTER_BROKER,
-                        new com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest(
-                                controller.brokerId(), "127.0.0.1", controller.port()))
-                        .header().errorCode());
-        for (BrokerTestHarness follower : followers) {
-            assertEquals(
-                    ErrorCode.NONE,
-                    admin.send(ApiKeys.REGISTER_BROKER,
-                            new com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest(
-                                    follower.brokerId(), "127.0.0.1", follower.port()))
-                            .header().errorCode());
+    @Test
+    void controllerIsolationFencesOldLeaderBeforeAutomaticFailover() throws Exception {
+        Path dir0 = BrokerTestHarness.newDataDir("lease-failover-controller");
+        Path dir1 = BrokerTestHarness.newDataDir("lease-failover-isolated");
+        Path dir2 = BrokerTestHarness.newDataDir("lease-failover-survivor");
+        try (BrokerTestHarness controller = BrokerTestHarness.start(
+                     BrokerTestHarness.controllerConfig(0, dir0, FAST_LEASE_ARGS));
+             ControllerConnectionProxy proxy = ControllerConnectionProxy.start("127.0.0.1", controller.port());
+             BrokerTestHarness broker1 = BrokerTestHarness.startFollower(
+                     1, dir1, "127.0.0.1", proxy.port(), FAST_LEASE_ARGS);
+             BrokerTestHarness broker2 = BrokerTestHarness.startFollower(
+                     2, dir2, "127.0.0.1", controller.port(), FAST_LEASE_ARGS);
+             TestNetworkClient admin = new TestNetworkClient();
+             TestNetworkClient broker1Client = new TestNetworkClient();
+             TestNetworkClient broker2Client = new TestNetworkClient()) {
+            admin.connect("127.0.0.1", controller.port());
+            broker1Client.connect("127.0.0.1", broker1.port());
+            broker2Client.connect("127.0.0.1", broker2.port());
+            waitForOnlineBrokers(admin, 0, 1, 2);
+            createTopic(admin, "orders", 2, 3);
+            produce(broker1Client, "orders", 1, "before-failover");
+            waitForFollowerReplication(controller, "orders", 1, 1);
+            waitForFollowerReplication(broker2, "orders", 1, 1);
+            waitForControllerLeo(admin, "orders", 1, 0, 1L);
+            waitForControllerLeo(admin, "orders", 1, 2, 1L);
+
+            proxy.disconnect();
+            assertTrue(proxy.disconnected());
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            long fencedAt = -1L;
+            long electedAt = -1L;
+            int observedLeader = 1;
+            BrokerAvailabilityGuard.State finalState = broker1.availabilityState();
+            while (System.nanoTime() < deadline) {
+                long observedAt = System.nanoTime();
+                finalState = broker1.availabilityState();
+                PartitionMetadata partition = partition(metadata(admin, "orders"), "orders", 1);
+                observedLeader = partition.leaderBrokerId();
+                if (finalState == BrokerAvailabilityGuard.State.FENCED && fencedAt < 0) {
+                    fencedAt = observedAt;
+                }
+                if (observedLeader != 1 && electedAt < 0) {
+                    if (fencedAt < 0) {
+                        fail("Controller elected leader " + observedLeader
+                                + " before broker 1 fenced; state=" + finalState);
+                    }
+                    electedAt = observedAt;
+                }
+                if (fencedAt >= 0 && electedAt >= 0) {
+                    break;
+                }
+                Thread.sleep(10);
+            }
+            assertTrue(fencedAt >= 0,
+                    "broker 1 was not observed fenced; final state=" + finalState
+                            + ", leader=" + observedLeader);
+            assertTrue(electedAt >= 0,
+                    "replacement leader was not elected; final state=" + finalState
+                            + ", leader=" + observedLeader);
+            assertTrue(fencedAt <= electedAt,
+                    "broker fenced after election: fencedAt=" + fencedAt + ", electedAt=" + electedAt);
+            assertEquals(2, observedLeader);
+
+            MqDecoder.DecodedResponse oldLeader = broker1Client.send(
+                    ApiKeys.PRODUCE,
+                    new ProduceRequest(
+                            "orders",
+                            1,
+                            List.of(new ProduceRecord(null, "blocked".getBytes(StandardCharsets.UTF_8)))));
+            assertEquals(ErrorCode.BROKER_FENCED, oldLeader.header().errorCode());
+            produce(broker2Client, "orders", 1, "after-failover");
         }
+    }
+
+    @Test
+    void isolatedSoleLeaderFreezesAndRecoversWithHigherEpoch() throws Exception {
+        Path dir0 = BrokerTestHarness.newDataDir("lease-freeze-controller");
+        Path dir1 = BrokerTestHarness.newDataDir("lease-freeze-original-leader");
+        try (BrokerTestHarness controller = BrokerTestHarness.start(
+                     BrokerTestHarness.controllerConfig(0, dir0, FAST_LEASE_ARGS));
+             ControllerConnectionProxy proxy = ControllerConnectionProxy.start("127.0.0.1", controller.port());
+             BrokerTestHarness broker1 = BrokerTestHarness.startFollower(
+                     1, dir1, "127.0.0.1", proxy.port(), FAST_LEASE_ARGS);
+             TestNetworkClient admin = new TestNetworkClient()) {
+            admin.connect("127.0.0.1", controller.port());
+            waitForOnlineBrokers(admin, 0, 1);
+            createTopic(admin, "single-replica", 2, 1);
+            assertEquals(1, partition(metadata(admin, "single-replica"), "single-replica", 1)
+                    .leaderBrokerId());
+            long originalEpoch = broker1.brokerEpoch();
+
+            proxy.disconnect();
+            MetadataResponse frozenMetadata = waitForFrozenOfflinePartition(
+                    admin, "single-replica", 1, 1, broker1);
+            PartitionMetadata frozen = partition(frozenMetadata, "single-replica", 1);
+            assertTrue(frozen.frozen());
+            assertTrue(frozen.isrBrokerIds().isEmpty());
+            assertEquals(1, frozen.leaderBrokerId());
+
+            broker1.close();
+            proxy.reconnect();
+            try (BrokerTestHarness restarted = BrokerTestHarness.startFollower(
+                    1, dir1, "127.0.0.1", proxy.port(), FAST_LEASE_ARGS)) {
+                assertEquals(BrokerAvailabilityGuard.State.ACTIVE, restarted.availabilityState());
+                assertTrue(restarted.brokerEpoch() > originalEpoch,
+                        "restarted epoch=" + restarted.brokerEpoch() + ", original=" + originalEpoch);
+                PartitionMetadata recovered = waitForRecoveredPartition(
+                        admin, "single-replica", 1, 1);
+                assertFalse(recovered.frozen());
+                assertEquals(List.of(1), recovered.isrBrokerIds());
+            }
+        }
+    }
+
+    private static void waitForOnlineBrokers(TestNetworkClient admin, int... expectedIds)
+            throws InterruptedException {
+        Set<Integer> expected = Arrays.stream(expectedIds).boxed().collect(Collectors.toSet());
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        Set<Integer> actual = Set.of();
+        while (System.nanoTime() < deadline) {
+            actual = metadata(admin, "").brokers().stream()
+                    .map(broker -> broker.brokerId())
+                    .collect(Collectors.toSet());
+            if (actual.containsAll(expected)) {
+                return;
+            }
+            Thread.sleep(10);
+        }
+        fail("Brokers did not become online; expected=" + expected + ", actual=" + actual);
+    }
+
+    private static MetadataResponse waitForFrozenOfflinePartition(
+            TestNetworkClient admin,
+            String topic,
+            int partitionId,
+            int brokerId,
+            BrokerTestHarness broker) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        MetadataResponse observed = metadata(admin, topic);
+        while (System.nanoTime() < deadline) {
+            observed = metadata(admin, topic);
+            PartitionMetadata partition = partition(observed, topic, partitionId);
+            boolean brokerOffline = observed.brokers().stream()
+                    .noneMatch(entry -> entry.brokerId() == brokerId);
+            if (partition.frozen() && partition.isrBrokerIds().isEmpty()
+                    && partition.leaderBrokerId() == brokerId && brokerOffline) {
+                return observed;
+            }
+            Thread.sleep(10);
+        }
+        PartitionMetadata partition = partition(observed, topic, partitionId);
+        fail("Partition did not freeze after isolation; state=" + broker.availabilityState()
+                + ", frozen=" + partition.frozen()
+                + ", leader=" + partition.leaderBrokerId()
+                + ", isr=" + partition.isrBrokerIds()
+                + ", brokers=" + observed.brokers());
+        return observed;
+    }
+
+    private static PartitionMetadata waitForRecoveredPartition(
+            TestNetworkClient admin, String topic, int partitionId, int brokerId)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        PartitionMetadata observed = partition(metadata(admin, topic), topic, partitionId);
+        while (System.nanoTime() < deadline) {
+            observed = partition(metadata(admin, topic), topic, partitionId);
+            if (!observed.frozen() && observed.isrBrokerIds().equals(List.of(brokerId))) {
+                return observed;
+            }
+            Thread.sleep(10);
+        }
+        fail("Partition did not recover; frozen=" + observed.frozen()
+                + ", leader=" + observed.leaderBrokerId() + ", isr=" + observed.isrBrokerIds());
+        return observed;
+    }
+
+    private static MetadataResponse metadata(TestNetworkClient client, String topic)
+            throws InterruptedException {
+        MqDecoder.DecodedResponse response = client.send(ApiKeys.METADATA, new MetadataRequest(topic));
+        assertEquals(ErrorCode.NONE, response.header().errorCode());
+        return (MetadataResponse) response.body();
+    }
+
+    private static PartitionMetadata partition(
+            MetadataResponse metadata, String topic, int partitionId) {
+        return metadata.topics().stream()
+                .filter(entry -> entry.topicName().equals(topic))
+                .flatMap(entry -> entry.partitions().stream())
+                .filter(entry -> entry.partitionId() == partitionId)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "Partition not found: topic=" + topic + ", partition=" + partitionId));
     }
 
     private static void createTopic(

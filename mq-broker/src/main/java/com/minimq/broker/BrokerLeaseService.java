@@ -87,20 +87,26 @@ public final class BrokerLeaseService implements AutoCloseable {
         }
 
         long requestStart = nanoTime.getAsLong();
+        if (leaseTimedOutAt(requestStart)) {
+            guard.fence();
+            return;
+        }
         try {
-            heartbeat(new BrokerHeartbeatRequest(config.brokerId(), brokerEpoch));
+            heartbeat(
+                    new BrokerHeartbeatRequest(config.brokerId(), brokerEpoch),
+                    remainingSelfFenceTimeoutMs(requestStart));
             lastConfirmedRequestStartNanos = requestStart;
             fenceIfTimedOut();
         } catch (ControllerClient.ControllerRequestException failure) {
-            resetClient();
             if (failure.errorCode() == ErrorCode.BROKER_FENCED) {
                 guard.fence();
             } else {
                 fenceIfTimedOut();
             }
-        } catch (Exception failure) {
             resetClient();
+        } catch (Exception failure) {
             fenceIfTimedOut();
+            resetClient();
         }
     }
 
@@ -118,6 +124,7 @@ public final class BrokerLeaseService implements AutoCloseable {
 
     private void establishLease() throws InterruptedException {
         long requestStart = nanoTime.getAsLong();
+        long confirmedRequestStart = requestStart;
         long actualLeaseTimeoutMs;
         if (config.controller()) {
             BrokerEntry existing = localController.getBroker(config.brokerId());
@@ -146,7 +153,13 @@ public final class BrokerLeaseService implements AutoCloseable {
             throw new IllegalStateException(
                     "Broker self-fence timeout must be less than Controller lease timeout");
         }
-        lastConfirmedRequestStartNanos = requestStart;
+        if (!config.controller()) {
+            confirmedRequestStart = nanoTime.getAsLong();
+            controllerClient().heartbeatBroker(
+                    new BrokerHeartbeatRequest(config.brokerId(), brokerEpoch),
+                    config.brokerSelfFenceTimeoutMs());
+        }
+        lastConfirmedRequestStartNanos = confirmedRequestStart;
         if (closed.get() || leaseTimedOut()) {
             guard.fence();
             throw new IllegalStateException("Broker lease expired during registration and metadata sync");
@@ -158,11 +171,11 @@ public final class BrokerLeaseService implements AutoCloseable {
         return new RegisterBrokerRequest(config.brokerId(), config.host(), config.port());
     }
 
-    private void heartbeat(BrokerHeartbeatRequest request) throws InterruptedException {
+    private void heartbeat(BrokerHeartbeatRequest request, long responseTimeoutMs) throws InterruptedException {
         if (config.controller()) {
             ensureControllerSuccess(localController.heartbeatBroker(request));
         } else {
-            controllerClient().heartbeatBroker(request);
+            controllerClient().heartbeatBroker(request, responseTimeoutMs);
         }
     }
 
@@ -180,17 +193,30 @@ public final class BrokerLeaseService implements AutoCloseable {
     }
 
     private void fenceIfTimedOut() {
-        if (leaseTimedOut()) {
+        if (leaseTimedOutAt(nanoTime.getAsLong())) {
             guard.fence();
         }
     }
 
     private boolean leaseTimedOut() {
+        return leaseTimedOutAt(nanoTime.getAsLong());
+    }
+
+    private boolean leaseTimedOutAt(long nowNanos) {
         if (lastConfirmedRequestStartNanos == Long.MIN_VALUE) {
             return true;
         }
-        long elapsed = nanoTime.getAsLong() - lastConfirmedRequestStartNanos;
+        long elapsed = nowNanos - lastConfirmedRequestStartNanos;
         return elapsed >= TimeUnit.MILLISECONDS.toNanos(config.brokerSelfFenceTimeoutMs());
+    }
+
+    private long remainingSelfFenceTimeoutMs(long nowNanos) {
+        long elapsed = nowNanos - lastConfirmedRequestStartNanos;
+        long remainingNanos = TimeUnit.MILLISECONDS.toNanos(config.brokerSelfFenceTimeoutMs()) - elapsed;
+        if (remainingNanos <= 0) {
+            return 1L;
+        }
+        return TimeUnit.NANOSECONDS.toMillis(remainingNanos - 1L) + 1L;
     }
 
     private ControllerClient controllerClient() throws InterruptedException {

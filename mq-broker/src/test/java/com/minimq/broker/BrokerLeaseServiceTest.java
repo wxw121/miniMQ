@@ -77,7 +77,8 @@ class BrokerLeaseServiceTest {
 
         now.set(TimeUnit.MILLISECONDS.toNanos(100));
         service.runOnce();
-        assertEquals(1, fake.heartbeatCalls);
+        assertEquals(2, fake.heartbeatCalls);
+        assertEquals(200L, fake.heartbeatTimeoutMs);
         assertEquals(BrokerAvailabilityGuard.State.ACTIVE, guard.state());
         assertEquals(1, fake.connectCalls);
 
@@ -92,10 +93,12 @@ class BrokerLeaseServiceTest {
         assertEquals(BrokerAvailabilityGuard.State.FENCED, guard.state());
 
         fake.registrationFailure = null;
+        fake.heartbeatFailure = null;
         fake.nextRegistration = new RegisterBrokerResponse(2L, 5_000L);
         service.runOnce();
         assertEquals(BrokerAvailabilityGuard.State.ACTIVE, guard.state());
         assertEquals(2L, service.brokerEpoch());
+        assertEquals(3, fake.heartbeatCalls);
 
         service.close();
         assertEquals(BrokerAvailabilityGuard.State.FENCED, guard.state());
@@ -128,6 +131,29 @@ class BrokerLeaseServiceTest {
         service.close();
     }
 
+    @Test
+    void confirmsLeaseAfterSlowMetadataSyncBeforeActivation() throws Exception {
+        AtomicLong now = new AtomicLong();
+        FakeControllerClient fake = new FakeControllerClient();
+        fake.afterFetchMetadata = () -> now.set(TimeUnit.MILLISECONDS.toNanos(400));
+        BrokerAvailabilityGuard guard = new BrokerAvailabilityGuard();
+        BrokerLeaseService service = new BrokerLeaseService(
+                leaseConfig(),
+                new ClusterController(new MetadataStore(tempDir)),
+                guard,
+                () -> fake,
+                now::get,
+                new ScheduledThreadPoolExecutor(1));
+
+        service.initialize();
+
+        assertEquals(BrokerAvailabilityGuard.State.ACTIVE, guard.state());
+        assertEquals(1, fake.registerCalls);
+        assertEquals(1, fake.heartbeatCalls);
+        assertEquals(300L, fake.heartbeatTimeoutMs);
+        service.close();
+    }
+
     private BrokerConfig leaseConfig() {
         return BrokerConfig.parse(new String[] {
                 "--broker-id", "1",
@@ -146,10 +172,13 @@ class BrokerLeaseServiceTest {
         private int connectCalls;
         private int registerCalls;
         private int heartbeatCalls;
+        private long heartbeatTimeoutMs;
         private boolean closed;
         private RuntimeException registrationFailure;
         private RuntimeException heartbeatFailure;
         private Runnable afterHeartbeat = () -> {
+        };
+        private Runnable afterFetchMetadata = () -> {
         };
         private RegisterBrokerResponse nextRegistration = new RegisterBrokerResponse(1L, 5_000L);
 
@@ -169,7 +198,13 @@ class BrokerLeaseServiceTest {
 
         @Override
         public synchronized void heartbeatBroker(BrokerHeartbeatRequest request) {
+            heartbeatBroker(request, TimeUnit.SECONDS.toMillis(5));
+        }
+
+        @Override
+        public synchronized void heartbeatBroker(BrokerHeartbeatRequest request, long responseTimeoutMs) {
             heartbeatCalls++;
+            heartbeatTimeoutMs = responseTimeoutMs;
             afterHeartbeat.run();
             if (heartbeatFailure != null) {
                 throw heartbeatFailure;
@@ -178,6 +213,7 @@ class BrokerLeaseServiceTest {
 
         @Override
         public synchronized MetadataResponse fetchMetadata() {
+            afterFetchMetadata.run();
             return new MetadataResponse(
                     List.of(new BrokerMetadata(1, "127.0.0.1", 19093)),
                     List.of());

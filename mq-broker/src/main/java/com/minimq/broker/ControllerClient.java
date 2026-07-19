@@ -63,8 +63,13 @@ public class ControllerClient implements AutoCloseable {
     }
 
     public synchronized void heartbeatBroker(BrokerHeartbeatRequest request) throws InterruptedException {
+        heartbeatBroker(request, TimeUnit.SECONDS.toMillis(5));
+    }
+
+    public synchronized void heartbeatBroker(BrokerHeartbeatRequest request, long responseTimeoutMs)
+            throws InterruptedException {
         send(ApiKeys.BROKER_HEARTBEAT, request);
-        ensureSuccess(awaitResponse(ApiKeys.BROKER_HEARTBEAT));
+        ensureSuccess(awaitResponse(ApiKeys.BROKER_HEARTBEAT, responseTimeoutMs, TimeUnit.MILLISECONDS));
     }
 
     public synchronized MetadataResponse fetchMetadata() throws InterruptedException {
@@ -85,7 +90,12 @@ public class ControllerClient implements AutoCloseable {
     }
 
     private MqDecoder.DecodedResponse awaitResponse(short apiKey) throws InterruptedException {
-        ByteBuf payload = responses.poll(5, TimeUnit.SECONDS);
+        return awaitResponse(apiKey, 5, TimeUnit.SECONDS);
+    }
+
+    private MqDecoder.DecodedResponse awaitResponse(short apiKey, long timeout, TimeUnit unit)
+            throws InterruptedException {
+        ByteBuf payload = responses.poll(timeout, unit);
         if (payload == null) {
             throw new IllegalStateException("Timeout waiting for response");
         }
