@@ -39,19 +39,32 @@ import com.minimq.protocol.message.ProtocolMessages.UpdateReplicaLeoRequest;
 import com.minimq.storage.LogManager;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.embedded.EmbeddedChannel;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 class EmbeddedBrokerChannelTest {
+    private final List<MaintenanceAdminService> maintenanceServices = new ArrayList<>();
 
     @TempDir
     Path tempDir;
+
+    @AfterEach
+    void closeMaintenanceServices() throws InterruptedException {
+        for (MaintenanceAdminService service : maintenanceServices) {
+            service.close();
+        }
+    }
 
     @Test
     void createTopicOverEmbeddedChannel() {
@@ -66,7 +79,12 @@ class EmbeddedBrokerChannelTest {
 
         EmbeddedChannel channel = new EmbeddedChannel(
                 new MqDecoder(),
-                new MqRequestHandler(config, clusterController, groupCoordinator, partitionManager),
+                new MqRequestHandler(
+                        config,
+                        clusterController,
+                        groupCoordinator,
+                        partitionManager,
+                        maintenanceServiceFor(config, partitionManager)),
                 new MqEncoder());
 
         MqRequestHeader header = new MqRequestHeader(ApiKeys.CREATE_TOPIC, 1, "test");
@@ -92,7 +110,12 @@ class EmbeddedBrokerChannelTest {
 
         EmbeddedChannel channel = new EmbeddedChannel(
                 new MqDecoder(),
-                new MqRequestHandler(config, clusterController, groupCoordinator, partitionManager),
+                new MqRequestHandler(
+                        config,
+                        clusterController,
+                        groupCoordinator,
+                        partitionManager,
+                        maintenanceServiceFor(config, partitionManager)),
                 new MqEncoder());
 
         ByteBuf payload = channel.alloc().buffer();
@@ -296,6 +319,7 @@ class EmbeddedBrokerChannelTest {
                 channel, ApiKeys.MAINTENANCE_REPORT,
                 new MaintenanceReportRequest(BrokerTestHarness.ADMIN_TOKEN));
         assertEquals(ErrorCode.NONE, reportResponse.header().errorCode());
+        assertEquals(11, reportResponse.header().correlationId());
         MaintenanceReportResponse dryRun = (MaintenanceReportResponse) reportResponse.body();
         assertEquals(true, dryRun.dryRun());
         assertEquals("SKIPPED_DISABLED", dryRun.status());
@@ -320,6 +344,20 @@ class EmbeddedBrokerChannelTest {
         channel.finishAndReleaseAll();
     }
 
+    @Test
+    void maintenanceAdminApisRejectInvalidToken() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
+        EmbeddedChannel channel = newChannel(clusterController, true);
+
+        MqDecoder.DecodedResponse response = send(
+                channel, ApiKeys.MAINTENANCE_RUN, new MaintenanceRunRequest("wrong-token"));
+
+        assertEquals(11, response.header().correlationId());
+        assertEquals(ErrorCode.UNAUTHORIZED, response.header().errorCode());
+        assertNull(response.body());
+        channel.finishAndReleaseAll();
+    }
+
     private EmbeddedChannel newChannel(ClusterController clusterController, boolean controller) {
         return newChannel(clusterController, controller, 0);
     }
@@ -333,14 +371,35 @@ class EmbeddedBrokerChannelTest {
                 BrokerTestHarness.ADMIN_TOKEN);
         return new EmbeddedChannel(
                 new MqDecoder(),
-                new MqRequestHandler(config, clusterController, groupCoordinator, partitionManager),
+                new MqRequestHandler(
+                        config,
+                        clusterController,
+                        groupCoordinator,
+                        partitionManager,
+                        maintenanceServiceFor(config, partitionManager)),
                 new MqEncoder());
+    }
+
+    private MaintenanceAdminService maintenanceServiceFor(
+            BrokerConfig config, PartitionManager partitionManager) {
+        MaintenanceAdminService service =
+                new MaintenanceAdminService(config.adminToken(), partitionManager);
+        maintenanceServices.add(service);
+        return service;
     }
 
     private static MqDecoder.DecodedResponse send(EmbeddedChannel channel, short apiKey, Object body) {
         MqRequestHeader header = new MqRequestHeader(apiKey, 11, "test");
         channel.writeInbound(ProtocolSerdes.encodeRequest(header, body));
-        ByteBuf responseFrame = channel.readOutbound();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        ByteBuf responseFrame;
+        while ((responseFrame = channel.readOutbound()) == null) {
+            channel.runPendingTasks();
+            if (System.nanoTime() >= deadline) {
+                throw new AssertionError("timed out waiting for broker response");
+            }
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));
+        }
         try {
             return MqDecoder.decodeResponse(unwrapPayload(responseFrame), apiKey);
         } finally {

@@ -41,6 +41,7 @@ public class BrokerServer {
     private ClusterController clusterController;
     private ReplicaFetcher replicaFetcher;
     private ReplicaLeoReporter replicaLeoReporter;
+    private MaintenanceAdminService maintenanceAdminService;
 
     public BrokerServer(BrokerConfig config) {
         this.config = config;
@@ -78,6 +79,7 @@ public class BrokerServer {
                                 config.maintenanceWindowStartHour(),
                                 config.maintenanceWindowEndHour())));
         partitionManager = new PartitionManager(logManager);
+        maintenanceAdminService = new MaintenanceAdminService(config.adminToken(), partitionManager);
         replicaFetcher = new ReplicaFetcher(config, clusterController, partitionManager);
         replicaLeoReporter = new ReplicaLeoReporter(config, clusterController);
 
@@ -105,7 +107,8 @@ public class BrokerServer {
                                         partitionManager,
                                         replicaStateManager,
                                         fetchTransferMetrics,
-                                        replicaLeoReporter))
+                                        replicaLeoReporter,
+                                        maintenanceAdminService))
                                 .addLast(new MqEncoder());
                     }
                 });
@@ -119,6 +122,9 @@ public class BrokerServer {
     public void stop() throws InterruptedException {
         if (channelFuture != null) {
             channelFuture.channel().close().sync();
+        }
+        if (maintenanceAdminService != null) {
+            maintenanceAdminService.close();
         }
         if (bossGroup != null) {
             bossGroup.shutdownGracefully().sync();
