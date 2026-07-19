@@ -4,6 +4,7 @@ import com.minimq.broker.BrokerConfig;
 import com.minimq.broker.PartitionManager;
 import com.minimq.broker.controller.ClusterController;
 import com.minimq.broker.metadata.MetadataStore;
+import com.minimq.broker.support.BrokerTestHarness;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.protocol.ProtocolSerdes;
 import com.minimq.protocol.codec.MqDecoder;
@@ -58,7 +59,7 @@ class ReplicaFetcherTest {
             PartitionManager partitionManager = new PartitionManager(new LogManager(tempDir.resolve("follower")));
             ReplicaFetcher fetcher = new ReplicaFetcher(
                     new BrokerConfig(1, "127.0.0.1", 19093, tempDir.resolve("broker-1"),
-                            true, "127.0.0.1", 9092, false),
+                            true, "127.0.0.1", 9092, false, BrokerTestHarness.ADMIN_TOKEN),
                     controller,
                     partitionManager);
             try {
@@ -93,7 +94,7 @@ class ReplicaFetcherTest {
             PartitionManager partitionManager = new PartitionManager(new LogManager(tempDir.resolve("follower-pool")));
             ReplicaFetcher fetcher = new ReplicaFetcher(
                     new BrokerConfig(1, "127.0.0.1", 19093, tempDir.resolve("broker-1-pool"),
-                            true, "127.0.0.1", 9092, false),
+                            true, "127.0.0.1", 9092, false, BrokerTestHarness.ADMIN_TOKEN),
                     controller,
                     partitionManager);
             try {

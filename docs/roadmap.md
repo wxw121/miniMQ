@@ -297,10 +297,11 @@ Out of scope for V2.3 / 本阶段不包含�?
 
 V2.4.0 exposes the existing storage maintenance boundary to operators without reaching into storage internals:
 
-1. Admin APIs 13-15 preview maintenance, run maintenance, and return cumulative maintenance metrics.
-2. `maintenance-report`, `maintenance-run`, and `maintenance-metrics` connect to a running broker over TCP.
-3. Reports include status, aggregate counters, and per-segment action, partition, offset range, and bytes.
-4. Protocol, embedded handler, and real CLI integration tests cover the full path.
+1. Admin APIs 13-15 require the shared Broker `--admin-token`; invalid credentials return `UNAUTHORIZED` without executing storage maintenance.
+2. `maintenance-report`, `maintenance-run`, and `maintenance-metrics` require one explicit `--broker host:port` target and the admin token.
+3. Report/run work executes outside Netty EventLoops on one broker-scoped maintenance executor; overlapping destructive runs return `MAINTENANCE_BUSY`.
+4. Reports include status, aggregate counters, and per-segment action, partition, offset range, and bytes.
+5. Protocol, service, embedded handler, and real TCP integration tests cover authorization plus enabled retention and compaction actions.
 
 ### 3.7 V3.0 Control Plane HA And Service Discovery / V3.0 控制面高可用与服务发�?
 
@@ -417,7 +418,7 @@ For a new agent session, the most productive next tasks are:
 | --- | --- | --- |
 | Static controller failure / 静�?Controller 故障 | Cluster control-plane unavailable. / 集群控制面不可用�?| Add controller election. / 增加 Controller 选举�?|
 | Single replica partition / 单副本分�?| Data unavailable/lost if broker fails. / Broker 故障时数据不可用或丢失�?| Add replication and ISR. / 增加副本�?ISR�?|
-| Completed: operator access to maintenance reports | V2.4.0 exposes preview, execution, metrics, and per-segment actions over admin APIs and CLI. | Keep destructive maintenance opt-in and inspect dry-run output first. |
+| Completed: authenticated operator access to maintenance reports | V2.4.0 exposes token-protected preview, execution, metrics, and per-segment actions over admin APIs and single-target CLI commands. | Keep the shared admin token secret, keep destructive maintenance opt-in, and inspect dry-run output first. |
 | Synchronous clients / 同步客户�?| Limited throughput. / 吞吐受限�?| Add batching and async APIs. / 增加批量发送和异步 API�?|
 | JSON metadata overwrite / JSON 元数据覆盖写 | Possible corruption on crash. / 崩溃时可能损坏�?| Write temp file then atomic move; add checksums. / 先写临时文件再原子移动，并增加校验和�?|
 | Simplified rebalance / 简�?rebalance | Group behavior differs from production Kafka. / 消费组行为与生产�?Kafka 有差异�?| Add explicit rebalance states and member protocols. / 增加显式 rebalance 状态和成员协议�?|

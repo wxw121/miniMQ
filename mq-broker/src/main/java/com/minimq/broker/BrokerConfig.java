@@ -30,7 +30,8 @@ public record BrokerConfig(
         int maintenanceWindowEndHour,
         int maintenanceEveryNAppends,
         FetchTransferMode fetchTransferMode,
-        long fetchTransferTimeoutMs) {
+        long fetchTransferTimeoutMs,
+        String adminToken) {
 
     public static final int DEFAULT_COMPACTION_MAX_SEGMENTS = 4;
     public static final int MAINTENANCE_WINDOW_DISABLED = -1;
@@ -45,7 +46,8 @@ public record BrokerConfig(
             boolean controller,
             String controllerHost,
             int controllerPort,
-            boolean recoverCorruptMetadata) {
+            boolean recoverCorruptMetadata,
+            String adminToken) {
         this(
                 brokerId,
                 host,
@@ -68,7 +70,8 @@ public record BrokerConfig(
                 MAINTENANCE_WINDOW_DISABLED,
                 0,
                 DEFAULT_FETCH_TRANSFER_MODE,
-                DEFAULT_FETCH_TRANSFER_TIMEOUT_MS);
+                DEFAULT_FETCH_TRANSFER_TIMEOUT_MS,
+                adminToken);
     }
 
     public static BrokerConfig parse(String[] args) {
@@ -96,6 +99,7 @@ public record BrokerConfig(
         int maintenanceEveryNAppends = 0;
         FetchTransferMode fetchTransferMode = DEFAULT_FETCH_TRANSFER_MODE;
         long fetchTransferTimeoutMs = DEFAULT_FETCH_TRANSFER_TIMEOUT_MS;
+        String adminToken = null;
 
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
@@ -147,6 +151,7 @@ public record BrokerConfig(
                         parsePositiveLong(
                                 value(args, ++i, "--fetch-transfer-timeout-ms"),
                                 "--fetch-transfer-timeout-ms");
+                case "--admin-token" -> adminToken = value(args, ++i, "--admin-token");
                 case "--controller-addr" -> {
                     String[] parts = value(args, ++i, "--controller-addr").split(":", 2);
                     if (parts.length != 2 || parts[0].isBlank() || parts[1].isBlank()) {
@@ -159,6 +164,9 @@ public record BrokerConfig(
             }
         }
         validateMaintenanceWindowPair(maintenanceWindowStartHour, maintenanceWindowEndHour);
+        if (adminToken == null || adminToken.isBlank()) {
+            throw new IllegalArgumentException("--admin-token is required and must not be blank");
+        }
         return new BrokerConfig(
                 brokerId,
                 host,
@@ -181,7 +189,8 @@ public record BrokerConfig(
                 maintenanceWindowEndHour,
                 maintenanceEveryNAppends,
                 fetchTransferMode,
-                fetchTransferTimeoutMs);
+                fetchTransferTimeoutMs,
+                adminToken);
     }
 
     private static String value(String[] args, int index, String name) {

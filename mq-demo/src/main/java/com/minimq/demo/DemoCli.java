@@ -96,28 +96,31 @@ public final class DemoCli {
     }
 
     private static void maintenanceReport(String[] args) throws Exception {
+        String adminToken = arg(args, "--admin-token", null);
         MaintenanceReportResponse report = (MaintenanceReportResponse) sendAdmin(
                 args,
                 ApiKeys.MAINTENANCE_REPORT,
-                new MaintenanceReportRequest(),
+                new MaintenanceReportRequest(adminToken),
                 "maintenance report").body();
         printMaintenanceReport(report);
     }
 
     private static void maintenanceRun(String[] args) throws Exception {
+        String adminToken = arg(args, "--admin-token", null);
         MaintenanceReportResponse report = (MaintenanceReportResponse) sendAdmin(
                 args,
                 ApiKeys.MAINTENANCE_RUN,
-                new MaintenanceRunRequest(),
+                new MaintenanceRunRequest(adminToken),
                 "maintenance run").body();
         printMaintenanceReport(report);
     }
 
     private static void maintenanceMetrics(String[] args) throws Exception {
+        String adminToken = arg(args, "--admin-token", null);
         MaintenanceMetricsResponse metrics = (MaintenanceMetricsResponse) sendAdmin(
                 args,
                 ApiKeys.MAINTENANCE_METRICS,
-                new MaintenanceMetricsRequest(),
+                new MaintenanceMetricsRequest(adminToken),
                 "maintenance metrics").body();
         System.out.println("Maintenance metrics");
         System.out.printf(
@@ -138,8 +141,9 @@ public final class DemoCli {
             short apiKey,
             Object request,
             String operation) throws InterruptedException {
-        String brokers = arg(args, "--brokers", "localhost:9092");
-        String[] hp = parseFirstHostPort(brokers);
+        String broker = arg(args, "--broker", null);
+        String[] hp = parseSingleHostPort(broker);
+        System.out.println("Maintenance target: " + hp[0] + ":" + hp[1]);
         try (NetworkClient client = new NetworkClient("demo-admin")) {
             client.connect(hp[0], Integer.parseInt(hp[1]));
             MqDecoder.DecodedResponse response = client.send(apiKey, request);
@@ -200,6 +204,21 @@ public final class DemoCli {
         return hp;
     }
 
+    static String[] parseSingleHostPort(String broker) {
+        if (broker.contains(",")) {
+            throw new IllegalArgumentException("--broker must contain exactly one host:port");
+        }
+        String[] hp = broker.split(":", 2);
+        if (hp.length != 2 || hp[0].isBlank() || hp[1].isBlank()) {
+            throw new IllegalArgumentException("--broker must be host:port");
+        }
+        int port = Integer.parseInt(hp[1]);
+        if (port < 1 || port > 65_535) {
+            throw new IllegalArgumentException("--broker port must be between 1 and 65535");
+        }
+        return new String[] {hp[0], Integer.toString(port)};
+    }
+
     static String[] copyTail(String[] args) {
         String[] tail = new String[args.length - 1];
         System.arraycopy(args, 1, tail, 0, tail.length);
@@ -209,13 +228,13 @@ public final class DemoCli {
     private static void printUsage() {
         System.out.println("""
                 Usage:
-                  java -jar mq-demo.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller
+                  java -jar mq-demo.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller --admin-token <secret>
                   java -jar mq-demo.jar create-topic --brokers localhost:9092 --name orders --partitions 3
                   java -jar mq-demo.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
                   java -jar mq-demo.jar consume --brokers localhost:9092 --topic orders --group demo-group
-                  java -jar mq-demo.jar maintenance-report --brokers localhost:9092
-                  java -jar mq-demo.jar maintenance-run --brokers localhost:9092
-                  java -jar mq-demo.jar maintenance-metrics --brokers localhost:9092
+                  java -jar mq-demo.jar maintenance-report --broker localhost:9092 --admin-token <secret>
+                  java -jar mq-demo.jar maintenance-run --broker localhost:9092 --admin-token <secret>
+                  java -jar mq-demo.jar maintenance-metrics --broker localhost:9092 --admin-token <secret>
                   java -jar mq-demo.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
                 """);
     }

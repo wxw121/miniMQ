@@ -36,7 +36,8 @@ class BrokerConfigTest {
                 "--maintenance-window-end-hour", "17",
                 "--maintenance-every-n-appends", "12",
                 "--fetch-transfer-mode", "heap",
-                "--fetch-transfer-timeout-ms", "2500"
+                "--fetch-transfer-timeout-ms", "2500",
+                "--admin-token", "ops-secret"
         });
 
         assertEquals(2, config.brokerId());
@@ -61,13 +62,24 @@ class BrokerConfigTest {
         assertEquals(12, config.maintenanceEveryNAppends());
         assertEquals(FetchTransferMode.HEAP, config.fetchTransferMode());
         assertEquals(2_500, config.fetchTransferTimeoutMs());
+        assertEquals("ops-secret", config.adminToken());
     }
 
     @Test
     void defaultsFetchTransferToAutoWithThirtySecondTimeout() {
-        BrokerConfig config = new BrokerConfig(0, "localhost", 9092, Path.of("./data"), true, "localhost", 9092, false);
+        BrokerConfig config = new BrokerConfig(
+                0, "localhost", 9092, Path.of("./data"), true, "localhost", 9092, false, "ops-secret");
         assertEquals(FetchTransferMode.AUTO, config.fetchTransferMode());
         assertEquals(30_000, config.fetchTransferTimeoutMs());
+    }
+
+    @Test
+    void adminTokenIsRequiredAndMustNotBeBlank() {
+        assertThrows(IllegalArgumentException.class, () -> BrokerConfig.parse(new String[0]));
+        assertThrows(IllegalArgumentException.class,
+                () -> BrokerConfig.parse(new String[] {"--admin-token", "   "}));
+        assertEquals("ops-secret", BrokerConfig.parse(
+                new String[] {"--admin-token", "ops-secret"}).adminToken());
     }
 
     @Test

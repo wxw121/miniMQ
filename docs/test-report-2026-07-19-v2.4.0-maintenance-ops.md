@@ -11,49 +11,63 @@ V2.4.0 exposes the existing storage maintenance boundary through broker admin AP
 1. `MAINTENANCE_REPORT` / API 13 previews local retention and compaction actions.
 2. `MAINTENANCE_RUN` / API 14 executes local storage maintenance immediately.
 3. `MAINTENANCE_METRICS` / API 15 returns cumulative local maintenance counters.
-4. `maintenance-report`, `maintenance-run`, and `maintenance-metrics` render those results from a running broker.
+4. All three APIs require the shared Broker `--admin-token`; invalid credentials return `UNAUTHORIZED`.
+5. A broker-scoped single-thread executor runs report/run work outside Netty EventLoops; overlapping destructive runs return `MAINTENANCE_BUSY`.
+6. `maintenance-report`, `maintenance-run`, and `maintenance-metrics` require one explicit `--broker` target and render results from that Broker.
+
+Operator contract:
+
+```text
+broker ... --admin-token <secret>
+maintenance-report --broker 127.0.0.1:9092 --admin-token <secret>
+maintenance-run --broker 127.0.0.1:9092 --admin-token <secret>
+maintenance-metrics --broker 127.0.0.1:9092 --admin-token <secret>
+```
 
 ## Verification
 
 Focused verification:
 
 ```powershell
-mvn -q -gs .mvn/settings.xml -s .mvn/settings.xml -pl mq-protocol,mq-broker,mq-demo -am "-Dtest=ProtocolSerdesTest,EmbeddedBrokerChannelTest,DemoCliTest" "-Dsurefire.failIfNoSpecifiedTests=false" test
+mvn -gs .mvn/settings.xml -s .mvn/settings.xml -pl mq-protocol,mq-broker,mq-client,mq-demo -am "-Dtest=ProtocolSerdesTest,BrokerConfigTest,MaintenanceAdminServiceTest,EmbeddedBrokerChannelTest,BrokerShutdownTest,NetworkClientTimeoutTest,DemoCliTest" "-Dsurefire.failIfNoSpecifiedTests=false" test
 ```
 
-Result: exit code 0.
+Result: `BUILD SUCCESS` in 02:21 min, 56 tests, 0 failures/errors/skips, finished at 2026-07-19T15:51:30+08:00.
 
 Full verification:
 
 ```powershell
-mvn clean verify -gs .mvn/settings.xml -s .mvn/settings.xml
+mvn clean verify -gs .mvn/settings.xml -s .mvn/settings.xml "-Dlogback.configurationFile=D:/software/cld_project/mq/.worktrees/v2.4.0-maintenance-hardening/.logback-off.xml"
 ```
 
-Result: `BUILD SUCCESS` in 12:44 min, finished at 2026-07-19T11:13:27+08:00.
+Result: `BUILD SUCCESS` in 13:53 min, finished at 2026-07-19T16:06:22+08:00.
 
 ## Test Totals
 
 | Metric | Result |
 | --- | ---: |
-| Tests run | 279 |
+| Tests run | 292 |
 | Failures | 0 |
 | Errors | 0 |
 | Skipped | 0 |
-| Overall line coverage | 91.60% |
-| Overall instruction coverage | 92.75% |
-| Overall branch coverage | 80.64% |
-| Overall method coverage | 97.19% |
+| Overall line coverage | 91.76% |
+| Overall instruction coverage | 92.98% |
+| Overall branch coverage | 80.62% |
+| Overall method coverage | 97.02% |
 | Overall class coverage | 100.00% |
 
 ## Coverage Added
 
 | Test | Covers |
 | --- | --- |
-| `ProtocolSerdesTest` | Admin API request/response round trips for maintenance report, run, and metrics. |
-| `EmbeddedBrokerChannelTest` | Broker handler mapping from admin API keys to `PartitionManager` maintenance entrypoints. |
-| `DemoCliTest` | Real TCP CLI output for `maintenance-report`, `maintenance-run`, and `maintenance-metrics`. |
+| `ProtocolSerdesTest` | Token-bearing admin API round trips and stable `UNAUTHORIZED` / `MAINTENANCE_BUSY` responses. |
+| `MaintenanceAdminServiceTest` | Constant-time authorization, single-run admission, dedicated executor threading, failure recovery, and shutdown. |
+| `EmbeddedBrokerChannelTest` | Async handler mapping, correlation IDs, authorization errors, busy admission, and enabled segment actions. |
+| `BrokerShutdownTest` | Maintenance executor and port resources are released across broker restart. |
+| `NetworkClientTimeoutTest` | Readable API names for maintenance keys 13-15. |
+| `DemoCliTest` | Single-target/token validation plus real TCP enabled retention and compaction segment output. |
 
 ## Notes
 
-- The full Maven run produced expected replication failover warnings while tests intentionally stopped brokers; the reactor still completed successfully.
+- The full Maven run used a root `.logback-off.xml` file to suppress expected replication failover WARN noise while still running the same full `clean verify` lifecycle and JaCoCo gates.
 - Maven shade emitted existing dependency overlap warnings while building `mq-demo-2.4.0.jar`; these did not fail the build.
