@@ -28,6 +28,7 @@ The current implementation focuses on a single-leader partition model. Broker 0 
 | 7 | [V2.3 Replication Test Report](test-report-2026-07-17-v2.3-replication.md) / [V2.3 副本机制测试报告](test-report-2026-07-17-v2.3-replication.md) | See the V2.3 replication release verification. / 查看 V2.3 副本机制发布验证。 |
 | 7b | [V2.3.1 Replication Hardening Test Report](test-report-2026-07-18-v2.3.1-replication-hardening.md) | See the V2.3.1 replication hardening release verification. |
 | 7c | [V2.4.0 Maintenance Operations Test Report](test-report-2026-07-19-v2.4.0-maintenance-ops.md) | See the V2.4.0 admin protocol and operator CLI verification. |
+| 7d | [V2.5.0 Broker Leases And Automatic Failover Test Report](test-report-2026-07-19-v2.5.0-broker-leases-auto-failover.md) | See the V2.5.0 lease, fencing, clean failover, frozen partition, and recovery verification. |
 | 8 | [Troubleshooting Guide](troubleshooting.md) / [故障排查指南](troubleshooting.md) | Resolve common Maven, port, Windows, test report, and GitHub/SSH issues. / 排查 Maven、端口、Windows、测试报告、GitHub/SSH 常见问题。 |
 
 ## 3. Current Snapshot / 当前快照
@@ -35,7 +36,7 @@ The current implementation focuses on a single-leader partition model. Broker 0 
 | Item / 项目 | Value / 值 |
 | --- | --- |
 | Language / 语言 | Java 17 |
-| Project version | 2.4.0 |
+| Project version | 2.5.0 |
 | Build tool / 构建工具 | Maven multi-module project / Maven 多模块项目 |
 | Network framework / 网络框架 | Netty 4.1 |
 | Serialization / 序列化 | Custom binary protocol over Netty `ByteBuf` / 基于 Netty `ByteBuf` 的自定义二进制协议 |
@@ -44,8 +45,8 @@ The current implementation focuses on a single-leader partition model. Broker 0 
 | Tests / 测试 | JUnit 5 + Surefire |
 | Coverage / 覆盖率 | JaCoCo |
 | Latest milestone tag | `v2.3.2-replica-fetch-pooling` |
-| Latest release | V2.4.0 maintenance operator interface |
-| Latest evidence | [V2.4.0 maintenance operations test report](test-report-2026-07-19-v2.4.0-maintenance-ops.md) |
+| Latest release | V2.5.0 Broker leases and automatic failover |
+| Latest evidence | [V2.5.0 Broker leases and automatic failover test report](test-report-2026-07-19-v2.5.0-broker-leases-auto-failover.md) |
 
 ## 4. Module Map / 模块地图
 
@@ -98,25 +99,25 @@ mq-demo/target/site/jacoco/index.html
 Start a three-broker demo cluster / 启动三节点 Broker 演示集群：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-2.4.0.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller --admin-token <secret>
-java -jar mq-demo/target/mq-demo-2.4.0.jar broker --broker-id 1 --port 9093 --data-dir ./data/broker-1 --controller-addr localhost:9092 --admin-token <secret>
-java -jar mq-demo/target/mq-demo-2.4.0.jar broker --broker-id 2 --port 9094 --data-dir ./data/broker-2 --controller-addr localhost:9092 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-2.5.0.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller --admin-token <secret>
+java -jar mq-demo/target/mq-demo-2.5.0.jar broker --broker-id 1 --port 9093 --data-dir ./data/broker-1 --controller-addr localhost:9092 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-2.5.0.jar broker --broker-id 2 --port 9094 --data-dir ./data/broker-2 --controller-addr localhost:9092 --admin-token <secret>
 ```
 
 Create, produce, and consume / 创建 Topic、生产消息、消费消息：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-2.4.0.jar create-topic --brokers localhost:9092 --name orders --partitions 3
-java -jar mq-demo/target/mq-demo-2.4.0.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
-java -jar mq-demo/target/mq-demo-2.4.0.jar consume --brokers localhost:9092 --topic orders --group order-processors
+java -jar mq-demo/target/mq-demo-2.5.0.jar create-topic --brokers localhost:9092 --name orders --partitions 3
+java -jar mq-demo/target/mq-demo-2.5.0.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
+java -jar mq-demo/target/mq-demo-2.5.0.jar consume --brokers localhost:9092 --topic orders --group order-processors
 ```
 
 Inspect and run storage maintenance / 查看并执行存储维护：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-2.4.0.jar maintenance-report --broker localhost:9092 --admin-token <secret>
-java -jar mq-demo/target/mq-demo-2.4.0.jar maintenance-run --broker localhost:9092 --admin-token <secret>
-java -jar mq-demo/target/mq-demo-2.4.0.jar maintenance-metrics --broker localhost:9092 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-2.5.0.jar maintenance-report --broker localhost:9092 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-2.5.0.jar maintenance-run --broker localhost:9092 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-2.5.0.jar maintenance-metrics --broker localhost:9092 --admin-token <secret>
 ```
 
 All brokers require the shared admin token. Invalid maintenance credentials return `UNAUTHORIZED`, while an overlapping destructive run returns `MAINTENANCE_BUSY`; report/run work executes on the broker's dedicated maintenance executor.
@@ -124,7 +125,7 @@ All brokers require the shared admin token. Invalid maintenance credentials retu
 Benchmark FETCH heap versus sendfile / 对比 HEAP 与 sendfile 的 FETCH 基准：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-2.4.0.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
+java -jar mq-demo/target/mq-demo-2.5.0.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
 ```
 
 ## 6. Glossary / 专业名词解释

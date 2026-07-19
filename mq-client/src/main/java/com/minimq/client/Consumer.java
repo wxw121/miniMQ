@@ -142,14 +142,16 @@ public class Consumer implements AutoCloseable {
                     route.leader(),
                     new FetchRequest(topic, partition, offset, 1024 * 1024));
             MqResponseHeader header = fetchResponse.header();
-            if (header.errorCode() == ErrorCode.NOT_LEADER && attempt == 0) {
+            if (isStaleLeaderError(header.errorCode()) && attempt == 0) {
                 invalidateMetadata(topic);
                 invalidateBrokerClient(route.leader().brokerId());
                 metadata = refreshMetadata(topic);
                 continue;
             }
             controllerClient.ensureSuccess(fetchResponse, "FETCH topic=" + topic
-                    + " partition=" + partition + " attempt=" + (attempt + 1) + "/2");
+                    + " partition=" + partition
+                    + " broker=" + route.leader().brokerId()
+                    + " attempt=" + (attempt + 1) + "/2");
             FetchResponse fetch = (FetchResponse) fetchResponse.body();
             for (FetchedRecord record : fetch.records()) {
                 result.add(new ConsumerRecord(topic, partition, record.offset(), record.key(), record.value()));
@@ -158,6 +160,10 @@ public class Consumer implements AutoCloseable {
             return metadata;
         }
         return metadata;
+    }
+
+    private static boolean isStaleLeaderError(ErrorCode errorCode) {
+        return errorCode == ErrorCode.NOT_LEADER || errorCode == ErrorCode.BROKER_FENCED;
     }
 
     private PartitionRoute routeWithRefresh(

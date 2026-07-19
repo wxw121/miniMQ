@@ -51,32 +51,32 @@ mvn -q -pl mq-protocol -am -Dtest=ProtocolSerdesTest test -gs .mvn/settings.xml 
 Latest verified command / 最近验证过的命令：
 
 ```powershell
-mvn verify -gs .mvn/settings.xml -s .mvn/settings.xml
+mvn clean verify -gs .mvn/settings.xml -s .mvn/settings.xml
 ```
 
 Latest result / 最近结果：
 
 | Metric / 指标 | Value / 数值 |
 | --- | ---: |
-| Tests run / 测试总数 | 292 |
+| Tests run / 测试总数 | 323 |
 | Failures / 失败数 | 0 |
 | Errors / 错误数 | 0 |
 | Skipped / 跳过数 | 0 |
-| Overall line coverage / 总体行覆盖率 | 91.76% |
-| Overall instruction coverage / 总体指令覆盖率 | 92.98% |
-| Overall branch coverage / 总体分支覆盖率 | 80.62% |
-| Overall method coverage / 总体方法覆盖率 | 97.02% |
+| Overall line coverage / 总体行覆盖率 | 91.62% |
+| Overall instruction coverage / 总体指令覆盖率 | 92.93% |
+| Overall branch coverage / 总体分支覆盖率 | 81.04% |
+| Overall method coverage / 总体方法覆盖率 | 96.96% |
 | Overall class coverage / 总体类覆盖率 | 100.00% |
 
 ## 5. Coverage By Module / 模块覆盖率
 
 | Module / 模块 | Instruction / 指令 | Branch / 分支 | Line / 行 | Method / 方法 | Class / 类 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `mq-broker` | 94.14% | 78.84% | 92.59% | 98.65% | 100.00% |
-| `mq-client` | 92.28% | 77.12% | 90.08% | 92.68% | 100.00% |
-| `mq-common` | 96.90% | 84.38% | 97.87% | 100.00% | 100.00% |
+| `mq-broker` | 93.80% | 80.02% | 92.11% | 98.67% | 100.00% |
+| `mq-client` | 92.40% | 78.57% | 90.20% | 92.86% | 100.00% |
+| `mq-common` | 96.96% | 84.38% | 97.90% | 100.00% | 100.00% |
 | `mq-demo` | 96.27% | 77.06% | 94.07% | 96.43% | 100.00% |
-| `mq-protocol` | 94.00% | 82.58% | 92.74% | 95.83% | 100.00% |
+| `mq-protocol` | 93.66% | 83.24% | 92.29% | 94.00% | 100.00% |
 | `mq-storage` | 90.52% | 82.46% | 90.03% | 97.37% | 100.00% |
 
 ```mermaid
@@ -84,7 +84,7 @@ xychart-beta
     title "Line Coverage By Module / 模块行覆盖率"
     x-axis ["broker/代理", "client/客户端", "common/公共", "demo/演示", "protocol/协议", "storage/存储"]
     y-axis "Line % / 行覆盖率 %" 0 --> 100
-    bar [92.59, 90.08, 97.87, 94.07, 92.74, 90.03]
+    bar [92.11, 90.20, 97.90, 94.07, 92.29, 90.03]
 ```
 
 ```mermaid
@@ -92,7 +92,7 @@ xychart-beta
     title "Overall Coverage / 总体覆盖率"
     x-axis ["Instruction/指令", "Branch/分支", "Line/行", "Method/方法", "Class/类"]
     y-axis "Coverage % / 覆盖率 %" 0 --> 100
-    bar [92.98, 80.62, 91.76, 97.02, 100.00]
+    bar [92.93, 81.04, 91.62, 96.96, 100.00]
 ```
 
 
@@ -151,12 +151,15 @@ The numeric baseline above and the closeout report are the source of truth for t
 | `mq-storage` | `LogManagerMaintenanceTest` | Unit / 单元测试 | Accurate dry-run ordering, action/byte/offset reports, metrics, reader skips, UTC windows, manual execution, checkpointing, and WAL replay after retention or compaction holes. / 精确 dry-run 顺序、动作/字节/offset 报告、指标、reader 跳过、UTC 窗口、手动执行、checkpoint，以及 retention 或 compaction 空洞后的 WAL replay。 |
 | `mq-storage` | `SegmentedPartitionLogFetchPlanTest` | Unit / 单元测试 | Cross-segment fetch plans, high-watermark snapshots, reader-lease retention deferral, compaction holes, and exact byte budgets. / 跨 segment FETCH 计划、high watermark 快照、读租约推迟 retention、compaction 空洞和精确字节预算。 |
 | `mq-protocol` | `ProtocolSerdesTest` | Unit / 单元测试 | Request/response round trips, FETCH prefix equivalence, malformed collection counts, frame limits, encoder. / 请求/响应往返、FETCH 前缀等价、畸形集合 count、帧限制和编码器。 |
-| `mq-broker` | `BrokerConfigTest` | Unit / 单元测试 | Broker argument parsing and validation, including the required maintenance admin token and storage/fetch options. / Broker 参数解析与校验，包括必填维护管理令牌以及存储、FETCH 选项。 |
+| `mq-broker` | `BrokerConfigTest` | Unit / 单元测试 | Broker argument parsing and validation, including maintenance credentials, storage/fetch options, and strict lease timing. / Broker 参数解析与校验，包括维护凭据、存储/FETCH 参数和严格租约时序。 |
+| `mq-broker` | `BrokerAvailabilityGuardTest` | Unit / 单元测试 | Broker state transitions and admission rules for fenced data, replication, and maintenance requests. / Broker 状态转换，以及 fenced 状态下数据、副本和维护请求的准入规则。 |
+| `mq-broker` | `BrokerLeaseServiceTest` | Unit / 单元测试 | Registration, heartbeat renewal, self-fencing deadlines, epoch recovery, and bounded shutdown. / 注册、心跳续租、自我 fencing deadline、epoch 恢复与有界关闭。 |
+| `mq-broker` | `BrokerLeaseMonitorTest` | Unit / 单元测试 | Controller lease expiry scans, failure isolation, deterministic scheduling, and clean monitor shutdown. / Controller 租约过期扫描、失败隔离、确定性调度和监视器关闭。 |
 | `mq-broker` | `FetchTransferMetricsTest` | Unit / 单元测试 | Sendfile/heap/fallback/failure/timeout counters and immutable snapshots. / sendfile/heap/回退/失败/超时计数与不可变快照。 |
 | `mq-broker` | `MetadataStoreTest` | Unit / 单元测试 | Metadata safe writes, load validation, corrupt-file failure, and quarantine recovery. / 元数据安全写入、加载校验、损坏文件失败与隔离恢复。 |
-| `mq-broker` | `ClusterControllerTest` | Unit / 单元测试 | Topic creation, replica/ISR metadata, offline election, snapshot isolation. / Topic 创建、副本/ISR 元数据、离线选举、快照隔离。 |
+| `mq-broker` | `ClusterControllerTest` | Unit / 单元测试 | Topic creation, Broker epochs and leases, replica/ISR metadata, LEO-aware clean election, frozen partitions, and snapshot isolation. / Topic 创建、Broker epoch 与租约、副本/ISR 元数据、LEO 感知 clean election、分区冻结和快照隔离。 |
 | `mq-broker` | `ReplicaStateManagerTest` | Unit / 单元测试 | ISR minimum high watermark math. / ISR 最小 high watermark 计算。 |
-| `mq-broker` | `ReplicationIntegrationTest` | Integration / 集成测试 | Follower catch-up, replication-aware client FETCH, leader failover, and `NOT_LEADER` redirects. / Follower 追平、复制感知客户端 FETCH、Leader 故障转移与 `NOT_LEADER` 重定向。 |
+| `mq-broker` | `ReplicationIntegrationTest` | Integration / 集成测试 | Follower catch-up, replication-aware FETCH, real TCP Controller isolation, fencing-before-election ordering, no-ISR freeze, higher-epoch recovery, and client redirects. / Follower 追平、复制感知 FETCH、真实 TCP Controller 隔离、先 fencing 后选主时序、无 ISR 冻结、更高 epoch 恢复和客户端重定向。 |
 | `mq-broker` | `GroupCoordinatorTest` | Unit / 单元测试 | Join/sync assignment, heartbeat, offset commit/fetch. / 加组、同步分配、心跳、offset 提交/拉取。 |
 | `mq-broker` | `MaintenanceAdminServiceTest` | Unit / 单元测试 | Constant-time token authorization, single-run admission, dedicated executor threading, rejection recovery, and idempotent shutdown. / 常量时间令牌鉴权、单次执行准入、专用执行器线程、拒绝恢复与幂等关闭。 |
 | `mq-broker` | `EmbeddedBrokerChannelTest` | Component / 组件测试 | Authorized async maintenance report/run routing, error mapping, correlation IDs, metrics, and enabled segment actions through Netty `EmbeddedChannel`. / 通过 Netty `EmbeddedChannel` 验证鉴权后的异步维护报告/执行路由、错误映射、关联 ID、指标与已启用的 segment 动作。 |
@@ -197,7 +200,7 @@ V2.2 零拷贝 FETCH 收口记录见 `docs/test-report-2026-07-17-v2.2-read-perf
 Benchmark command / 基准命令：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-2.4.0.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
+java -jar mq-demo/target/mq-demo-2.5.0.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
 ```
 
 ### 7.5 V2.3 Replication Closeout / V2.3 副本机制收口
@@ -247,7 +250,25 @@ maintenance-metrics --broker 127.0.0.1:9092 --admin-token <secret>
 
 Verification evidence / 验证证据：`docs/test-report-2026-07-19-v2.4.0-maintenance-ops.md`。
 
-### 7.7 Web Runtime Regression Coverage / Web Runtime 回归覆盖
+### 7.7 V2.5.0 Broker Leases And Automatic Failover Closeout / V2.5.0 Broker 租约与自动故障转移收口
+
+V2.5.0 adds persisted Broker epochs, API 16 heartbeats, local self-fencing, Controller lease monitoring, clean LEO-aware ISR election, persistent frozen partitions, and higher-epoch recovery. Producer and Consumer also refresh metadata and retry once when a routed Broker returns `BROKER_FENCED`.
+
+V2.5.0 增加持久化 Broker epoch、API 16 心跳、本地自我 fencing、Controller 租约监视、LEO 感知 ISR 内 clean election、持久化分区冻结和更高 epoch 恢复。Producer 与 Consumer 在目标 Broker 返回 `BROKER_FENCED` 时也会刷新元数据并重试一次。
+
+Key regression coverage / 关键回归覆盖：
+
+| Test / 测试 | Verified behavior / 验证行为 |
+| --- | --- |
+| `BrokerLeaseServiceTest` | Registration, epoch-confirming heartbeat, deadline self-fencing, reconnect recovery, and shutdown. / 注册、epoch 确认心跳、deadline 自我 fencing、重连恢复与关闭。 |
+| `BrokerLeaseMonitorTest` | Expired-lease scans, scan-failure isolation, and scheduler cleanup. / 过期租约扫描、扫描失败隔离和调度器清理。 |
+| `ClusterControllerTest` and `MetadataStoreTest` | Stale epoch rejection, atomic persisted epoch/frozen state, clean election, and restart normalization. / 过期 epoch 拒绝、epoch/frozen 状态原子持久化、clean election 与重启归一化。 |
+| `ProducerNotLeaderRetryTest` and `ConsumerNotLeaderRetryTest` | Fenced Broker connection invalidation, metadata refresh, bounded retry, and error context. / fenced Broker 连接失效、元数据刷新、有界重试和错误上下文。 |
+| `ReplicationIntegrationTest` | Real TCP Controller isolation proves old-Leader fencing before election, no-ISR freeze, and same-directory higher-epoch recovery. / 真实 TCP Controller 隔离验证旧 Leader 先 fencing 再选主、无 ISR 冻结，以及原数据目录更高 epoch 恢复。 |
+
+Verification evidence / 验证证据：`docs/test-report-2026-07-19-v2.5.0-broker-leases-auto-failover.md`。
+
+### 7.8 Web Runtime Regression Coverage / Web Runtime 回归覆盖
 
 The Web backend has dedicated regression tests for the three runtime risks fixed in the current version.
 
@@ -305,9 +326,9 @@ The current agreed gate is:
 Per-module line coverage >= 90% for modules covered by JaCoCo check / 接入 JaCoCo check 的模块行覆盖率均 >= 90%
 ```
 
-The project currently satisfies this gate at 91.97% overall line coverage, with JaCoCo `check` bound to Maven `verify`. Blocking process entrypoints (`BrokerMain`, `MiniMqWebMain`, and `MiniMqWebDevMain`) are excluded from the report and gate because their behavior is covered indirectly through CLI, broker integration, and Web launcher tests.
+The project currently satisfies this gate at 91.62% overall line coverage, with JaCoCo `check` bound to Maven `verify`. Blocking process entrypoints (`BrokerMain`, `MiniMqWebMain`, and `MiniMqWebDevMain`) are excluded from the report and gate because their behavior is covered indirectly through CLI, broker integration, and Web launcher tests.
 
-项目当前总体行覆盖率为 91.97%，并且 JaCoCo `check` 已绑定到 Maven `verify`。阻塞式进程入口（`BrokerMain`、`MiniMqWebMain`、`MiniMqWebDevMain`）的行为已通过 CLI、Broker 集成测试和 Web 启动器测试间接覆盖，因此从报告和门禁统计中排除。
+项目当前总体行覆盖率为 91.62%，并且 JaCoCo `check` 已绑定到 Maven `verify`。阻塞式进程入口（`BrokerMain`、`MiniMqWebMain`、`MiniMqWebDevMain`）的行为已通过 CLI、Broker 集成测试和 Web 启动器测试间接覆盖，因此从报告和门禁统计中排除。
 
 ## 10. Slow Tests / 慢测试说明
 

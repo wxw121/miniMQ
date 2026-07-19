@@ -107,6 +107,8 @@ public final class ProtocolSerdes {
                     payload.readInt());
             case ApiKeys.REGISTER_BROKER -> new RegisterBrokerRequest(
                     payload.readInt(), ByteBufSerde.readString(payload), payload.readInt());
+            case ApiKeys.BROKER_HEARTBEAT ->
+                    new BrokerHeartbeatRequest(payload.readInt(), payload.readLong());
             case ApiKeys.REPLICA_FETCH -> new ReplicaFetchRequest(
                     ByteBufSerde.readString(payload),
                     payload.readInt(),
@@ -148,7 +150,9 @@ public final class ProtocolSerdes {
             case ApiKeys.HEARTBEAT -> new HeartbeatResponse();
             case ApiKeys.OFFSET_COMMIT -> new OffsetCommitResponse();
             case ApiKeys.OFFSET_FETCH -> new OffsetFetchResponse(payload.readLong());
-            case ApiKeys.REGISTER_BROKER -> new RegisterBrokerResponse();
+            case ApiKeys.REGISTER_BROKER ->
+                    new RegisterBrokerResponse(payload.readLong(), payload.readLong());
+            case ApiKeys.BROKER_HEARTBEAT -> new BrokerHeartbeatResponse();
             case ApiKeys.REPLICA_FETCH -> decodeReplicaFetchResponse(payload);
             case ApiKeys.MARK_BROKER_OFFLINE -> new MarkBrokerOfflineResponse();
             case ApiKeys.UPDATE_REPLICA_LEO -> new UpdateReplicaLeoResponse();
@@ -212,6 +216,11 @@ public final class ProtocolSerdes {
                 ByteBufSerde.writeString(buf, req.host());
                 buf.writeInt(req.port());
             }
+            case ApiKeys.BROKER_HEARTBEAT -> {
+                BrokerHeartbeatRequest req = (BrokerHeartbeatRequest) body;
+                buf.writeInt(req.brokerId());
+                buf.writeLong(req.brokerEpoch());
+            }
             case ApiKeys.REPLICA_FETCH -> writeReplicaFetchRequest(buf, (ReplicaFetchRequest) body);
             case ApiKeys.MARK_BROKER_OFFLINE -> buf.writeInt(((MarkBrokerOfflineRequest) body).brokerId());
             case ApiKeys.UPDATE_REPLICA_LEO -> {
@@ -251,6 +260,11 @@ public final class ProtocolSerdes {
             writeByteArrayWithShortPrefix(buf, res.assignment());
         } else if (body instanceof OffsetFetchResponse res) {
             buf.writeLong(res.offset());
+        } else if (body instanceof RegisterBrokerResponse res) {
+            buf.writeLong(res.brokerEpoch());
+            buf.writeLong(res.leaseTimeoutMs());
+        } else if (body instanceof BrokerHeartbeatResponse) {
+            // Successful Broker heartbeat responses have no body fields.
         } else if (body instanceof ReplicaFetchResponse res) {
             writeReplicaFetchResponse(buf, res);
         } else if (body instanceof MaintenanceReportResponse res) {
@@ -331,12 +345,15 @@ public final class ProtocolSerdes {
                 List<Integer> replicaBrokerIds = readBrokerIdList(buf, "replica brokers");
                 List<Integer> isrBrokerIds = readBrokerIdList(buf, "isr brokers");
                 Map<Integer, Long> replicaLogEndOffsets = readReplicaLogEndOffsets(buf);
+                requireReadable(buf, 1, "partition frozen flag");
+                boolean frozen = buf.readBoolean();
                 partitions.add(new PartitionMetadata(
                         partitionId,
                         leaderBrokerId,
                         replicaBrokerIds,
                         isrBrokerIds,
-                        replicaLogEndOffsets));
+                        replicaLogEndOffsets,
+                        frozen));
             }
             topics.add(new TopicMetadata(topicName, partitions));
         }
@@ -360,6 +377,7 @@ public final class ProtocolSerdes {
                 writeBrokerIdList(buf, partition.replicaBrokerIds(), "replica brokers");
                 writeBrokerIdList(buf, partition.isrBrokerIds(), "isr brokers");
                 writeReplicaLogEndOffsets(buf, partition.replicaLogEndOffsets());
+                buf.writeBoolean(partition.frozen());
             }
         }
     }

@@ -82,6 +82,7 @@ If `errorCode != NONE`, response body is omitted. This rule keeps error response
 | 13 | `MAINTENANCE_REPORT` | Admin / 管理面 | Preview local retention and compaction actions without changing files. / 预览本地保留与压缩动作，不修改文件。 |
 | 14 | `MAINTENANCE_RUN` | Admin / 管理面 | Run local storage maintenance immediately. / 立即执行本地存储维护。 |
 | 15 | `MAINTENANCE_METRICS` | Admin / 管理面 | Read cumulative local maintenance counters and the last run status. / 读取本地维护累计指标和最近运行状态。 |
+| 16 | `BROKER_HEARTBEAT` | Control / 控制面 | Renew a Broker lease for one persisted `brokerEpoch`. / 使用持久化 `brokerEpoch` 续期 Broker 租约。 |
 
 ## 3. Serialization Rules / 序列化规则
 
@@ -397,7 +398,7 @@ Consumer group coordination is simplified but captures the essential flow:
 
 `Producer` 保留一个 bootstrap controller client，并懒加载 leader broker client。`Consumer` 保留一个 controller client，在 subscribe 时加入 group，启动 heartbeat，并轮询 assigned partitions。
 
-V1.3 adds the client-resilience boundary for stale metadata. `NetworkClient` supports configurable synchronous request timeout and converts common failures into typed client exceptions. `Producer` and `Consumer` cache metadata per topic, invalidate the cache when a data-plane request receives `NOT_LEADER` or cached metadata can no longer route the topic/partition, refresh metadata once, and retry once. The retry budget is fixed at initial request plus one refresh retry. If the second attempt still fails, the surfaced `MiniMqServerException` includes operation context such as API, topic, partition, and attempt count.
+V1.3 adds the client-resilience boundary for stale metadata. `NetworkClient` supports configurable synchronous request timeout and converts common failures into typed client exceptions. `Producer` and `Consumer` cache metadata per topic, invalidate the cache when a data-plane request receives `NOT_LEADER` or `BROKER_FENCED`, or cached metadata can no longer route the topic/partition, refresh metadata once, and retry once. The retry budget is fixed at initial request plus one refresh retry. If the second attempt still fails, the surfaced `MiniMqServerException` includes operation context such as API, topic, partition, routed Broker, and attempt count.
 
 V1.3 补齐了过期元数据相关的客户端韧性边界。`NetworkClient` 支持同步请求超时配置，并把常见失败转换为类型化客户端异常。`Producer` 和 `Consumer` 按 Topic 缓存元数据；当数据面请求遇到 `NOT_LEADER`，或缓存元数据已经无法路由 topic/partition 时，会失效缓存、刷新元数据并重试一次。重试预算固定为初始请求 + 一次刷新重试；如果第二次仍失败，抛出的 `MiniMqServerException` 会包含 API、topic、partition、attempt 等用户可见上下文。
 
@@ -434,6 +435,9 @@ MiniMQ 在响应头里使用 `ErrorCode`：
 | `INVALID_REQUEST` | Malformed request, invalid arguments, or wrong endpoint role. / 请求畸形、参数非法或端点角色错误。 |
 | `GROUP_NOT_FOUND` | Consumer group/member is missing. / 消费组或成员不存在。 |
 | `REBALANCE_IN_PROGRESS` | Reserved for future rebalance behavior. / 为未来 rebalance 行为预留。 |
+
+| `BROKER_FENCED` | The Broker epoch or local lease is no longer valid; data-plane work must stop. / Broker epoch 或本地租约已失效，必须停止数据面工作。 |
+| `BROKER_ID_IN_USE` | The Broker ID still has a live Controller lease. / Broker ID 仍有有效的 Controller 租约。 |
 
 Malformed request bodies are handled inside `MqRequestHandler` so that, when the request header is valid, the broker can return `INVALID_REQUEST` with the original `correlationId`.
 
@@ -495,6 +499,24 @@ V2.3 保持线协议版本为 1，并扩展元数据与内部副本流量：
 
 - `ReplicaStateManager.noteLeadership` 在选举时记录 Leader log end，并应用选举宽限期：无新写入前，未上报的 ISR follower 不阻塞故障前数据读取；有新写入后恢复严格 replication HW 语义；
 - `updateReplicaLeo` 使用单调 `Math.max`，避免重试的副本拉取请求拉低 replication HW。
+
+### 11.1 V2.5.0 Broker Leases And Automatic Failover / Broker 租约与自动故障转移
+
+V2.5.0 keeps the static Controller architecture and adds Broker liveness leases. `ClusterController` persists a monotonically increasing `brokerEpoch` for every Broker and keeps lease deadlines in memory. `PartitionEntry.frozen` is persisted with partition metadata so a no-ISR partition remains unavailable across Controller restarts instead of being normalized back into service.
+
+V2.5.0 保留静态 Controller 架构，并增加 Broker 存活租约。`ClusterController` 为每个 Broker 持久化单调递增的 `brokerEpoch`，在内存中维护租约 deadline；`PartitionEntry.frozen` 随分区元数据持久化，避免没有 ISR 的分区在 Controller 重启后被错误恢复为可用。
+
+The timing contract is strict:
+
+```text
+brokerHeartbeatIntervalMs < brokerSelfFenceTimeoutMs < controllerBrokerLeaseTimeoutMs
+```
+
+The matching CLI options are `--broker-heartbeat-interval-ms`, `--broker-self-fence-timeout-ms`, and `--controller-broker-lease-timeout-ms`. A Broker transitions through `STARTING`, `ACTIVE`, `FENCED`, and `RECOVERING`. Only `ACTIVE` admits `PRODUCE`, `FETCH`, `REPLICA_FETCH`, and `MAINTENANCE_RUN`; metadata and maintenance read APIs remain available for diagnosis.
+
+When a lease expires, the Controller removes the Broker from ISR and chooses the highest-LEO online ISR replica, preserving replica order as the tie-breaker. If no online ISR survives, the partition becomes frozen with an empty ISR and retains its original Leader ID. Only that original Broker can unfreeze the partition by registering with a higher epoch. Unclean election is deliberately not performed.
+
+Producer and Consumer treat `BROKER_FENCED` like `NOT_LEADER`: invalidate the routed Broker client, refresh metadata once, and retry once. Controller HA, a data-plane Leader epoch carried by produce/fetch requests, and unclean election remain deferred.
 
 Known limitations fixed in follow-up `2.3.1` are tracked in `docs/code-review-2026-07-17-v2.3-replication.md`.
 

@@ -1,6 +1,7 @@
 package com.minimq.broker.replication;
 
 import com.minimq.broker.BrokerConfig;
+import com.minimq.broker.BrokerAvailabilityGuard;
 import com.minimq.broker.ControllerClient;
 import com.minimq.broker.controller.ClusterController;
 import com.minimq.common.error.ErrorCode;
@@ -12,16 +13,28 @@ import java.util.Map;
 public final class ReplicaLeoReporter implements AutoCloseable {
     private final BrokerConfig config;
     private final ClusterController controller;
+    private final BrokerAvailabilityGuard availabilityGuard;
     private final Map<ReplicaKey, Long> confirmedLeos = new HashMap<>();
     private ControllerClient client;
 
     public ReplicaLeoReporter(BrokerConfig config, ClusterController controller) {
+        this(config, controller, activeGuard());
+    }
+
+    public ReplicaLeoReporter(
+            BrokerConfig config,
+            ClusterController controller,
+            BrokerAvailabilityGuard availabilityGuard) {
         this.config = config;
         this.controller = controller;
+        this.availabilityGuard = availabilityGuard;
     }
 
     public synchronized ErrorCode report(
             String topicName, int partitionId, int brokerId, long logEndOffset) {
+        if (!availabilityGuard.allowsDataPlane()) {
+            return ErrorCode.BROKER_FENCED;
+        }
         ReplicaKey key = new ReplicaKey(topicName, partitionId, brokerId);
         if (logEndOffset <= confirmedLeos.getOrDefault(key, -1L)) {
             return ErrorCode.NONE;
@@ -79,5 +92,11 @@ public final class ReplicaLeoReporter implements AutoCloseable {
     }
 
     private record ReplicaKey(String topicName, int partitionId, int brokerId) {
+    }
+
+    private static BrokerAvailabilityGuard activeGuard() {
+        BrokerAvailabilityGuard guard = new BrokerAvailabilityGuard();
+        guard.activate();
+        return guard;
     }
 }

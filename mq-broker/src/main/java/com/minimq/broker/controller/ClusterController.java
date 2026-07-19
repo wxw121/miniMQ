@@ -7,19 +7,24 @@ import com.minimq.broker.metadata.ClusterMetadata.TopicEntry;
 import com.minimq.broker.metadata.MetadataStore;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.protocol.message.ProtocolMessages.BrokerMetadata;
+import com.minimq.protocol.message.ProtocolMessages.BrokerHeartbeatRequest;
 import com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest;
 import com.minimq.protocol.message.ProtocolMessages.MetadataRequest;
 import com.minimq.protocol.message.ProtocolMessages.MetadataResponse;
 import com.minimq.protocol.message.ProtocolMessages.PartitionMetadata;
 import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
+import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerResponse;
 import com.minimq.protocol.message.ProtocolMessages.TopicMetadata;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 import java.util.stream.Collectors;
 
 /**
@@ -27,25 +32,143 @@ import java.util.stream.Collectors;
  */
 public class ClusterController {
     private static final long ISR_LAG_TOLERANCE_RECORDS = 10L;
+    private static final long DEFAULT_LEASE_TIMEOUT_MS = 5_000L;
 
     private final MetadataStore metadataStore;
+    private final long leaseTimeoutMs;
+    private final LongSupplier nanoTime;
+    private final Map<Integer, BrokerLease> brokerLeases = new HashMap<>();
     private ClusterMetadata metadata;
 
+    public record BrokerRegistration(ErrorCode errorCode, RegisterBrokerResponse response) {
+        static BrokerRegistration failed(ErrorCode errorCode) {
+            return new BrokerRegistration(errorCode, null);
+        }
+    }
+
+    private record BrokerLease(long brokerEpoch, long deadlineNanos) {
+    }
+
+    private record BrokerLeaseKey(int brokerId, long brokerEpoch) {
+    }
+
     public ClusterController(MetadataStore metadataStore) {
+        this(metadataStore, DEFAULT_LEASE_TIMEOUT_MS);
+    }
+
+    public ClusterController(MetadataStore metadataStore, long leaseTimeoutMs) {
+        this(metadataStore, leaseTimeoutMs, System::nanoTime);
+    }
+
+    ClusterController(MetadataStore metadataStore, long leaseTimeoutMs, LongSupplier nanoTime) {
         this.metadataStore = metadataStore;
+        this.leaseTimeoutMs = leaseTimeoutMs;
+        this.nanoTime = nanoTime;
         this.metadata = metadataStore.load();
         normalizeMetadata();
+        long deadline = deadlineFrom(nanoTime.getAsLong());
+        metadata.brokers.values().stream()
+                .filter(broker -> broker.online)
+                .forEach(broker -> brokerLeases.put(
+                        broker.brokerId, new BrokerLease(broker.brokerEpoch, deadline)));
     }
 
     // Public controller methods are synchronized to keep in-memory and persisted metadata ordered consistently.
-    public synchronized ErrorCode registerBroker(RegisterBrokerRequest request) {
-        BrokerEntry entry = metadata.brokers.computeIfAbsent(request.brokerId(), id -> new BrokerEntry());
+    public synchronized BrokerRegistration registerBroker(RegisterBrokerRequest request) {
+        long now = nanoTime.getAsLong();
+        BrokerEntry current = metadata.brokers.get(request.brokerId());
+        BrokerLease currentLease = brokerLeases.get(request.brokerId());
+        if (current != null && current.online && currentLease != null
+                && now < currentLease.deadlineNanos()) {
+            return BrokerRegistration.failed(ErrorCode.BROKER_ID_IN_USE);
+        }
+
+        ClusterMetadata next = copyMetadata(metadata);
+        BrokerEntry entry = next.brokers.computeIfAbsent(request.brokerId(), id -> new BrokerEntry());
         entry.brokerId = request.brokerId();
         entry.host = request.host();
         entry.port = request.port();
         entry.online = true;
-        metadataStore.save(metadata);
+        entry.brokerEpoch = current == null ? 1L : Math.addExact(current.brokerEpoch, 1L);
+        restoreFrozenPartitions(next, request.brokerId());
+        metadataStore.save(next);
+        metadata = next;
+        brokerLeases.put(request.brokerId(), new BrokerLease(entry.brokerEpoch, deadlineFrom(now)));
+        return new BrokerRegistration(
+                ErrorCode.NONE, new RegisterBrokerResponse(entry.brokerEpoch, leaseTimeoutMs));
+    }
+
+    public synchronized ErrorCode heartbeatBroker(BrokerHeartbeatRequest request) {
+        BrokerEntry broker = metadata.brokers.get(request.brokerId());
+        BrokerLease lease = brokerLeases.get(request.brokerId());
+        long now = nanoTime.getAsLong();
+        if (broker == null || !broker.online || broker.brokerEpoch != request.brokerEpoch()
+                || lease == null || lease.brokerEpoch() != request.brokerEpoch()
+                || now >= lease.deadlineNanos()) {
+            return ErrorCode.BROKER_FENCED;
+        }
+        brokerLeases.put(request.brokerId(), new BrokerLease(request.brokerEpoch(), deadlineFrom(now)));
         return ErrorCode.NONE;
+    }
+
+    public synchronized int expireOverdueBrokerLeases() {
+        long now = nanoTime.getAsLong();
+        List<BrokerLeaseKey> expired = brokerLeases.entrySet().stream()
+                .filter(entry -> now >= entry.getValue().deadlineNanos())
+                .map(entry -> new BrokerLeaseKey(entry.getKey(), entry.getValue().brokerEpoch()))
+                .toList();
+        int applied = 0;
+        for (BrokerLeaseKey key : expired) {
+            if (expireBrokerLease(key.brokerId(), key.brokerEpoch())) {
+                applied++;
+            }
+        }
+        return applied;
+    }
+
+    public synchronized boolean expireBrokerLease(int brokerId, long expectedEpoch) {
+        BrokerEntry current = metadata.brokers.get(brokerId);
+        BrokerLease lease = brokerLeases.get(brokerId);
+        if (current == null || current.brokerEpoch != expectedEpoch
+                || lease == null || lease.brokerEpoch() != expectedEpoch) {
+            return false;
+        }
+        if (!current.online) {
+            brokerLeases.remove(brokerId, lease);
+            return false;
+        }
+        if (nanoTime.getAsLong() < lease.deadlineNanos()) {
+            return false;
+        }
+
+        ClusterMetadata next = copyMetadata(metadata);
+        for (TopicEntry topic : next.topics.values()) {
+            for (PartitionEntry partition : topic.partitions) {
+                normalizePartition(next, partition);
+            }
+        }
+        next.brokers.get(brokerId).online = false;
+        for (TopicEntry topic : next.topics.values()) {
+            for (PartitionEntry partition : topic.partitions) {
+                partition.isrBrokerIds.removeIf(id -> id == brokerId);
+                if (partition.leaderBrokerId != brokerId) {
+                    continue;
+                }
+                Integer replacement = preferredSurvivingLeader(next, partition, brokerId);
+                if (replacement == null) {
+                    partition.frozen = true;
+                    partition.isrBrokerIds.clear();
+                } else {
+                    partition.leaderBrokerId = replacement;
+                    partition.frozen = false;
+                }
+            }
+        }
+
+        metadataStore.save(next);
+        metadata = next;
+        brokerLeases.remove(brokerId, lease);
+        return true;
     }
 
     public synchronized ErrorCode createTopic(CreateTopicRequest request) {
@@ -113,14 +236,20 @@ public class ClusterController {
             }
         }
         metadataStore.save(metadata);
+        brokerLeases.remove(brokerId);
         return ErrorCode.NONE;
     }
 
     private Integer preferredSurvivingLeader(PartitionEntry partition, int offlineBrokerId) {
+        return preferredSurvivingLeader(metadata, partition, offlineBrokerId);
+    }
+
+    private Integer preferredSurvivingLeader(
+            ClusterMetadata source, PartitionEntry partition, int offlineBrokerId) {
         Integer selectedBrokerId = null;
         long selectedLeo = Long.MIN_VALUE;
         for (int replicaId : partition.replicaBrokerIds) {
-            BrokerEntry replica = metadata.brokers.get(replicaId);
+            BrokerEntry replica = source.brokers.get(replicaId);
             if (replicaId != offlineBrokerId
                     && partition.isrBrokerIds.contains(replicaId)
                     && replica != null
@@ -133,6 +262,21 @@ public class ClusterController {
             }
         }
         return selectedBrokerId;
+    }
+
+    private long deadlineFrom(long now) {
+        return Math.addExact(now, TimeUnit.MILLISECONDS.toNanos(leaseTimeoutMs));
+    }
+
+    private static void restoreFrozenPartitions(ClusterMetadata metadata, int brokerId) {
+        for (TopicEntry topic : metadata.topics.values()) {
+            for (PartitionEntry partition : topic.partitions) {
+                if (partition.frozen && partition.leaderBrokerId == brokerId) {
+                    partition.frozen = false;
+                    partition.isrBrokerIds = new ArrayList<>(List.of(brokerId));
+                }
+            }
+        }
     }
 
     public synchronized MetadataResponse metadata(MetadataRequest request) {
@@ -257,7 +401,8 @@ public class ClusterController {
                 partition.leaderBrokerId,
                 List.copyOf(partition.replicaBrokerIds),
                 List.copyOf(partition.isrBrokerIds),
-                Map.copyOf(partition.replicaLogEndOffsets));
+                Map.copyOf(partition.replicaLogEndOffsets),
+                partition.frozen);
     }
 
     private void normalizeMetadata() {
@@ -269,6 +414,10 @@ public class ClusterController {
     }
 
     private void normalizePartition(PartitionEntry partition) {
+        normalizePartition(metadata, partition);
+    }
+
+    private void normalizePartition(ClusterMetadata source, PartitionEntry partition) {
         if (partition.replicaBrokerIds == null) {
             partition.replicaBrokerIds = new ArrayList<>();
         }
@@ -281,9 +430,19 @@ public class ClusterController {
         if (partition.replicaBrokerIds.isEmpty()) {
             partition.replicaBrokerIds.add(partition.leaderBrokerId);
         }
+        if (!partition.replicaBrokerIds.contains(partition.leaderBrokerId)) {
+            partition.leaderBrokerId = partition.replicaBrokerIds.get(0);
+        }
+        for (int replicaId : partition.replicaBrokerIds) {
+            partition.replicaLogEndOffsets.putIfAbsent(replicaId, 0L);
+        }
+        if (partition.frozen) {
+            partition.isrBrokerIds.clear();
+            return;
+        }
         if (partition.isrBrokerIds.isEmpty()) {
             for (int replicaId : partition.replicaBrokerIds) {
-                BrokerEntry replica = metadata.brokers.get(replicaId);
+                BrokerEntry replica = source.brokers.get(replicaId);
                 if (replica != null && replica.online) {
                     partition.isrBrokerIds.add(replicaId);
                 }
@@ -293,29 +452,30 @@ public class ClusterController {
             }
         }
         partition.isrBrokerIds.removeIf(replicaId -> {
-            BrokerEntry replica = metadata.brokers.get(replicaId);
+            BrokerEntry replica = source.brokers.get(replicaId);
             return replica == null || !replica.online;
         });
-        if (!partition.replicaBrokerIds.contains(partition.leaderBrokerId)) {
-            partition.leaderBrokerId = partition.replicaBrokerIds.get(0);
-        }
         if (!partition.isrBrokerIds.contains(partition.leaderBrokerId)) {
             partition.isrBrokerIds.add(0, partition.leaderBrokerId);
         }
-        for (int replicaId : partition.replicaBrokerIds) {
-            partition.replicaLogEndOffsets.putIfAbsent(replicaId, 0L);
-        }
-        reconcileIsrByLeo(partition);
+        reconcileIsrByLeo(source, partition);
     }
 
     private boolean reconcileIsrByLeo(PartitionEntry partition) {
+        return reconcileIsrByLeo(metadata, partition);
+    }
+
+    private boolean reconcileIsrByLeo(ClusterMetadata source, PartitionEntry partition) {
+        if (partition.frozen) {
+            return false;
+        }
         List<Integer> before = new ArrayList<>(partition.isrBrokerIds);
         long leaderLeo = partition.replicaLogEndOffsets.getOrDefault(partition.leaderBrokerId, 0L);
         partition.isrBrokerIds.removeIf(replicaId -> {
             if (replicaId == partition.leaderBrokerId) {
                 return false;
             }
-            BrokerEntry replica = metadata.brokers.get(replicaId);
+            BrokerEntry replica = source.brokers.get(replicaId);
             if (replica == null || !replica.online) {
                 return true;
             }
@@ -323,7 +483,7 @@ public class ClusterController {
             return leaderLeo - replicaLeo > ISR_LAG_TOLERANCE_RECORDS;
         });
         for (int replicaId : partition.replicaBrokerIds) {
-            BrokerEntry replica = metadata.brokers.get(replicaId);
+            BrokerEntry replica = source.brokers.get(replicaId);
             if (replica == null || !replica.online || partition.isrBrokerIds.contains(replicaId)) {
                 continue;
             }
@@ -351,6 +511,7 @@ public class ClusterController {
         copy.host = source.host;
         copy.port = source.port;
         copy.online = source.online;
+        copy.brokerEpoch = source.brokerEpoch;
         return copy;
     }
 
@@ -364,6 +525,7 @@ public class ClusterController {
             partitionCopy.replicaBrokerIds = new ArrayList<>(partition.replicaBrokerIds);
             partitionCopy.isrBrokerIds = new ArrayList<>(partition.isrBrokerIds);
             partitionCopy.replicaLogEndOffsets = new java.util.HashMap<>(partition.replicaLogEndOffsets);
+            partitionCopy.frozen = partition.frozen;
             copy.partitions.add(partitionCopy);
         }
         return copy;

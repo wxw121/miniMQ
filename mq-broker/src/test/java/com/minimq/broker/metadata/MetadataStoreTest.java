@@ -360,6 +360,61 @@ class MetadataStoreTest {
     }
 
     @Test
+    void saveAndLoadPreservesBrokerEpochAndFrozenPartition(@TempDir Path dir) {
+        ClusterMetadata metadata = new ClusterMetadata();
+        ClusterMetadata.BrokerEntry broker = new ClusterMetadata.BrokerEntry();
+        broker.brokerId = 0;
+        broker.host = "localhost";
+        broker.port = 9092;
+        broker.online = false;
+        broker.brokerEpoch = 4L;
+        metadata.brokers.put(0, broker);
+
+        ClusterMetadata.TopicEntry topic = new ClusterMetadata.TopicEntry();
+        topic.topicName = "orders";
+        ClusterMetadata.PartitionEntry partition = new ClusterMetadata.PartitionEntry();
+        partition.partitionId = 0;
+        partition.leaderBrokerId = 0;
+        partition.replicaBrokerIds = List.of(0);
+        partition.isrBrokerIds = List.of();
+        partition.replicaLogEndOffsets.put(0, 9L);
+        partition.frozen = true;
+        topic.partitions.add(partition);
+        metadata.topics.put("orders", topic);
+
+        MetadataStore store = new MetadataStore(dir);
+        store.save(metadata);
+        ClusterMetadata loaded = store.load();
+
+        assertEquals(4L, loaded.brokers.get(0).brokerEpoch);
+        assertTrue(loaded.topics.get("orders").partitions.get(0).frozen);
+        assertTrue(loaded.topics.get("orders").partitions.get(0).isrBrokerIds.isEmpty());
+    }
+
+    @Test
+    void loadRejectsFrozenPartitionWithNonEmptyIsr(@TempDir Path dir) throws IOException {
+        assertInvalidMetadata(dir, """
+                {
+                  "brokers": {},
+                  "topics": {
+                    "orders": {
+                      "topicName": "orders",
+                      "partitions": [{
+                        "partitionId": 0,
+                        "leaderBrokerId": 0,
+                        "replicaBrokerIds": [0],
+                        "isrBrokerIds": [0],
+                        "replicaLogEndOffsets": {"0": 0},
+                        "frozen": true
+                      }]
+                    }
+                  },
+                  "consumerGroups": {}
+                }
+                """, "frozen partition must have an empty ISR");
+    }
+
+    @Test
     void loadRejectsInvalidReplicaLogEndOffset(@TempDir Path dir) throws IOException {
         assertInvalidMetadata(dir, """
                 {

@@ -5,13 +5,13 @@
 
 ## 1. Current State / 当前状�?
 
-MiniMQ has released V2.0 storage recovery as `v2.0.0`, tagged V2.1.2 maintenance observability as `v2.1.2-maintenance-observability`, released V2.2 zero-copy FETCH sendfile as `v2.2.0-read-performance` on `2.2.0`, released V2.3 replication as `v2.3.0-replication` on `2.3.0`, released V2.3.1 replication hardening as `v2.3.1-replication-hardening` on `2.3.1`, and released V2.3.2 replica-fetch connection pooling as `v2.3.2-replica-fetch-pooling` on `2.3.2`, and implemented the V2.4.0 maintenance operator interface on `2.4.0`.
+MiniMQ has released V2.0 storage recovery as `v2.0.0`, tagged V2.1.2 maintenance observability as `v2.1.2-maintenance-observability`, released V2.2 zero-copy FETCH sendfile as `v2.2.0-read-performance` on `2.2.0`, released V2.3 replication as `v2.3.0-replication` on `2.3.0`, released V2.3.1 replication hardening as `v2.3.1-replication-hardening` on `2.3.1`, released V2.3.2 replica-fetch connection pooling as `v2.3.2-replica-fetch-pooling` on `2.3.2`, implemented the V2.4.0 maintenance operator interface on `2.4.0`, and is closing out V2.5.0 Broker leases and automatic failover on `2.5.0`.
 
-MiniMQ 已将 V2.0 存储恢复�?`v2.0.0` 发布，已�?V2.1.2 维护可观测性打�?`v2.1.2-maintenance-observability`，已�?V2.2 零拷�?FETCH sendfile �?`v2.2.0-read-performance` 发布�?`2.2.0`，已�?V2.3 副本机制�?`v2.3.0-replication` 发布�?`2.3.0`，并�?`2.3.1` 上实�?V2.3.1 副本机制加固�?
+MiniMQ 已完成 V2.0 至 V2.4.0 的存储、读取、副本与维护能力，并正在 `2.5.0` 上收口 Broker 租约与自动故障转移。
 
-The most important remaining limitation is that replication still depends on a static controller and manual broker-offline operations. Automatic failure detection, ISR lag management, and controller HA remain future work.
+V2.5.0 adds automatic Broker failure detection, self-fencing, ISR shrink, LEO-aware clean election, frozen no-ISR partitions, and higher-epoch Broker recovery. The most important remaining limitations are Controller HA, data-plane Leader epochs, and unclean election.
 
-当前最重要的剩余限制是副本机制仍依赖静�?Controller 与手�?`MARK_BROKER_OFFLINE` 运维操作。自动故障检测、ISR 滞后管理�?Controller 高可用仍属于后续工作�?
+V2.5.0 已增加 Broker 自动故障检测、自我 fencing、ISR 收缩、LEO 感知 clean election、无 ISR 分区冻结和更高 epoch 恢复。当前最重要的剩余限制是 Controller 高可用、数据面 Leader epoch 和 unclean election。
 
 ## 2. Immediate TODOs / 近期代办
 
@@ -40,6 +40,7 @@ The most important remaining limitation is that replication still depends on a s
 | P1 | Released: V2.3.1 replication hardening. | Preferred-order and LEO-aware election, persisted follower LEO, ISR lag shrink/re-expand, sendfile concurrency/failure safety, and focused replica-fetch tests are included in `2.3.1`; connection pooling remains deferred. | Covered by `ClusterControllerTest`, `SegmentFileTest`, `FetchResponseWriterTest`, `LeaderReplicaClientTest`, `ReplicaFetcherTest`, `EmbeddedBrokerChannelTest`, and `docs/test-report-2026-07-18-v2.3.1-replication-hardening.md`. |
 | P1 | Completed: V2.3.2 replica-fetch connection pooling. | `ReplicaFetcher` now reuses `LeaderReplicaClient` connections and a shared Netty event loop per leader broker instead of creating one TCP connection and `NioEventLoopGroup` per partition per loop. | Covered by `ReplicaConnectionPoolTest`, `LeaderReplicaClientTest`, `ReplicaFetcherTest`, focused `ReplicationIntegrationTest` regression coverage, and `docs/test-report-2026-07-18-v2.3.2-replica-fetch-pooling.md`. |
 | P1 | Implemented: V2.4.0 maintenance operator interface. | Broker admin APIs 13-15 expose maintenance preview, execution, and metrics; the Demo CLI renders reports and per-segment actions. | Covered by `ProtocolSerdesTest`, `EmbeddedBrokerChannelTest`, `DemoCliTest`, and `docs/test-report-2026-07-19-v2.4.0-maintenance-ops.md`. |
+| P0 | Implemented: V2.5.0 Broker leases and automatic failover. | Brokers self-fence before Controller lease expiry; the Controller performs clean LEO-aware ISR election, freezes partitions without an online ISR, and accepts higher-epoch recovery. | Covered by lease service/monitor/guard tests, controller and metadata tests, client retry tests, and real TCP `ReplicationIntegrationTest` isolation scenarios. |
 
 ## 3. Version Roadmap / 版本路线�?
 
@@ -85,6 +86,9 @@ timeline
     V2.4 Maintenance Operations : Admin protocol
                                 : Preview and run commands
                                 : Maintenance metrics CLI
+    V2.5 Broker Leases : Broker heartbeat and epoch
+                       : Self-fencing before lease expiry
+                       : Automatic clean Leader failover
     V3.0 Control Plane HA / V3.0 控制面高可用 : Zookeeper or etcd discovery / Zookeeper �?etcd 服务发现
                                                 : Controller election / Controller 选举
                                                 : Epoch fencing / Epoch 防旧主写�?
@@ -303,6 +307,18 @@ V2.4.0 exposes the existing storage maintenance boundary to operators without re
 4. Reports include status, aggregate counters, and per-segment action, partition, offset range, and bytes.
 5. Protocol, service, embedded handler, and real TCP integration tests cover authorization plus enabled retention and compaction actions.
 
+### 3.6.3 V2.5.0 Broker Leases And Automatic Failover
+
+V2.5.0 removes the normal-path dependency on manual `MARK_BROKER_OFFLINE` operations while keeping one static Controller:
+
+1. `REGISTER_BROKER` returns a persisted, monotonically increasing `brokerEpoch`; API 16 `BROKER_HEARTBEAT` renews that epoch's lease.
+2. Brokers enforce `heartbeat interval < self-fence timeout < Controller lease timeout` and stop data, replication, and destructive maintenance work when fenced.
+3. Lease expiry removes the Broker from ISR and elects the highest-LEO online ISR replica, using replica order as the deterministic tie-breaker.
+4. A partition with no online ISR is persisted as frozen and keeps its original Leader ID; only that Broker returning with a higher epoch can unfreeze it.
+5. Producer and Consumer invalidate the fenced Broker connection, refresh metadata once, and retry once after `BROKER_FENCED`.
+6. Unit, embedded-channel, and real TCP isolation tests cover stale epochs, fencing order, clean election, frozen recovery, and bounded resource cleanup.
+
+Remaining limitations: Controller HA, data-plane Leader epoch validation, unclean election, and automatic failover log truncation.
 ### 3.7 V3.0 Control Plane HA And Service Discovery / V3.0 控制面高可用与服务发�?
 
 The current controller is static. V3.0 should introduce a production-style discovery and election layer after replicas and leader failover exist. Prefer one backend first, such as etcd or Zookeeper, instead of implementing both at the same time.
@@ -409,15 +425,17 @@ For a new agent session, the most productive next tasks are:
 
 对新 agent 会话，最建议继续做：
 
-1. Design V3.0 broker leases, controller election, and epoch fencing around one discovery backend.
-2. Keep circuit breaker, Epoll, and mmap in later productionization versions.
+1. Design V3.0 Controller HA and Controller epoch fencing around one discovery backend, reusing the V2.5.0 Broker lease semantics.
+2. Add data-plane Leader epochs before considering unclean election or automatic failover log truncation.
+3. Keep circuit breaker, Epoll, and mmap in later productionization versions.
 
 ## 6. Risk Register / 风险登记�?
 
 | Risk / 风险 | Impact / 影响 | Mitigation / 缓解 |
 | --- | --- | --- |
 | Static controller failure / 静�?Controller 故障 | Cluster control-plane unavailable. / 集群控制面不可用�?| Add controller election. / 增加 Controller 选举�?|
-| Single replica partition / 单副本分�?| Data unavailable/lost if broker fails. / Broker 故障时数据不可用或丢失�?| Add replication and ISR. / 增加副本�?ISR�?|
+| Single-replica or no-online-ISR partition / 单副本或无在线 ISR 分区 | Partition freezes after Broker lease expiry; availability is not restored by unsafe election. / Broker 租约过期后分区冻结，不会通过不安全选主恢复可用。 | Restore the original Broker with its data directory and a higher epoch, or provision replicated topics before failure. / 使用原数据目录和更高 epoch 恢复原 Broker，或在故障前为 Topic 配置副本。 |
+| Stale data-plane Leader / 过期数据面 Leader | Requests do not yet carry a Leader epoch, so fencing relies on Broker lease state and metadata refresh. / 请求尚未携带 Leader epoch，fencing 依赖 Broker 租约状态和元数据刷新。 | Add Leader epoch fields and reject stale reads/writes before implementing unclean election. / 增加 Leader epoch 字段并拒绝过期读写，再考虑 unclean election。 |
 | Completed: authenticated operator access to maintenance reports | V2.4.0 exposes token-protected preview, execution, metrics, and per-segment actions over admin APIs and single-target CLI commands. | Keep the shared admin token secret, keep destructive maintenance opt-in, and inspect dry-run output first. |
 | Synchronous clients / 同步客户�?| Limited throughput. / 吞吐受限�?| Add batching and async APIs. / 增加批量发送和异步 API�?|
 | JSON metadata overwrite / JSON 元数据覆盖写 | Possible corruption on crash. / 崩溃时可能损坏�?| Write temp file then atomic move; add checksums. / 先写临时文件再原子移动，并增加校验和�?|

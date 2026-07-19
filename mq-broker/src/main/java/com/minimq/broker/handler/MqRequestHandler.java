@@ -1,6 +1,7 @@
 package com.minimq.broker.handler;
 
 import com.minimq.broker.BrokerConfig;
+import com.minimq.broker.BrokerAvailabilityGuard;
 import com.minimq.broker.FetchTransferMetrics;
 import com.minimq.broker.MetadataSync;
 import com.minimq.broker.MaintenanceAdminService;
@@ -44,6 +45,7 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     private final ReplicaLeoReporter replicaLeoReporter;
     private final FetchResponseWriter fetchResponseWriter;
     private final MaintenanceAdminService maintenanceAdminService;
+    private final BrokerAvailabilityGuard availabilityGuard;
 
     public MqRequestHandler(
             BrokerConfig config,
@@ -56,9 +58,26 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 clusterController,
                 groupCoordinator,
                 partitionManager,
+                activeGuard(),
+                maintenanceAdminService);
+    }
+
+    public MqRequestHandler(
+            BrokerConfig config,
+            ClusterController clusterController,
+            GroupCoordinator groupCoordinator,
+            PartitionManager partitionManager,
+            BrokerAvailabilityGuard availabilityGuard,
+            MaintenanceAdminService maintenanceAdminService) {
+        this(
+                config,
+                clusterController,
+                groupCoordinator,
+                partitionManager,
                 new ReplicaStateManager(),
                 new FetchTransferMetrics(),
-                new ReplicaLeoReporter(config, clusterController),
+                new ReplicaLeoReporter(config, clusterController, availabilityGuard),
+                availabilityGuard,
                 maintenanceAdminService);
     }
 
@@ -71,6 +90,28 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             FetchTransferMetrics fetchTransferMetrics,
             ReplicaLeoReporter replicaLeoReporter,
             MaintenanceAdminService maintenanceAdminService) {
+        this(
+                config,
+                clusterController,
+                groupCoordinator,
+                partitionManager,
+                replicaStateManager,
+                fetchTransferMetrics,
+                replicaLeoReporter,
+                activeGuard(),
+                maintenanceAdminService);
+    }
+
+    public MqRequestHandler(
+            BrokerConfig config,
+            ClusterController clusterController,
+            GroupCoordinator groupCoordinator,
+            PartitionManager partitionManager,
+            ReplicaStateManager replicaStateManager,
+            FetchTransferMetrics fetchTransferMetrics,
+            ReplicaLeoReporter replicaLeoReporter,
+            BrokerAvailabilityGuard availabilityGuard,
+            MaintenanceAdminService maintenanceAdminService) {
         this.config = config;
         this.replicaLeoReporter = replicaLeoReporter;
         this.clusterController = clusterController;
@@ -79,6 +120,7 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         this.replicaStateManager = replicaStateManager;
         this.fetchResponseWriter = new FetchResponseWriter(config, fetchTransferMetrics);
         this.maintenanceAdminService = maintenanceAdminService;
+        this.availabilityGuard = availabilityGuard;
     }
 
     @Override
@@ -105,9 +147,15 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 }
                 case ApiKeys.REGISTER_BROKER -> {
                     ensureController();
-                    errorCode = clusterController.registerBroker((RegisterBrokerRequest) requestBody);
+                    var result = clusterController.registerBroker((RegisterBrokerRequest) requestBody);
+                    errorCode = result.errorCode();
+                    responseBody = result.response();
+                }
+                case ApiKeys.BROKER_HEARTBEAT -> {
+                    ensureController();
+                    errorCode = clusterController.heartbeatBroker((BrokerHeartbeatRequest) requestBody);
                     if (errorCode == ErrorCode.NONE) {
-                        responseBody = new RegisterBrokerResponse();
+                        responseBody = new BrokerHeartbeatResponse();
                     }
                 }
                 case ApiKeys.MARK_BROKER_OFFLINE -> {
@@ -132,14 +180,20 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 }
                 case ApiKeys.PRODUCE -> {
                     ProduceRequest request = (ProduceRequest) requestBody;
-                    errorCode = ensureLeader(request.topicName(), request.partitionId());
+                    errorCode = requireActiveDataPlane();
+                    if (errorCode == ErrorCode.NONE) {
+                        errorCode = ensureLeader(request.topicName(), request.partitionId());
+                    }
                     if (errorCode == ErrorCode.NONE) {
                         responseBody = handleProduce(request);
                     }
                 }
                 case ApiKeys.FETCH -> {
                     FetchRequest request = (FetchRequest) requestBody;
-                    errorCode = ensureLeader(request.topicName(), request.partitionId());
+                    errorCode = requireActiveDataPlane();
+                    if (errorCode == ErrorCode.NONE) {
+                        errorCode = ensureLeader(request.topicName(), request.partitionId());
+                    }
                     if (errorCode == ErrorCode.NONE) {
                         PartitionLog partitionLog =
                                 partitionManager.getOrCreate(request.topicName(), request.partitionId());
@@ -154,7 +208,10 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 }
                 case ApiKeys.REPLICA_FETCH -> {
                     ReplicaFetchRequest request = (ReplicaFetchRequest) requestBody;
-                    errorCode = handleReplicaFetch(request);
+                    errorCode = requireActiveDataPlane();
+                    if (errorCode == ErrorCode.NONE) {
+                        errorCode = handleReplicaFetch(request);
+                    }
                     if (errorCode == ErrorCode.NONE) {
                         responseBody = buildReplicaFetchResponse(request);
                     }
@@ -192,10 +249,14 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                     return;
                 }
                 case ApiKeys.MAINTENANCE_RUN -> {
-                    MaintenanceRunRequest request = (MaintenanceRunRequest) requestBody;
-                    writeAsyncMaintenanceReport(
-                            ctx, header, maintenanceAdminService.run(request.adminToken()));
-                    return;
+                    if (!availabilityGuard.allowsMaintenanceRun()) {
+                        errorCode = availabilityGuard.rejectionError();
+                    } else {
+                        MaintenanceRunRequest request = (MaintenanceRunRequest) requestBody;
+                        writeAsyncMaintenanceReport(
+                                ctx, header, maintenanceAdminService.run(request.adminToken()));
+                        return;
+                    }
                 }
                 case ApiKeys.MAINTENANCE_METRICS -> {
                     MaintenanceMetricsRequest request = (MaintenanceMetricsRequest) requestBody;
@@ -234,6 +295,18 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                     : null;
             writeResponse(ctx, header.correlationId(), result.errorCode(), body);
         }));
+    }
+
+    private ErrorCode requireActiveDataPlane() {
+        return availabilityGuard.allowsDataPlane()
+                ? ErrorCode.NONE
+                : availabilityGuard.rejectionError();
+    }
+
+    private static BrokerAvailabilityGuard activeGuard() {
+        BrokerAvailabilityGuard guard = new BrokerAvailabilityGuard();
+        guard.activate();
+        return guard;
     }
 
     private static void writeResponse(
@@ -365,7 +438,7 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         int leaderId = clusterController.getLeaderBrokerId(topicName, partitionId);
         if (leaderId < 0 && !config.controller()) {
             try {
-                MetadataSync.registerAndSync(config, clusterController);
+                MetadataSync.refresh(config, clusterController);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return ErrorCode.INVALID_REQUEST;
@@ -385,7 +458,7 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             if (!config.controller()
                     && clusterController.isReplica(topicName, partitionId, config.brokerId())) {
                 try {
-                    MetadataSync.registerAndSync(config, clusterController);
+                    MetadataSync.refresh(config, clusterController);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     return ErrorCode.INVALID_REQUEST;

@@ -37,6 +37,9 @@ class BrokerConfigTest {
                 "--maintenance-every-n-appends", "12",
                 "--fetch-transfer-mode", "heap",
                 "--fetch-transfer-timeout-ms", "2500",
+                "--broker-heartbeat-interval-ms", "100",
+                "--broker-self-fence-timeout-ms", "300",
+                "--controller-broker-lease-timeout-ms", "500",
                 "--admin-token", "ops-secret"
         });
 
@@ -62,6 +65,9 @@ class BrokerConfigTest {
         assertEquals(12, config.maintenanceEveryNAppends());
         assertEquals(FetchTransferMode.HEAP, config.fetchTransferMode());
         assertEquals(2_500, config.fetchTransferTimeoutMs());
+        assertEquals(100, config.brokerHeartbeatIntervalMs());
+        assertEquals(300, config.brokerSelfFenceTimeoutMs());
+        assertEquals(500, config.controllerBrokerLeaseTimeoutMs());
         assertEquals("ops-secret", config.adminToken());
     }
 
@@ -71,6 +77,9 @@ class BrokerConfigTest {
                 0, "localhost", 9092, Path.of("./data"), true, "localhost", 9092, false, "ops-secret");
         assertEquals(FetchTransferMode.AUTO, config.fetchTransferMode());
         assertEquals(30_000, config.fetchTransferTimeoutMs());
+        assertEquals(1_000, config.brokerHeartbeatIntervalMs());
+        assertEquals(3_000, config.brokerSelfFenceTimeoutMs());
+        assertEquals(5_000, config.controllerBrokerLeaseTimeoutMs());
     }
 
     @Test
@@ -125,5 +134,25 @@ class BrokerConfigTest {
                 () -> BrokerConfig.parse(new String[] {"--fetch-transfer-timeout-ms", "0"}));
         assertThrows(IllegalArgumentException.class,
                 () -> BrokerConfig.parse(new String[] {"--fetch-transfer-timeout-ms", "-1"}));
+    }
+
+    @Test
+    void rejectsInvalidBrokerLeaseTiming() {
+        assertInvalidLeaseArgs("--broker-heartbeat-interval-ms", "0");
+        assertInvalidLeaseArgs("--broker-self-fence-timeout-ms", "-1");
+        assertInvalidLeaseArgs(
+                "--broker-heartbeat-interval-ms", "300",
+                "--broker-self-fence-timeout-ms", "300");
+        assertInvalidLeaseArgs(
+                "--broker-self-fence-timeout-ms", "500",
+                "--controller-broker-lease-timeout-ms", "500");
+    }
+
+    private static void assertInvalidLeaseArgs(String... leaseArgs) {
+        String[] args = new String[leaseArgs.length + 2];
+        System.arraycopy(leaseArgs, 0, args, 0, leaseArgs.length);
+        args[args.length - 2] = "--admin-token";
+        args[args.length - 1] = "ops-secret";
+        assertThrows(IllegalArgumentException.class, () -> BrokerConfig.parse(args));
     }
 }

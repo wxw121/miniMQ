@@ -1,6 +1,7 @@
 package com.minimq.broker.replication;
 
 import com.minimq.broker.BrokerConfig;
+import com.minimq.broker.BrokerAvailabilityGuard;
 import com.minimq.broker.controller.ClusterController;
 import com.minimq.broker.metadata.MetadataStore;
 import com.minimq.broker.support.BrokerTestHarness;
@@ -169,6 +170,29 @@ class ReplicaLeoReporterTest {
             if (controller != null) {
                 controller.close();
             }
+        }
+    }
+
+    @Test
+    void fencedReporterRejectsBeforeOpeningControllerConnection() throws Exception {
+        BrokerConfig config = new BrokerConfig(
+                1,
+                "127.0.0.1",
+                9093,
+                tempDir.resolve("fenced-reporter"),
+                false,
+                "127.0.0.1",
+                1,
+                false,
+                BrokerTestHarness.ADMIN_TOKEN);
+        BrokerAvailabilityGuard guard = new BrokerAvailabilityGuard();
+        guard.fence();
+
+        try (ReplicaLeoReporter reporter = new ReplicaLeoReporter(
+                config,
+                new ClusterController(new MetadataStore(tempDir.resolve("fenced-metadata"))),
+                guard)) {
+            assertEquals(ErrorCode.BROKER_FENCED, reporter.report("orders", 0, 1, 9L));
         }
     }
 }

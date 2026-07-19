@@ -9,7 +9,9 @@ import com.minimq.protocol.codec.MqEncoder;
 import com.minimq.protocol.message.MqRequestHeader;
 import com.minimq.protocol.message.ProtocolMessages.MetadataRequest;
 import com.minimq.protocol.message.ProtocolMessages.MetadataResponse;
+import com.minimq.protocol.message.ProtocolMessages.BrokerHeartbeatRequest;
 import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
+import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerResponse;
 import com.minimq.protocol.message.ProtocolMessages.UpdateReplicaLeoRequest;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
@@ -32,6 +34,13 @@ public class ControllerClient implements AutoCloseable {
     private final ArrayBlockingQueue<ByteBuf> responses = new ArrayBlockingQueue<>(16);
 
     public void connect(String host, int port) throws InterruptedException {
+        connect(host, port, TimeUnit.SECONDS.toMillis(5));
+    }
+
+    public void connect(String host, int port, long timeoutMs) throws InterruptedException {
+        if (timeoutMs <= 0) {
+            throw new IllegalArgumentException("Controller connect timeout must be positive");
+        }
         Bootstrap bootstrap = new Bootstrap()
                 .group(group)
                 .channel(NioSocketChannel.class)
@@ -49,15 +58,37 @@ public class ControllerClient implements AutoCloseable {
                         }, new MqEncoder());
                     }
                 });
-        channel = bootstrap.connect(host, port).sync().channel();
+        ChannelFuture connectFuture = bootstrap.connect(host, port);
+        if (!connectFuture.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+            connectFuture.cancel(false);
+            connectFuture.channel().close();
+            throw new IllegalStateException("Timeout connecting to Controller");
+        }
+        if (!connectFuture.isSuccess()) {
+            throw new IllegalStateException("Failed to connect to Controller", connectFuture.cause());
+        }
+        channel = connectFuture.channel();
     }
 
-    public void registerBroker(RegisterBrokerRequest request) throws InterruptedException {
+    public synchronized RegisterBrokerResponse registerBroker(RegisterBrokerRequest request)
+            throws InterruptedException {
         send(ApiKeys.REGISTER_BROKER, request);
-        ensureSuccess(awaitResponse(ApiKeys.REGISTER_BROKER));
+        MqDecoder.DecodedResponse response = awaitResponse(ApiKeys.REGISTER_BROKER);
+        ensureSuccess(response);
+        return (RegisterBrokerResponse) response.body();
     }
 
-    public MetadataResponse fetchMetadata() throws InterruptedException {
+    public synchronized void heartbeatBroker(BrokerHeartbeatRequest request) throws InterruptedException {
+        heartbeatBroker(request, TimeUnit.SECONDS.toMillis(5));
+    }
+
+    public synchronized void heartbeatBroker(BrokerHeartbeatRequest request, long responseTimeoutMs)
+            throws InterruptedException {
+        send(ApiKeys.BROKER_HEARTBEAT, request);
+        ensureSuccess(awaitResponse(ApiKeys.BROKER_HEARTBEAT, responseTimeoutMs, TimeUnit.MILLISECONDS));
+    }
+
+    public synchronized MetadataResponse fetchMetadata() throws InterruptedException {
         send(ApiKeys.METADATA, new MetadataRequest(""));
         MqDecoder.DecodedResponse decoded = awaitResponse(ApiKeys.METADATA);
         ensureSuccess(decoded);
@@ -75,7 +106,12 @@ public class ControllerClient implements AutoCloseable {
     }
 
     private MqDecoder.DecodedResponse awaitResponse(short apiKey) throws InterruptedException {
-        ByteBuf payload = responses.poll(5, TimeUnit.SECONDS);
+        return awaitResponse(apiKey, 5, TimeUnit.SECONDS);
+    }
+
+    private MqDecoder.DecodedResponse awaitResponse(short apiKey, long timeout, TimeUnit unit)
+            throws InterruptedException {
+        ByteBuf payload = responses.poll(timeout, unit);
         if (payload == null) {
             throw new IllegalStateException("Timeout waiting for response");
         }
@@ -89,15 +125,44 @@ public class ControllerClient implements AutoCloseable {
     private void ensureSuccess(MqDecoder.DecodedResponse response) {
         MqResponseHeader header = response.header();
         if (header.errorCode() != ErrorCode.NONE) {
-            throw new IllegalStateException("Controller request failed: " + header.errorCode());
+            throw new ControllerRequestException(header.errorCode());
+        }
+    }
+
+    public static final class ControllerRequestException extends IllegalStateException {
+        private final ErrorCode errorCode;
+
+        ControllerRequestException(ErrorCode errorCode) {
+            super("Controller request failed: " + errorCode);
+            this.errorCode = errorCode;
+        }
+
+        public ErrorCode errorCode() {
+            return errorCode;
         }
     }
 
     @Override
     public void close() throws InterruptedException {
-        if (channel != null) {
-            channel.close().sync();
+        close(TimeUnit.SECONDS.toMillis(5));
+    }
+
+    public void close(long timeoutMs) throws InterruptedException {
+        if (timeoutMs <= 0) {
+            throw new IllegalArgumentException("Controller close timeout must be positive");
         }
-        group.shutdownGracefully().sync();
+        long timeoutNanos = TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+        long startedNanos = System.nanoTime();
+        if (channel != null) {
+            channel.close().await(timeoutNanos, TimeUnit.NANOSECONDS);
+        }
+        long remainingNanos = timeoutNanos - (System.nanoTime() - startedNanos);
+        var shutdown = group.shutdownGracefully(
+                0L,
+                Math.max(1L, remainingNanos),
+                TimeUnit.NANOSECONDS);
+        if (remainingNanos > 0) {
+            shutdown.await(remainingNanos, TimeUnit.NANOSECONDS);
+        }
     }
 }

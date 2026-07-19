@@ -30,9 +30,10 @@ public final class ProtocolMessages {
             int leaderBrokerId,
             List<Integer> replicaBrokerIds,
             List<Integer> isrBrokerIds,
-            Map<Integer, Long> replicaLogEndOffsets) {
+            Map<Integer, Long> replicaLogEndOffsets,
+            boolean frozen) {
         public PartitionMetadata(int partitionId, int leaderBrokerId) {
-            this(partitionId, leaderBrokerId, List.of(leaderBrokerId), List.of(leaderBrokerId), Map.of());
+            this(partitionId, leaderBrokerId, List.of(leaderBrokerId), List.of(leaderBrokerId), Map.of(), false);
         }
 
         public PartitionMetadata(
@@ -40,7 +41,16 @@ public final class ProtocolMessages {
                 int leaderBrokerId,
                 List<Integer> replicaBrokerIds,
                 List<Integer> isrBrokerIds) {
-            this(partitionId, leaderBrokerId, replicaBrokerIds, isrBrokerIds, Map.of());
+            this(partitionId, leaderBrokerId, replicaBrokerIds, isrBrokerIds, Map.of(), false);
+        }
+
+        public PartitionMetadata(
+                int partitionId,
+                int leaderBrokerId,
+                List<Integer> replicaBrokerIds,
+                List<Integer> isrBrokerIds,
+                Map<Integer, Long> replicaLogEndOffsets) {
+            this(partitionId, leaderBrokerId, replicaBrokerIds, isrBrokerIds, replicaLogEndOffsets, false);
         }
     }
 
@@ -109,7 +119,16 @@ public final class ProtocolMessages {
     public record RegisterBrokerRequest(int brokerId, String host, int port) {
     }
 
-    public record RegisterBrokerResponse() {
+    public record RegisterBrokerResponse(long brokerEpoch, long leaseTimeoutMs) {
+        public RegisterBrokerResponse() {
+            this(0L, 0L);
+        }
+    }
+
+    public record BrokerHeartbeatRequest(int brokerId, long brokerEpoch) {
+    }
+
+    public record BrokerHeartbeatResponse() {
     }
 
     public record ReplicaFetchRequest(

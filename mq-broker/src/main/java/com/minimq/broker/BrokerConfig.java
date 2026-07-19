@@ -31,12 +31,18 @@ public record BrokerConfig(
         int maintenanceEveryNAppends,
         FetchTransferMode fetchTransferMode,
         long fetchTransferTimeoutMs,
+        long brokerHeartbeatIntervalMs,
+        long brokerSelfFenceTimeoutMs,
+        long controllerBrokerLeaseTimeoutMs,
         String adminToken) {
 
     public static final int DEFAULT_COMPACTION_MAX_SEGMENTS = 4;
     public static final int MAINTENANCE_WINDOW_DISABLED = -1;
     public static final FetchTransferMode DEFAULT_FETCH_TRANSFER_MODE = FetchTransferMode.AUTO;
     public static final long DEFAULT_FETCH_TRANSFER_TIMEOUT_MS = 30_000;
+    public static final long DEFAULT_BROKER_HEARTBEAT_INTERVAL_MS = 1_000L;
+    public static final long DEFAULT_BROKER_SELF_FENCE_TIMEOUT_MS = 3_000L;
+    public static final long DEFAULT_CONTROLLER_BROKER_LEASE_TIMEOUT_MS = 5_000L;
 
     public BrokerConfig(
             int brokerId,
@@ -74,6 +80,59 @@ public record BrokerConfig(
                 adminToken);
     }
 
+    public BrokerConfig(
+            int brokerId,
+            String host,
+            int port,
+            Path dataDir,
+            boolean controller,
+            String controllerHost,
+            int controllerPort,
+            boolean recoverCorruptMetadata,
+            FlushPolicy flushPolicy,
+            int checkpointEveryNAppends,
+            long segmentMaxBytes,
+            int sparseIndexIntervalRecords,
+            long retentionMs,
+            long retentionBytes,
+            boolean compactionEnabled,
+            int compactionMaxSegments,
+            long compactionMaxBytes,
+            int maintenanceWindowStartHour,
+            int maintenanceWindowEndHour,
+            int maintenanceEveryNAppends,
+            FetchTransferMode fetchTransferMode,
+            long fetchTransferTimeoutMs,
+            String adminToken) {
+        this(
+                brokerId,
+                host,
+                port,
+                dataDir,
+                controller,
+                controllerHost,
+                controllerPort,
+                recoverCorruptMetadata,
+                flushPolicy,
+                checkpointEveryNAppends,
+                segmentMaxBytes,
+                sparseIndexIntervalRecords,
+                retentionMs,
+                retentionBytes,
+                compactionEnabled,
+                compactionMaxSegments,
+                compactionMaxBytes,
+                maintenanceWindowStartHour,
+                maintenanceWindowEndHour,
+                maintenanceEveryNAppends,
+                fetchTransferMode,
+                fetchTransferTimeoutMs,
+                DEFAULT_BROKER_HEARTBEAT_INTERVAL_MS,
+                DEFAULT_BROKER_SELF_FENCE_TIMEOUT_MS,
+                DEFAULT_CONTROLLER_BROKER_LEASE_TIMEOUT_MS,
+                adminToken);
+    }
+
     public static BrokerConfig parse(String[] args) {
         int brokerId = 0;
         String host = "localhost";
@@ -99,6 +158,9 @@ public record BrokerConfig(
         int maintenanceEveryNAppends = 0;
         FetchTransferMode fetchTransferMode = DEFAULT_FETCH_TRANSFER_MODE;
         long fetchTransferTimeoutMs = DEFAULT_FETCH_TRANSFER_TIMEOUT_MS;
+        long brokerHeartbeatIntervalMs = DEFAULT_BROKER_HEARTBEAT_INTERVAL_MS;
+        long brokerSelfFenceTimeoutMs = DEFAULT_BROKER_SELF_FENCE_TIMEOUT_MS;
+        long controllerBrokerLeaseTimeoutMs = DEFAULT_CONTROLLER_BROKER_LEASE_TIMEOUT_MS;
         String adminToken = null;
 
         for (int i = 0; i < args.length; i++) {
@@ -151,6 +213,18 @@ public record BrokerConfig(
                         parsePositiveLong(
                                 value(args, ++i, "--fetch-transfer-timeout-ms"),
                                 "--fetch-transfer-timeout-ms");
+                case "--broker-heartbeat-interval-ms" -> brokerHeartbeatIntervalMs =
+                        parsePositiveLong(
+                                value(args, ++i, "--broker-heartbeat-interval-ms"),
+                                "--broker-heartbeat-interval-ms");
+                case "--broker-self-fence-timeout-ms" -> brokerSelfFenceTimeoutMs =
+                        parsePositiveLong(
+                                value(args, ++i, "--broker-self-fence-timeout-ms"),
+                                "--broker-self-fence-timeout-ms");
+                case "--controller-broker-lease-timeout-ms" -> controllerBrokerLeaseTimeoutMs =
+                        parsePositiveLong(
+                                value(args, ++i, "--controller-broker-lease-timeout-ms"),
+                                "--controller-broker-lease-timeout-ms");
                 case "--admin-token" -> adminToken = value(args, ++i, "--admin-token");
                 case "--controller-addr" -> {
                     String[] parts = value(args, ++i, "--controller-addr").split(":", 2);
@@ -164,6 +238,10 @@ public record BrokerConfig(
             }
         }
         validateMaintenanceWindowPair(maintenanceWindowStartHour, maintenanceWindowEndHour);
+        validateBrokerLeaseTiming(
+                brokerHeartbeatIntervalMs,
+                brokerSelfFenceTimeoutMs,
+                controllerBrokerLeaseTimeoutMs);
         if (adminToken == null || adminToken.isBlank()) {
             throw new IllegalArgumentException("--admin-token is required and must not be blank");
         }
@@ -190,6 +268,9 @@ public record BrokerConfig(
                 maintenanceEveryNAppends,
                 fetchTransferMode,
                 fetchTransferTimeoutMs,
+                brokerHeartbeatIntervalMs,
+                brokerSelfFenceTimeoutMs,
+                controllerBrokerLeaseTimeoutMs,
                 adminToken);
     }
 
@@ -224,6 +305,13 @@ public record BrokerConfig(
             throw new IllegalArgumentException(name + " must be positive");
         }
         return parsed;
+    }
+
+    private static void validateBrokerLeaseTiming(long heartbeatMs, long selfFenceMs, long leaseMs) {
+        if (heartbeatMs >= selfFenceMs || selfFenceMs >= leaseMs) {
+            throw new IllegalArgumentException(
+                    "broker lease timing must satisfy heartbeat < self-fence < controller lease");
+        }
     }
 
     private static int parseNonNegativeInt(String value, String name) {

@@ -18,6 +18,7 @@ public class ClusterMetadata {
         public String host;
         public int port;
         public boolean online;
+        public long brokerEpoch;
     }
 
     public static class TopicEntry {
@@ -31,6 +32,7 @@ public class ClusterMetadata {
         public List<Integer> replicaBrokerIds = new ArrayList<>();
         public List<Integer> isrBrokerIds = new ArrayList<>();
         public Map<Integer, Long> replicaLogEndOffsets = new HashMap<>();
+        public boolean frozen;
     }
 
     public static class ConsumerGroupEntry {
