@@ -119,6 +119,9 @@ public final class ProtocolSerdes {
                     payload.readInt(),
                     payload.readInt(),
                     payload.readLong());
+            case ApiKeys.MAINTENANCE_REPORT -> new MaintenanceReportRequest();
+            case ApiKeys.MAINTENANCE_RUN -> new MaintenanceRunRequest();
+            case ApiKeys.MAINTENANCE_METRICS -> new MaintenanceMetricsRequest();
             default -> throw new IllegalArgumentException("Unknown apiKey: " + apiKey);
         };
     }
@@ -146,6 +149,8 @@ public final class ProtocolSerdes {
             case ApiKeys.REPLICA_FETCH -> decodeReplicaFetchResponse(payload);
             case ApiKeys.MARK_BROKER_OFFLINE -> new MarkBrokerOfflineResponse();
             case ApiKeys.UPDATE_REPLICA_LEO -> new UpdateReplicaLeoResponse();
+            case ApiKeys.MAINTENANCE_REPORT, ApiKeys.MAINTENANCE_RUN -> decodeMaintenanceReportResponse(payload);
+            case ApiKeys.MAINTENANCE_METRICS -> decodeMaintenanceMetricsResponse(payload);
             default -> throw new IllegalArgumentException("Unknown apiKey: " + apiKey);
         };
     }
@@ -213,6 +218,9 @@ public final class ProtocolSerdes {
                 buf.writeInt(req.replicaBrokerId());
                 buf.writeLong(req.logEndOffset());
             }
+            case ApiKeys.MAINTENANCE_REPORT, ApiKeys.MAINTENANCE_RUN, ApiKeys.MAINTENANCE_METRICS -> {
+                // Empty admin request body; apiKey carries the operation.
+            }
             default -> throw new IllegalArgumentException("Unknown apiKey: " + apiKey);
         }
     }
@@ -239,6 +247,10 @@ public final class ProtocolSerdes {
             buf.writeLong(res.offset());
         } else if (body instanceof ReplicaFetchResponse res) {
             writeReplicaFetchResponse(buf, res);
+        } else if (body instanceof MaintenanceReportResponse res) {
+            writeMaintenanceReportResponse(buf, res);
+        } else if (body instanceof MaintenanceMetricsResponse res) {
+            writeMaintenanceMetricsResponse(buf, res);
         }
     }
 
@@ -344,6 +356,92 @@ public final class ProtocolSerdes {
                 writeReplicaLogEndOffsets(buf, partition.replicaLogEndOffsets());
             }
         }
+    }
+
+    private static MaintenanceReportResponse decodeMaintenanceReportResponse(ByteBuf buf) {
+        requireReadable(buf, 1, "maintenance report dry-run flag");
+        boolean dryRun = buf.readBoolean();
+        String status = ByteBufSerde.readString(buf);
+        int count = readItemCount(buf, "maintenance segment reports");
+        List<MaintenanceSegmentInfo> segments = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            String partition = ByteBufSerde.readString(buf);
+            String action = ByteBufSerde.readString(buf);
+            requireReadable(buf, Long.BYTES * 4, "maintenance segment report");
+            segments.add(new MaintenanceSegmentInfo(
+                    partition,
+                    action,
+                    buf.readLong(),
+                    buf.readLong(),
+                    buf.readLong(),
+                    buf.readLong()));
+        }
+        requireReadable(buf, Long.BYTES * 6, "maintenance report counters");
+        return new MaintenanceReportResponse(
+                dryRun,
+                status,
+                segments,
+                buf.readLong(),
+                buf.readLong(),
+                buf.readLong(),
+                buf.readLong(),
+                buf.readLong(),
+                buf.readLong());
+    }
+
+    private static void writeMaintenanceReportResponse(ByteBuf buf, MaintenanceReportResponse res) {
+        buf.writeBoolean(res.dryRun());
+        ByteBufSerde.writeString(buf, res.status());
+        writeItemCount(buf, res.segmentReports().size(), "maintenance segment reports");
+        for (MaintenanceSegmentInfo segment : res.segmentReports()) {
+            ByteBufSerde.writeString(buf, segment.partition());
+            ByteBufSerde.writeString(buf, segment.action());
+            buf.writeLong(segment.baseOffset());
+            buf.writeLong(segment.firstOffset());
+            buf.writeLong(segment.lastOffset());
+            buf.writeLong(segment.sizeBytes());
+        }
+        buf.writeLong(res.skippedDueToReaders());
+        buf.writeLong(res.cleanupFailures());
+        buf.writeLong(res.deletedBytes());
+        buf.writeLong(res.deletedSegments());
+        buf.writeLong(res.compactedBytes());
+        buf.writeLong(res.compactedSegments());
+    }
+
+    private static MaintenanceMetricsResponse decodeMaintenanceMetricsResponse(ByteBuf buf) {
+        requireReadable(buf, Long.BYTES * 8, "maintenance metrics counters");
+        long runs = buf.readLong();
+        long dryRuns = buf.readLong();
+        long deletedBytes = buf.readLong();
+        long deletedSegments = buf.readLong();
+        long compactedBytes = buf.readLong();
+        long compactedSegments = buf.readLong();
+        long skippedDueToReaders = buf.readLong();
+        long cleanupFailures = buf.readLong();
+        String lastRunStatus = ByteBufSerde.readString(buf);
+        return new MaintenanceMetricsResponse(
+                runs,
+                dryRuns,
+                deletedBytes,
+                deletedSegments,
+                compactedBytes,
+                compactedSegments,
+                skippedDueToReaders,
+                cleanupFailures,
+                lastRunStatus);
+    }
+
+    private static void writeMaintenanceMetricsResponse(ByteBuf buf, MaintenanceMetricsResponse res) {
+        buf.writeLong(res.runs());
+        buf.writeLong(res.dryRuns());
+        buf.writeLong(res.deletedBytes());
+        buf.writeLong(res.deletedSegments());
+        buf.writeLong(res.compactedBytes());
+        buf.writeLong(res.compactedSegments());
+        buf.writeLong(res.skippedDueToReaders());
+        buf.writeLong(res.cleanupFailures());
+        ByteBufSerde.writeString(buf, res.lastRunStatus());
     }
 
     private static ReplicaFetchResponse decodeReplicaFetchResponse(ByteBuf buf) {

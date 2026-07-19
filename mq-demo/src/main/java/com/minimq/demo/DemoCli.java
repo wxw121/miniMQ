@@ -9,6 +9,11 @@ import com.minimq.protocol.ApiKeys;
 import com.minimq.protocol.codec.MqDecoder;
 import com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest;
 import com.minimq.protocol.message.ProtocolMessages.CreateTopicResponse;
+import com.minimq.protocol.message.ProtocolMessages.MaintenanceMetricsRequest;
+import com.minimq.protocol.message.ProtocolMessages.MaintenanceMetricsResponse;
+import com.minimq.protocol.message.ProtocolMessages.MaintenanceReportRequest;
+import com.minimq.protocol.message.ProtocolMessages.MaintenanceReportResponse;
+import com.minimq.protocol.message.ProtocolMessages.MaintenanceRunRequest;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -29,6 +34,9 @@ public final class DemoCli {
             case "create-topic" -> createTopic(args);
             case "produce" -> produce(args);
             case "consume" -> consume(args);
+            case "maintenance-report" -> maintenanceReport(args);
+            case "maintenance-run" -> maintenanceRun(args);
+            case "maintenance-metrics" -> maintenanceMetrics(args);
             case "benchmark-fetch" -> FetchBenchmark.run(args, System.out);
             default -> printUsage();
         }
@@ -87,6 +95,88 @@ public final class DemoCli {
         }
     }
 
+    private static void maintenanceReport(String[] args) throws Exception {
+        MaintenanceReportResponse report = (MaintenanceReportResponse) sendAdmin(
+                args,
+                ApiKeys.MAINTENANCE_REPORT,
+                new MaintenanceReportRequest(),
+                "maintenance report").body();
+        printMaintenanceReport(report);
+    }
+
+    private static void maintenanceRun(String[] args) throws Exception {
+        MaintenanceReportResponse report = (MaintenanceReportResponse) sendAdmin(
+                args,
+                ApiKeys.MAINTENANCE_RUN,
+                new MaintenanceRunRequest(),
+                "maintenance run").body();
+        printMaintenanceReport(report);
+    }
+
+    private static void maintenanceMetrics(String[] args) throws Exception {
+        MaintenanceMetricsResponse metrics = (MaintenanceMetricsResponse) sendAdmin(
+                args,
+                ApiKeys.MAINTENANCE_METRICS,
+                new MaintenanceMetricsRequest(),
+                "maintenance metrics").body();
+        System.out.println("Maintenance metrics");
+        System.out.printf(
+                "runs=%d dryRuns=%d deletedBytes=%d deletedSegments=%d compactedBytes=%d compactedSegments=%d skippedDueToReaders=%d cleanupFailures=%d lastRunStatus=%s%n",
+                metrics.runs(),
+                metrics.dryRuns(),
+                metrics.deletedBytes(),
+                metrics.deletedSegments(),
+                metrics.compactedBytes(),
+                metrics.compactedSegments(),
+                metrics.skippedDueToReaders(),
+                metrics.cleanupFailures(),
+                metrics.lastRunStatus());
+    }
+
+    private static MqDecoder.DecodedResponse sendAdmin(
+            String[] args,
+            short apiKey,
+            Object request,
+            String operation) throws InterruptedException {
+        String brokers = arg(args, "--brokers", "localhost:9092");
+        String[] hp = parseFirstHostPort(brokers);
+        try (NetworkClient client = new NetworkClient("demo-admin")) {
+            client.connect(hp[0], Integer.parseInt(hp[1]));
+            MqDecoder.DecodedResponse response = client.send(apiKey, request);
+            client.ensureSuccess(response, operation);
+            return response;
+        }
+    }
+
+    private static void printMaintenanceReport(MaintenanceReportResponse report) {
+        System.out.println("Maintenance report");
+        System.out.printf(
+                "dryRun=%s status=%s deletedBytes=%d deletedSegments=%d compactedBytes=%d compactedSegments=%d skippedDueToReaders=%d cleanupFailures=%d%n",
+                report.dryRun(),
+                report.status(),
+                report.deletedBytes(),
+                report.deletedSegments(),
+                report.compactedBytes(),
+                report.compactedSegments(),
+                report.skippedDueToReaders(),
+                report.cleanupFailures());
+        if (report.segmentReports().isEmpty()) {
+            System.out.println("segments=0");
+            return;
+        }
+        System.out.println("segments=" + report.segmentReports().size());
+        for (var segment : report.segmentReports()) {
+            System.out.printf(
+                    "%s action=%s baseOffset=%d firstOffset=%d lastOffset=%d sizeBytes=%d%n",
+                    segment.partition(),
+                    segment.action(),
+                    segment.baseOffset(),
+                    segment.firstOffset(),
+                    segment.lastOffset(),
+                    segment.sizeBytes());
+        }
+    }
+
     static String arg(String[] args, String name, String defaultValue) {
         for (int i = 0; i < args.length; i++) {
             if (args[i].equals(name)) {
@@ -123,6 +213,9 @@ public final class DemoCli {
                   java -jar mq-demo.jar create-topic --brokers localhost:9092 --name orders --partitions 3
                   java -jar mq-demo.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
                   java -jar mq-demo.jar consume --brokers localhost:9092 --topic orders --group demo-group
+                  java -jar mq-demo.jar maintenance-report --brokers localhost:9092
+                  java -jar mq-demo.jar maintenance-run --brokers localhost:9092
+                  java -jar mq-demo.jar maintenance-metrics --brokers localhost:9092
                   java -jar mq-demo.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
                 """);
     }

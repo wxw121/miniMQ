@@ -109,6 +109,9 @@ class ProtocolSerdesTest {
                 new RequestCase(ApiKeys.MARK_BROKER_OFFLINE, new MarkBrokerOfflineRequest(2)),
                 new RequestCase(ApiKeys.UPDATE_REPLICA_LEO,
                         new UpdateReplicaLeoRequest("orders", 0, 1, 9L)),
+                new RequestCase(ApiKeys.MAINTENANCE_REPORT, new MaintenanceReportRequest()),
+                new RequestCase(ApiKeys.MAINTENANCE_RUN, new MaintenanceRunRequest()),
+                new RequestCase(ApiKeys.MAINTENANCE_METRICS, new MaintenanceMetricsRequest()),
                 new RequestCase(ApiKeys.REGISTER_BROKER, new RegisterBrokerRequest(1, "localhost", 9093)));
 
         for (RequestCase requestCase : cases) {
@@ -150,7 +153,38 @@ class ProtocolSerdesTest {
                 new ResponseCase(ApiKeys.REPLICA_FETCH, new ReplicaFetchResponse("orders", 0, 12L,
                         List.of(new FetchedRecord(11L, bytes("k"), bytes("v"))))),
                 new ResponseCase(ApiKeys.MARK_BROKER_OFFLINE, new MarkBrokerOfflineResponse()),
-                new ResponseCase(ApiKeys.UPDATE_REPLICA_LEO, new UpdateReplicaLeoResponse()));
+                new ResponseCase(ApiKeys.UPDATE_REPLICA_LEO, new UpdateReplicaLeoResponse()),
+                new ResponseCase(ApiKeys.MAINTENANCE_REPORT, new MaintenanceReportResponse(
+                        true,
+                        "SUCCESS",
+                        List.of(new MaintenanceSegmentInfo(
+                                "orders-0", "RETENTION_DELETE", 0L, 0L, 9L, 1024L)),
+                        0L,
+                        0L,
+                        1024L,
+                        1L,
+                        0L,
+                        0L)),
+                new ResponseCase(ApiKeys.MAINTENANCE_RUN, new MaintenanceReportResponse(
+                        false,
+                        "NOOP",
+                        List.of(),
+                        0L,
+                        0L,
+                        0L,
+                        0L,
+                        0L,
+                        0L)),
+                new ResponseCase(ApiKeys.MAINTENANCE_METRICS, new MaintenanceMetricsResponse(
+                        2L,
+                        1L,
+                        1024L,
+                        1L,
+                        2048L,
+                        2L,
+                        3L,
+                        4L,
+                        "SUCCESS")));
 
         for (ResponseCase responseCase : cases) {
             var frame = ProtocolSerdes.encodeResponse(new MqResponseHeader(9, ErrorCode.NONE), responseCase.body());

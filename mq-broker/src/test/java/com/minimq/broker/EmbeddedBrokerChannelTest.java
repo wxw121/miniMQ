@@ -17,6 +17,11 @@ import com.minimq.protocol.message.ProtocolMessages.FetchResponse;
 import com.minimq.protocol.message.ProtocolMessages.HeartbeatRequest;
 import com.minimq.protocol.message.ProtocolMessages.JoinGroupRequest;
 import com.minimq.protocol.message.ProtocolMessages.JoinGroupResponse;
+import com.minimq.protocol.message.ProtocolMessages.MaintenanceMetricsRequest;
+import com.minimq.protocol.message.ProtocolMessages.MaintenanceMetricsResponse;
+import com.minimq.protocol.message.ProtocolMessages.MaintenanceReportRequest;
+import com.minimq.protocol.message.ProtocolMessages.MaintenanceReportResponse;
+import com.minimq.protocol.message.ProtocolMessages.MaintenanceRunRequest;
 import com.minimq.protocol.message.ProtocolMessages.MetadataRequest;
 import com.minimq.protocol.message.ProtocolMessages.OffsetCommitRequest;
 import com.minimq.protocol.message.ProtocolMessages.OffsetFetchRequest;
@@ -274,6 +279,36 @@ class EmbeddedBrokerChannelTest {
                 new ProduceRequest("orders", 0, List.of(new ProduceRecord(null, new byte[] {1}))));
 
         assertEquals(ErrorCode.NOT_LEADER, response.header().errorCode());
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void maintenanceAdminApisReturnReportsAndMetrics() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
+        EmbeddedChannel channel = newChannel(clusterController, true);
+
+        MqDecoder.DecodedResponse reportResponse = send(
+                channel, ApiKeys.MAINTENANCE_REPORT, new MaintenanceReportRequest());
+        assertEquals(ErrorCode.NONE, reportResponse.header().errorCode());
+        MaintenanceReportResponse dryRun = (MaintenanceReportResponse) reportResponse.body();
+        assertEquals(true, dryRun.dryRun());
+        assertEquals("SKIPPED_DISABLED", dryRun.status());
+        assertEquals(0, dryRun.segmentReports().size());
+
+        MqDecoder.DecodedResponse runResponse = send(
+                channel, ApiKeys.MAINTENANCE_RUN, new MaintenanceRunRequest());
+        assertEquals(ErrorCode.NONE, runResponse.header().errorCode());
+        MaintenanceReportResponse run = (MaintenanceReportResponse) runResponse.body();
+        assertEquals(false, run.dryRun());
+        assertEquals("SKIPPED_DISABLED", run.status());
+
+        MqDecoder.DecodedResponse metricsResponse = send(
+                channel, ApiKeys.MAINTENANCE_METRICS, new MaintenanceMetricsRequest());
+        assertEquals(ErrorCode.NONE, metricsResponse.header().errorCode());
+        MaintenanceMetricsResponse metrics = (MaintenanceMetricsResponse) metricsResponse.body();
+        assertEquals(0L, metrics.runs());
+        assertEquals(1L, metrics.dryRuns());
+        assertEquals("SKIPPED_DISABLED", metrics.lastRunStatus());
         channel.finishAndReleaseAll();
     }
 
