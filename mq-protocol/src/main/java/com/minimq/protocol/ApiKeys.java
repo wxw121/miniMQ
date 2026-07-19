@@ -17,6 +17,9 @@ public final class ApiKeys {
     public static final short REPLICA_FETCH = 10;
     public static final short MARK_BROKER_OFFLINE = 11;
     public static final short UPDATE_REPLICA_LEO = 12;
+    public static final short MAINTENANCE_REPORT = 13;
+    public static final short MAINTENANCE_RUN = 14;
+    public static final short MAINTENANCE_METRICS = 15;
 
     private ApiKeys() {
     }

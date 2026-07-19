@@ -24,6 +24,8 @@ class DemoCliTest {
         assertTrue(unknown.contains("Usage:"));
         assertTrue(noArgs.contains("benchmark-fetch"));
         assertTrue(unknown.contains("benchmark-fetch"));
+        assertTrue(noArgs.contains("maintenance-report"));
+        assertTrue(unknown.contains("maintenance-metrics"));
     }
 
     @Test
@@ -36,6 +38,12 @@ class DemoCliTest {
         }));
         assertThrows(IllegalArgumentException.class, () -> DemoCli.main(new String[] {
                 "consume", "--brokers", "localhost", "--topic", "orders", "--group", "g1"
+        }));
+        assertThrows(IllegalArgumentException.class, () -> DemoCli.main(new String[] {
+                "maintenance-report", "--brokers", "localhost"
+        }));
+        assertThrows(IllegalArgumentException.class, () -> DemoCli.main(new String[] {
+                "maintenance-metrics", "--brokers", "localhost"
         }));
     }
 
@@ -107,6 +115,33 @@ class DemoCliTest {
             assertTrue(createOutput.contains("Created topic: orders"));
             assertTrue(produceOutput.contains("Produced to orders-0 offset=0"));
             assertTrue(consumeOutput.contains("Consumed orders-0 offset=0 value=hello"));
+        }
+    }
+
+    @Test
+    void maintenanceCommandsRenderBrokerReportsAndMetrics() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("demo-cli-maintenance");
+        try (BrokerTestHarness broker = BrokerTestHarness.startController(dataDir)) {
+            String brokers = broker.bootstrapServers();
+
+            String reportOutput = captureStdout(() -> DemoCli.main(new String[] {
+                    "maintenance-report", "--brokers", brokers
+            }));
+            String runOutput = captureStdout(() -> DemoCli.main(new String[] {
+                    "maintenance-run", "--brokers", brokers
+            }));
+            String metricsOutput = captureStdout(() -> DemoCli.main(new String[] {
+                    "maintenance-metrics", "--brokers", brokers
+            }));
+
+            assertTrue(reportOutput.contains("Maintenance report"));
+            assertTrue(reportOutput.contains("dryRun=true"));
+            assertTrue(reportOutput.contains("status=SKIPPED_DISABLED"));
+            assertTrue(runOutput.contains("Maintenance report"));
+            assertTrue(runOutput.contains("dryRun=false"));
+            assertTrue(metricsOutput.contains("Maintenance metrics"));
+            assertTrue(metricsOutput.contains("dryRuns=1"));
+            assertTrue(metricsOutput.contains("lastRunStatus=SKIPPED_DISABLED"));
         }
     }
 

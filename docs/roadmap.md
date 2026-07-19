@@ -5,7 +5,7 @@
 
 ## 1. Current State / 当前状�?
 
-MiniMQ has released V2.0 storage recovery as `v2.0.0`, tagged V2.1.2 maintenance observability as `v2.1.2-maintenance-observability`, released V2.2 zero-copy FETCH sendfile as `v2.2.0-read-performance` on `2.2.0`, released V2.3 replication as `v2.3.0-replication` on `2.3.0`, released V2.3.1 replication hardening as `v2.3.1-replication-hardening` on `2.3.1`, and released V2.3.2 replica-fetch connection pooling as `v2.3.2-replica-fetch-pooling` on `2.3.2`.
+MiniMQ has released V2.0 storage recovery as `v2.0.0`, tagged V2.1.2 maintenance observability as `v2.1.2-maintenance-observability`, released V2.2 zero-copy FETCH sendfile as `v2.2.0-read-performance` on `2.2.0`, released V2.3 replication as `v2.3.0-replication` on `2.3.0`, released V2.3.1 replication hardening as `v2.3.1-replication-hardening` on `2.3.1`, and released V2.3.2 replica-fetch connection pooling as `v2.3.2-replica-fetch-pooling` on `2.3.2`, and implemented the V2.4.0 maintenance operator interface on `2.4.0`.
 
 MiniMQ 已将 V2.0 存储恢复�?`v2.0.0` 发布，已�?V2.1.2 维护可观测性打�?`v2.1.2-maintenance-observability`，已�?V2.2 零拷�?FETCH sendfile �?`v2.2.0-read-performance` 发布�?`2.2.0`，已�?V2.3 副本机制�?`v2.3.0-replication` 发布�?`2.3.0`，并�?`2.3.1` 上实�?V2.3.1 副本机制加固�?
 
@@ -39,6 +39,7 @@ The most important remaining limitation is that replication still depends on a s
 | P0 | Completed: V2.3 replication P0 code-review fixes. / 已完成：V2.3 副本机制 P0 代码审查修复�?| Client/sendfile FETCH now honor replication HW; replica fetch catch-up is uncapped; offline election is atomic; failover read grace and monotonic LEO updates are in place. / 客户�?sendfile FETCH 遵守 replication HW；副本追平不再被错误截断；离线选举原子化；failover 读宽限期与单�?LEO 更新已落地�?| See `docs/code-review-2026-07-17-v2.3-replication.md` and `docs/test-report-2026-07-17-v2.3-replication.md`. / �?`docs/code-review-2026-07-17-v2.3-replication.md` �?`docs/test-report-2026-07-17-v2.3-replication.md`�?|
 | P1 | Released: V2.3.1 replication hardening. | Preferred-order and LEO-aware election, persisted follower LEO, ISR lag shrink/re-expand, sendfile concurrency/failure safety, and focused replica-fetch tests are included in `2.3.1`; connection pooling remains deferred. | Covered by `ClusterControllerTest`, `SegmentFileTest`, `FetchResponseWriterTest`, `LeaderReplicaClientTest`, `ReplicaFetcherTest`, `EmbeddedBrokerChannelTest`, and `docs/test-report-2026-07-18-v2.3.1-replication-hardening.md`. |
 | P1 | Completed: V2.3.2 replica-fetch connection pooling. | `ReplicaFetcher` now reuses `LeaderReplicaClient` connections and a shared Netty event loop per leader broker instead of creating one TCP connection and `NioEventLoopGroup` per partition per loop. | Covered by `ReplicaConnectionPoolTest`, `LeaderReplicaClientTest`, `ReplicaFetcherTest`, focused `ReplicationIntegrationTest` regression coverage, and `docs/test-report-2026-07-18-v2.3.2-replica-fetch-pooling.md`. |
+| P1 | Implemented: V2.4.0 maintenance operator interface. | Broker admin APIs 13-15 expose maintenance preview, execution, and metrics; the Demo CLI renders reports and per-segment actions. | Covered by `ProtocolSerdesTest`, `EmbeddedBrokerChannelTest`, `DemoCliTest`, and `docs/test-report-2026-07-19-v2.4.0-maintenance-ops.md`. |
 
 ## 3. Version Roadmap / 版本路线�?
 
@@ -81,6 +82,9 @@ timeline
                                       : ISR tracking / ISR 跟踪
                                       : Leader failover / Leader 故障转移
                                       : Replica fetch protocol / 副本拉取协议
+    V2.4 Maintenance Operations : Admin protocol
+                                : Preview and run commands
+                                : Maintenance metrics CLI
     V3.0 Control Plane HA / V3.0 控制面高可用 : Zookeeper or etcd discovery / Zookeeper �?etcd 服务发现
                                                 : Controller election / Controller 选举
                                                 : Epoch fencing / Epoch 防旧主写�?
@@ -289,6 +293,15 @@ Out of scope for V2.3 / 本阶段不包含�?
 2. Producer acknowledgement policies beyond replication-aware high watermarks. / 除复制感�?high watermark 之外�?Producer 确认策略�?
 3. Replica fetch zero-copy or TLS transport. / 副本拉取零拷贝或 TLS 传输�?
 
+### 3.6.2 V2.4.0 Maintenance Operations
+
+V2.4.0 exposes the existing storage maintenance boundary to operators without reaching into storage internals:
+
+1. Admin APIs 13-15 preview maintenance, run maintenance, and return cumulative maintenance metrics.
+2. `maintenance-report`, `maintenance-run`, and `maintenance-metrics` connect to a running broker over TCP.
+3. Reports include status, aggregate counters, and per-segment action, partition, offset range, and bytes.
+4. Protocol, embedded handler, and real CLI integration tests cover the full path.
+
 ### 3.7 V3.0 Control Plane HA And Service Discovery / V3.0 控制面高可用与服务发�?
 
 The current controller is static. V3.0 should introduce a production-style discovery and election layer after replicas and leader failover exist. Prefer one backend first, such as etcd or Zookeeper, instead of implementing both at the same time.
@@ -395,8 +408,8 @@ For a new agent session, the most productive next tasks are:
 
 对新 agent 会话，最建议继续做：
 
-1. Add an operator-facing maintenance API or CLI command that renders `LogMaintenanceReport` and `LogMaintenanceMetrics`. / 增加面向运维的维�?API �?CLI 命令，用来输�?`LogMaintenanceReport` �?`LogMaintenanceMetrics`�?
-2. Keep service discovery, circuit breaker, Epoll, and mmap in later productionization versions. / 服务发现、熔断、Epoll �?mmap 继续放在后续生产化版本�?
+1. Design V3.0 broker leases, controller election, and epoch fencing around one discovery backend.
+2. Keep circuit breaker, Epoll, and mmap in later productionization versions.
 
 ## 6. Risk Register / 风险登记�?
 
@@ -404,7 +417,7 @@ For a new agent session, the most productive next tasks are:
 | --- | --- | --- |
 | Static controller failure / 静�?Controller 故障 | Cluster control-plane unavailable. / 集群控制面不可用�?| Add controller election. / 增加 Controller 选举�?|
 | Single replica partition / 单副本分�?| Data unavailable/lost if broker fails. / Broker 故障时数据不可用或丢失�?| Add replication and ISR. / 增加副本�?ISR�?|
-| Operator access to maintenance reports is still limited / 维护报告的运维入口仍有限 | Storage exposes dry-run reports and metrics, but no external API or CLI renders them yet. / 存储层已暴露 dry-run 报告和指标，但还没有外部 API �?CLI 直接输出�?| Add an operator-facing command or admin endpoint before enabling aggressive defaults. / 在启用更激进默认值前增加运维命令或管理端点�?|
+| Completed: operator access to maintenance reports | V2.4.0 exposes preview, execution, metrics, and per-segment actions over admin APIs and CLI. | Keep destructive maintenance opt-in and inspect dry-run output first. |
 | Synchronous clients / 同步客户�?| Limited throughput. / 吞吐受限�?| Add batching and async APIs. / 增加批量发送和异步 API�?|
 | JSON metadata overwrite / JSON 元数据覆盖写 | Possible corruption on crash. / 崩溃时可能损坏�?| Write temp file then atomic move; add checksums. / 先写临时文件再原子移动，并增加校验和�?|
 | Simplified rebalance / 简�?rebalance | Group behavior differs from production Kafka. / 消费组行为与生产�?Kafka 有差异�?| Add explicit rebalance states and member protocols. / 增加显式 rebalance 状态和成员协议�?|
