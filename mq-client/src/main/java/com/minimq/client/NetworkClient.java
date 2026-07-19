@@ -186,6 +186,9 @@ public class NetworkClient implements AutoCloseable {
             case ApiKeys.OFFSET_COMMIT -> "OFFSET_COMMIT";
             case ApiKeys.OFFSET_FETCH -> "OFFSET_FETCH";
             case ApiKeys.REGISTER_BROKER -> "REGISTER_BROKER";
+            case ApiKeys.MAINTENANCE_REPORT -> "MAINTENANCE_REPORT";
+            case ApiKeys.MAINTENANCE_RUN -> "MAINTENANCE_RUN";
+            case ApiKeys.MAINTENANCE_METRICS -> "MAINTENANCE_METRICS";
             default -> "apiKey=" + apiKey;
         };
     }

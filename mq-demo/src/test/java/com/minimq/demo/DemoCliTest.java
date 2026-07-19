@@ -10,6 +10,7 @@ import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -26,6 +27,7 @@ class DemoCliTest {
         assertTrue(unknown.contains("benchmark-fetch"));
         assertTrue(noArgs.contains("maintenance-report"));
         assertTrue(unknown.contains("maintenance-metrics"));
+        assertTrue(noArgs.contains("--broker localhost:9092 --admin-token"));
     }
 
     @Test
@@ -39,12 +41,8 @@ class DemoCliTest {
         assertThrows(IllegalArgumentException.class, () -> DemoCli.main(new String[] {
                 "consume", "--brokers", "localhost", "--topic", "orders", "--group", "g1"
         }));
-        assertThrows(IllegalArgumentException.class, () -> DemoCli.main(new String[] {
-                "maintenance-report", "--brokers", "localhost"
-        }));
-        assertThrows(IllegalArgumentException.class, () -> DemoCli.main(new String[] {
-                "maintenance-metrics", "--brokers", "localhost"
-        }));
+        assertThrows(IllegalArgumentException.class,
+                () -> DemoCli.parseSingleHostPort("localhost"));
     }
 
     @Test
@@ -98,6 +96,26 @@ class DemoCliTest {
     }
 
     @Test
+    void maintenanceCommandsRequireOneExplicitBrokerAndToken() {
+        assertThrows(IllegalArgumentException.class, () -> DemoCli.main(new String[] {
+                "maintenance-report", "--admin-token", "secret"
+        }));
+        assertThrows(IllegalArgumentException.class, () -> DemoCli.main(new String[] {
+                "maintenance-report", "--broker", "127.0.0.1:9092"
+        }));
+        assertThrows(IllegalArgumentException.class, () -> DemoCli.main(new String[] {
+                "maintenance-report", "--broker", "a:9092,b:9093", "--admin-token", "secret"
+        }));
+        assertThrows(IllegalArgumentException.class, () -> DemoCli.main(new String[] {
+                "maintenance-report", "--broker", "localhost", "--admin-token", "secret"
+        }));
+        assertThrows(IllegalArgumentException.class,
+                () -> DemoCli.parseSingleHostPort("localhost:0"));
+        assertThrows(IllegalArgumentException.class,
+                () -> DemoCli.parseSingleHostPort("localhost:65536"));
+    }
+
+    @Test
     void createProduceAndConsumeThroughCli() throws Exception {
         Path dataDir = BrokerTestHarness.newDataDir("demo-cli");
         try (BrokerTestHarness broker = BrokerTestHarness.startController(dataDir)) {
@@ -126,15 +144,19 @@ class DemoCliTest {
             String brokers = broker.bootstrapServers();
 
             String reportOutput = captureStdout(() -> DemoCli.main(new String[] {
-                    "maintenance-report", "--brokers", brokers
+                    "maintenance-report", "--broker", brokers,
+                    "--admin-token", BrokerTestHarness.ADMIN_TOKEN
             }));
             String runOutput = captureStdout(() -> DemoCli.main(new String[] {
-                    "maintenance-run", "--brokers", brokers
+                    "maintenance-run", "--broker", brokers,
+                    "--admin-token", BrokerTestHarness.ADMIN_TOKEN
             }));
             String metricsOutput = captureStdout(() -> DemoCli.main(new String[] {
-                    "maintenance-metrics", "--brokers", brokers
+                    "maintenance-metrics", "--broker", brokers,
+                    "--admin-token", BrokerTestHarness.ADMIN_TOKEN
             }));
 
+            assertTrue(reportOutput.contains("Maintenance target: " + brokers));
             assertTrue(reportOutput.contains("Maintenance report"));
             assertTrue(reportOutput.contains("dryRun=true"));
             assertTrue(reportOutput.contains("status=SKIPPED_DISABLED"));
@@ -143,6 +165,9 @@ class DemoCliTest {
             assertTrue(metricsOutput.contains("Maintenance metrics"));
             assertTrue(metricsOutput.contains("dryRuns=1"));
             assertTrue(metricsOutput.contains("lastRunStatus=SKIPPED_DISABLED"));
+            assertFalse(reportOutput.contains(BrokerTestHarness.ADMIN_TOKEN));
+            assertFalse(runOutput.contains(BrokerTestHarness.ADMIN_TOKEN));
+            assertFalse(metricsOutput.contains(BrokerTestHarness.ADMIN_TOKEN));
         }
     }
 
