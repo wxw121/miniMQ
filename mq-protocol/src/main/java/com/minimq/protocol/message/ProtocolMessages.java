@@ -142,4 +142,46 @@ public final class ProtocolMessages {
 
     public record UpdateReplicaLeoResponse() {
     }
+
+    public record MaintenanceReportRequest() {
+    }
+
+    public record MaintenanceRunRequest() {
+    }
+
+    public record MaintenanceMetricsRequest() {
+    }
+
+    public record MaintenanceSegmentInfo(
+            String partition,
+            String action,
+            long baseOffset,
+            long firstOffset,
+            long lastOffset,
+            long sizeBytes) {
+    }
+
+    public record MaintenanceReportResponse(
+            boolean dryRun,
+            String status,
+            List<MaintenanceSegmentInfo> segmentReports,
+            long skippedDueToReaders,
+            long cleanupFailures,
+            long deletedBytes,
+            long deletedSegments,
+            long compactedBytes,
+            long compactedSegments) {
+    }
+
+    public record MaintenanceMetricsResponse(
+            long runs,
+            long dryRuns,
+            long deletedBytes,
+            long deletedSegments,
+            long compactedBytes,
+            long compactedSegments,
+            long skippedDueToReaders,
+            long cleanupFailures,
+            String lastRunStatus) {
+    }
 }

@@ -16,6 +16,9 @@ import com.minimq.protocol.message.MqRequestHeader;
 import com.minimq.protocol.message.MqResponseHeader;
 import com.minimq.protocol.message.ProtocolMessages;
 import com.minimq.protocol.message.ProtocolMessages.*;
+import com.minimq.storage.LogMaintenanceMetrics;
+import com.minimq.storage.LogMaintenanceReport;
+import com.minimq.storage.MaintenanceSegmentReport;
 import com.minimq.storage.PartitionLog;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -194,6 +197,12 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                     ensureController();
                     responseBody = groupCoordinator.offsetFetch((OffsetFetchRequest) requestBody);
                 }
+                case ApiKeys.MAINTENANCE_REPORT -> responseBody =
+                        toMaintenanceReportResponse(partitionManager.dryRunMaintenance());
+                case ApiKeys.MAINTENANCE_RUN -> responseBody =
+                        toMaintenanceReportResponse(partitionManager.maintain());
+                case ApiKeys.MAINTENANCE_METRICS -> responseBody =
+                        toMaintenanceMetricsResponse(partitionManager.maintenanceMetrics());
                 default -> errorCode = ErrorCode.INVALID_REQUEST;
             }
         } catch (IllegalArgumentException | IllegalStateException | IndexOutOfBoundsException ex) {
@@ -207,6 +216,44 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         MqResponseHeader responseHeader = new MqResponseHeader(correlationId, errorCode);
         ByteBuf frame = ProtocolSerdes.encodeResponse(responseHeader, responseBody);
         ctx.writeAndFlush(frame);
+    }
+
+    private static MaintenanceReportResponse toMaintenanceReportResponse(LogMaintenanceReport report) {
+        return new MaintenanceReportResponse(
+                report.dryRun(),
+                report.status().name(),
+                report.segmentReports().stream()
+                        .map(MqRequestHandler::toMaintenanceSegmentInfo)
+                        .toList(),
+                report.skippedDueToReaders(),
+                report.cleanupFailures(),
+                report.deletedBytes(),
+                report.deletedSegments(),
+                report.compactedBytes(),
+                report.compactedSegments());
+    }
+
+    private static MaintenanceSegmentInfo toMaintenanceSegmentInfo(MaintenanceSegmentReport report) {
+        return new MaintenanceSegmentInfo(
+                report.partition(),
+                report.action().name(),
+                report.baseOffset(),
+                report.firstOffset(),
+                report.lastOffset(),
+                report.sizeBytes());
+    }
+
+    private static MaintenanceMetricsResponse toMaintenanceMetricsResponse(LogMaintenanceMetrics metrics) {
+        return new MaintenanceMetricsResponse(
+                metrics.runs(),
+                metrics.dryRuns(),
+                metrics.deletedBytes(),
+                metrics.deletedSegments(),
+                metrics.compactedBytes(),
+                metrics.compactedSegments(),
+                metrics.skippedDueToReaders(),
+                metrics.cleanupFailures(),
+                metrics.lastRunStatus().name());
     }
 
     @Override

@@ -78,6 +78,10 @@ If `errorCode != NONE`, response body is omitted. This rule keeps error response
 | 9 | `REGISTER_BROKER` | Control / 控制面 | Register broker with controller. / 向 Controller 注册 Broker。 |
 | 10 | `REPLICA_FETCH` | Data / 数据面 | Follower replica pulls leader log bytes. / Follower 副本从 Leader 拉取日志字节。 |
 | 11 | `MARK_BROKER_OFFLINE` | Control / 控制面 | Controller marks a broker offline and elects replacement leaders. / Controller 将 Broker 标记离线并选举替代 Leader。 |
+| 12 | `UPDATE_REPLICA_LEO` | Control / 控制面 | Report a replica log-end offset to the controller. / 向 Controller 上报副本日志末端 offset。 |
+| 13 | `MAINTENANCE_REPORT` | Admin / 管理面 | Preview local retention and compaction actions without changing files. / 预览本地保留与压缩动作，不修改文件。 |
+| 14 | `MAINTENANCE_RUN` | Admin / 管理面 | Run local storage maintenance immediately. / 立即执行本地存储维护。 |
+| 15 | `MAINTENANCE_METRICS` | Admin / 管理面 | Read cumulative local maintenance counters and the last run status. / 读取本地维护累计指标和最近运行状态。 |
 
 ## 3. Serialization Rules / 序列化规则
 
@@ -269,7 +273,7 @@ V2.1.2 exposes maintenance before and after it mutates files. `LogManager.dryRun
 
 V2.1.2 会在维护修改文件之前和之后暴露维护信息。`LogManager.dryRunMaintenance()` 返回 `LogMaintenanceReport`，列出每个计划中的 `RETENTION_DELETE`、`COMPACTION_REWRITE` 或 `COMPACTION_DELETE` 动作，包括分区、segment base offset、受影响的首尾 offset 和原始 segment 字节数。预览与真实执行共享“先 retention、后 compaction”的顺序，因此 compaction 只会基于模拟 retention 后仍存活的 segment 规划。Dry-run 不会保存 catalog、重写 segment、删除文件或写 checkpoint。
 
-`LogMaintenanceMetrics` is an in-memory snapshot of maintenance activity: real run count, dry-run count, deleted bytes/segments, compacted bytes/segments, maintenance attempts skipped by active readers, cleanup failures, and last real run status. Dry-run does not replace the last real status. `PartitionManager` forwards dry-run, manual maintenance, and metrics methods so a future broker admin API can expose them without reaching into storage internals.
+`LogMaintenanceMetrics` is an in-memory snapshot of maintenance activity: real run count, dry-run count, deleted bytes/segments, compacted bytes/segments, maintenance attempts skipped by active readers, cleanup failures, and last real run status. Dry-run does not replace the last real status. `PartitionManager` forwards dry-run, manual maintenance, and metrics methods; V2.4.0 exposes them through broker admin APIs 13-15 and the `maintenance-report`, `maintenance-run`, and `maintenance-metrics` CLI commands.
 
 `LogMaintenanceMetrics` 是内存中的维护活动快照，包含真实执行次数、dry-run 次数、删除字节/segment、压缩字节/segment、因活跃 reader 跳过的维护尝试数、清理失败和最近一次真实运行状态。Dry-run 不会覆盖最近真实状态。`PartitionManager` 转发 dry-run、手动维护和指标方法，便于后续 Broker 管理 API 暴露这些能力，而不需要直接访问存储内部实现。
 
