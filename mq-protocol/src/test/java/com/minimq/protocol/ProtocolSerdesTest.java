@@ -140,7 +140,7 @@ class ProtocolSerdesTest {
                         List.of(new TopicMetadata("orders",
                                 List.of(
                                         new PartitionMetadata(
-                                                0, 1, List.of(1, 2), List.of(1, 2), Map.of(1, 12L, 2, 9L)),
+                                                0, 1, List.of(1, 2), List.of(), Map.of(1, 12L, 2, 9L), true),
                                         new PartitionMetadata(1, 1)))))),
                 new ResponseCase(ApiKeys.PRODUCE, new ProduceResponse("orders", 0, 11L)),
                 new ResponseCase(ApiKeys.FETCH, new FetchResponse("orders", 0, 12L,

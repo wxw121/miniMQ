@@ -105,10 +105,9 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 }
                 case ApiKeys.REGISTER_BROKER -> {
                     ensureController();
-                    errorCode = clusterController.registerBroker((RegisterBrokerRequest) requestBody);
-                    if (errorCode == ErrorCode.NONE) {
-                        responseBody = new RegisterBrokerResponse();
-                    }
+                    var result = clusterController.registerBroker((RegisterBrokerRequest) requestBody);
+                    errorCode = result.errorCode();
+                    responseBody = result.response();
                 }
                 case ApiKeys.MARK_BROKER_OFFLINE -> {
                     ensureController();

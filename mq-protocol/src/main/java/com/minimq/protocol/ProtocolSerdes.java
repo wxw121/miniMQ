@@ -345,12 +345,15 @@ public final class ProtocolSerdes {
                 List<Integer> replicaBrokerIds = readBrokerIdList(buf, "replica brokers");
                 List<Integer> isrBrokerIds = readBrokerIdList(buf, "isr brokers");
                 Map<Integer, Long> replicaLogEndOffsets = readReplicaLogEndOffsets(buf);
+                requireReadable(buf, 1, "partition frozen flag");
+                boolean frozen = buf.readBoolean();
                 partitions.add(new PartitionMetadata(
                         partitionId,
                         leaderBrokerId,
                         replicaBrokerIds,
                         isrBrokerIds,
-                        replicaLogEndOffsets));
+                        replicaLogEndOffsets,
+                        frozen));
             }
             topics.add(new TopicMetadata(topicName, partitions));
         }
@@ -374,6 +377,7 @@ public final class ProtocolSerdes {
                 writeBrokerIdList(buf, partition.replicaBrokerIds(), "replica brokers");
                 writeBrokerIdList(buf, partition.isrBrokerIds(), "isr brokers");
                 writeReplicaLogEndOffsets(buf, partition.replicaLogEndOffsets());
+                buf.writeBoolean(partition.frozen());
             }
         }
     }

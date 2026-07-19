@@ -105,6 +105,10 @@ public class MetadataStore {
             if (broker.port <= 0 || broker.port > 65535) {
                 throw new IOException("Metadata broker " + brokerId + " has invalid port " + broker.port);
             }
+            if (broker.brokerEpoch < 0) {
+                throw new IOException("Metadata broker " + brokerId
+                        + " has invalid brokerEpoch " + broker.brokerEpoch);
+            }
         }
         for (var entry : metadata.topics.entrySet()) {
             String topicName = entry.getKey();
@@ -132,6 +136,18 @@ public class MetadataStore {
                 if (partition.partitionId < 0) {
                     throw new IOException("Metadata topic " + topicName
                             + " has invalid partitionId " + partition.partitionId);
+                }
+                if (partition.replicaBrokerIds == null || partition.isrBrokerIds == null) {
+                    throw new IOException("Metadata topic " + topicName + " has null replica or ISR list");
+                }
+                if (partition.frozen && !partition.isrBrokerIds.isEmpty()) {
+                    throw new IOException("Metadata topic " + topicName
+                            + " frozen partition must have an empty ISR");
+                }
+                if (partition.frozen
+                        && !partition.replicaBrokerIds.contains(partition.leaderBrokerId)) {
+                    throw new IOException("Metadata topic " + topicName
+                            + " frozen partition Leader must be a configured replica");
                 }
                 if (partition.replicaLogEndOffsets == null) {
                     throw new IOException("Metadata topic " + topicName + " has null replica LEO map");

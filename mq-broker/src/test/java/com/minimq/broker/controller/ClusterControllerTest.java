@@ -3,6 +3,7 @@ package com.minimq.broker.controller;
 import com.minimq.broker.metadata.MetadataStore;
 import com.minimq.broker.metadata.ClusterMetadata;
 import com.minimq.common.error.ErrorCode;
+import com.minimq.protocol.message.ProtocolMessages.BrokerHeartbeatRequest;
 import com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest;
 import com.minimq.protocol.message.ProtocolMessages.MetadataRequest;
 import com.minimq.protocol.message.ProtocolMessages.PartitionMetadata;
@@ -14,8 +15,11 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ClusterControllerTest {
@@ -263,6 +267,146 @@ class ClusterControllerTest {
         assertEquals(1, controller.metadata(new MetadataRequest("orders")).topics().size());
         assertEquals(1, controller.metadata(new MetadataRequest("orders")).brokers().size());
         assertEquals(0L, controller.replicaLogEndOffset("orders", 0, 0));
+    }
+
+    @Test
+    void registrationAssignsEpochAndRejectsDuplicateActiveBroker() {
+        AtomicLong now = new AtomicLong();
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir), 5_000L, now::get);
+
+        var first = controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+
+        assertEquals(ErrorCode.NONE, first.errorCode());
+        assertEquals(1L, first.response().brokerEpoch());
+        assertEquals(5_000L, first.response().leaseTimeoutMs());
+        assertEquals(ErrorCode.BROKER_ID_IN_USE,
+                controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9093)).errorCode());
+        assertEquals(ErrorCode.NONE,
+                controller.heartbeatBroker(new BrokerHeartbeatRequest(0, 1L)));
+        assertEquals(ErrorCode.BROKER_FENCED,
+                controller.heartbeatBroker(new BrokerHeartbeatRequest(0, 0L)));
+    }
+
+    @Test
+    void expiringFollowerRemovesItFromIsrWithoutChangingLeader() {
+        AtomicLong now = new AtomicLong();
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir), 5_000L, now::get);
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
+        controller.createTopic(new CreateTopicRequest("orders", 1, 2));
+        now.set(TimeUnit.MILLISECONDS.toNanos(4_000));
+        assertEquals(ErrorCode.NONE, controller.heartbeatBroker(new BrokerHeartbeatRequest(0, 1L)));
+
+        now.set(TimeUnit.MILLISECONDS.toNanos(5_001));
+
+        assertEquals(1, controller.expireOverdueBrokerLeases());
+        assertFalse(controller.getBroker(1).online);
+        assertEquals(0, controller.getLeaderBrokerId("orders", 0));
+        assertEquals(List.of(0), controller.getIsrBrokerIds("orders", 0));
+    }
+
+    @Test
+    void expiringLeaderElectsHighestLeoOnlineIsrReplica() {
+        AtomicLong now = new AtomicLong();
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir), 5_000L, now::get);
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
+        controller.registerBroker(new RegisterBrokerRequest(2, "localhost", 9094));
+        controller.createTopic(new CreateTopicRequest("orders", 1, 3));
+        controller.updateMetadata(metadata -> {
+            var partition = metadata.topics.get("orders").partitions.get(0);
+            partition.replicaBrokerIds = new ArrayList<>(List.of(2, 0, 1));
+            partition.isrBrokerIds = new ArrayList<>(List.of(2, 0, 1));
+            partition.leaderBrokerId = 2;
+            partition.replicaLogEndOffsets.put(2, 12L);
+            partition.replicaLogEndOffsets.put(0, 9L);
+            partition.replicaLogEndOffsets.put(1, 12L);
+            return null;
+        });
+        now.set(TimeUnit.MILLISECONDS.toNanos(4_000));
+        controller.heartbeatBroker(new BrokerHeartbeatRequest(0, 1L));
+        controller.heartbeatBroker(new BrokerHeartbeatRequest(1, 1L));
+
+        now.set(TimeUnit.MILLISECONDS.toNanos(5_001));
+
+        assertEquals(1, controller.expireOverdueBrokerLeases());
+        assertEquals(1, controller.getLeaderBrokerId("orders", 0));
+        assertEquals(List.of(0, 1), controller.getIsrBrokerIds("orders", 0));
+    }
+
+    @Test
+    void expiringSoleLeaderFreezesUntilOriginalBrokerRegistersAgain() {
+        AtomicLong now = new AtomicLong();
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir), 5_000L, now::get);
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.createTopic(new CreateTopicRequest("orders", 1, 1));
+
+        now.set(TimeUnit.MILLISECONDS.toNanos(5_001));
+
+        assertEquals(1, controller.expireOverdueBrokerLeases());
+        PartitionMetadata frozen = controller.metadata(new MetadataRequest("orders"))
+                .topics().get(0).partitions().get(0);
+        assertTrue(frozen.frozen());
+        assertTrue(frozen.isrBrokerIds().isEmpty());
+        assertEquals(0, frozen.leaderBrokerId());
+        assertFalse(controller.getBroker(0).online);
+
+        var recovered = controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+
+        assertEquals(ErrorCode.NONE, recovered.errorCode());
+        assertEquals(2L, recovered.response().brokerEpoch());
+        PartitionMetadata active = controller.metadata(new MetadataRequest("orders"))
+                .topics().get(0).partitions().get(0);
+        assertFalse(active.frozen());
+        assertEquals(List.of(0), active.isrBrokerIds());
+    }
+
+    @Test
+    void staleEpochExpiryCannotOfflineNewRegistration() {
+        AtomicLong now = new AtomicLong();
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir), 5_000L, now::get);
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        now.set(TimeUnit.MILLISECONDS.toNanos(5_001));
+        var second = controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9093));
+
+        assertEquals(2L, second.response().brokerEpoch());
+        assertFalse(controller.expireBrokerLease(0, 1L));
+        assertTrue(controller.getBroker(0).online);
+        assertEquals(2L, controller.getBroker(0).brokerEpoch);
+        assertEquals(9093, controller.getBroker(0).port);
+    }
+
+    @Test
+    void staleExpiryCandidateCannotOverrideHeartbeatRenewal() {
+        AtomicLong now = new AtomicLong();
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir), 5_000L, now::get);
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        now.set(TimeUnit.MILLISECONDS.toNanos(4_000));
+        assertEquals(ErrorCode.NONE,
+                controller.heartbeatBroker(new BrokerHeartbeatRequest(0, 1L)));
+
+        now.set(TimeUnit.MILLISECONDS.toNanos(5_001));
+
+        assertFalse(controller.expireBrokerLease(0, 1L));
+        assertTrue(controller.getBroker(0).online);
+    }
+
+    @Test
+    void loadedOnlineBrokerGetsOneLeaseTimeoutGracePeriod() {
+        AtomicLong now = new AtomicLong();
+        MetadataStore store = new MetadataStore(tempDir);
+        ClusterController first = new ClusterController(store, 5_000L, now::get);
+        first.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        now.set(TimeUnit.MILLISECONDS.toNanos(10_000));
+
+        ClusterController restarted = new ClusterController(store, 5_000L, now::get);
+        now.set(TimeUnit.MILLISECONDS.toNanos(14_999));
+        assertEquals(0, restarted.expireOverdueBrokerLeases());
+        assertEquals(ErrorCode.NONE,
+                restarted.heartbeatBroker(new BrokerHeartbeatRequest(0, 1L)));
+        now.set(TimeUnit.MILLISECONDS.toNanos(20_000));
+        assertEquals(1, restarted.expireOverdueBrokerLeases());
+        assertFalse(restarted.getBroker(0).online);
     }
 
     private ClusterController controllerWithReplicatedTopic() {
