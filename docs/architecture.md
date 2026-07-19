@@ -9,9 +9,9 @@ MiniMQ is a modular Java message queue. It separates shared models, protocol enc
 
 MiniMQ 是一个多模块 Java 消息队列系统。它把公共模型、协议编解码、本地存储、Broker 运行时、客户端 SDK、Demo CLI 拆成独立 Maven 模块。项目规模不大，但保留了分区消息系统的核心结构：Producer 按 Topic/Partition 写入消息，Consumer 按 Offset 拉取消息，Controller 维护元数据并指导客户端把请求路由到正确的 Leader Broker。
 
-The architecture is currently a single-replica architecture. A partition has one leader and no follower replica. That means MiniMQ is easy to reason about, but it does not yet provide production durability guarantees such as ISR, quorum replication, leader election, or log truncation after failover.
+The architecture now supports partition replicas, ISR-aware high watermarks, persisted replica LEO, Broker heartbeat leases, and automatic LEO-aware Leader failover under one static Controller. It remains an educational architecture rather than a production quorum system: Controller HA, data-plane Leader epochs, unclean election, and failover log truncation are not implemented.
 
-当前架构是单副本架构。每个分区只有一个 Leader，没有 Follower 副本。因此 MiniMQ 容易理解和调试，但还不具备生产系统常见的 ISR、副本同步、Controller 选举、故障转移后的日志截断等能力。
+当前架构已经支持分区副本、ISR 感知 high watermark、持久化副本 LEO、Broker 心跳租约和静态 Controller 下的 LEO 感知自动故障转移。它仍是教学型架构，不是生产级 quorum 系统：Controller 高可用、数据面 Leader epoch、unclean election 和故障转移日志截断尚未实现。
 
 ## 2. Module Architecture / 模块架构
 
@@ -212,14 +212,20 @@ MiniMQ 可以通过 `mq-demo` 打出的 fat jar 启动。第一个 Broker 通常
 | Broker 1 | Broker + leader candidate / Broker 与 leader 候选节点 | 9093 | `./data/broker-1` |
 | Broker 2 | Broker + leader candidate / Broker 与 leader 候选节点 | 9094 | `./data/broker-2` |
 
+Each Broker owns a `BrokerLeaseService` and `BrokerAvailabilityGuard`. Startup binds the client port while state is `STARTING`, registers and synchronizes metadata, confirms the epoch with a heartbeat, then moves to `ACTIVE`. Loss of Controller contact moves the Broker to `FENCED` before the Controller lease expires; recovery uses `RECOVERING` and must obtain a newer valid registration before returning to `ACTIVE`.
+
+每个 Broker 拥有一个 `BrokerLeaseService` 和 `BrokerAvailabilityGuard`。启动时先绑定客户端端口并保持 `STARTING`，完成注册、元数据同步和 epoch 确认心跳后进入 `ACTIVE`。与 Controller 失联时，Broker 会在 Controller 租约到期前进入 `FENCED`；恢复过程使用 `RECOVERING`，只有重新获得有效注册后才能回到 `ACTIVE`。
+
+The timing contract is `broker heartbeat interval < broker self-fence timeout < controller broker lease timeout`, configured by `--broker-heartbeat-interval-ms`, `--broker-self-fence-timeout-ms`, and `--controller-broker-lease-timeout-ms`.
+
 ## 8. Architectural Constraints / 架构约束
 
-1. There is no replication yet. If a broker loses its data directory, records on its partitions are lost. / 目前还没有副本机制。如果 Broker 丢失数据目录，该节点负责分区上的消息会丢失。
+1. Replication and ISR failover exist, but MiniMQ does not perform unclean election or automatic log truncation. A single-replica partition freezes when its Broker lease expires and remains unavailable until the original Broker returns with the same data directory and a higher epoch. / 已有副本与 ISR 故障转移，但不会执行 unclean election 或自动日志截断。单副本分区在 Broker 租约过期后会冻结，直到原 Broker 使用相同数据目录和更高 epoch 返回。
 2. There is no controller election. If the controller exits, the cluster does not elect a replacement. / 目前没有 Controller 选举。如果 Controller 退出，集群不会自动选出替代节点。
 3. Metadata is persisted as one JSON document. This is easy to inspect but not a scalable metadata log; V1.3 adds corrupt-file validation, safe write, and quarantine behavior before V2 introduces a stronger metadata log. / 元数据以单个 JSON 文档持久化，易读但不是可扩展的元数据日志；V1.3 已增加损坏文件校验、安全写入和隔离行为，V2 再引入更强的元数据日志。
 4. Consumer group rebalancing is simplified. There is no full Kafka-style rebalance protocol, session management, or cooperative assignment. / 消费组再均衡经过简化，还没有完整 Kafka 风格的 rebalance 协议、会话管理或协作式分配。
-5. The client SDK now supports fixed-backoff connection retry, configurable request timeout, typed client exceptions, topic-level metadata cache invalidation, and a fixed retry budget of one metadata refresh retry for Producer/Consumer data-plane requests after `NOT_LEADER`. Full replication-aware failover and controller HA are still future work. / 客户端 SDK 现在支持固定退避连接重试、可配置请求超时、类型化客户端异常、Topic 级元数据缓存失效，以及 Producer/Consumer 数据面请求遇到 `NOT_LEADER` 后刷新元数据重试一次的固定预算。完整的副本感知故障转移和 Controller 高可用仍是后续工作。
-6. V2.1.2 adds dry-run reports, in-memory maintenance metrics, reader-aware skips, compaction byte/segment budgets, UTC maintenance windows, and Java manual entrypoints. A directly operator-facing admin API or CLI remains future work. / V2.1.2 已增加 dry-run 报告、内存维护指标、reader 感知跳过、compaction 字节/segment 预算、UTC 维护窗口和 Java 手动入口。直接面向运维的管理 API 或 CLI 仍是后续工作。
+5. The client SDK supports fixed-backoff connection retry, configurable request timeout, typed exceptions, topic-level metadata cache invalidation, and one metadata refresh retry after `NOT_LEADER` or `BROKER_FENCED`. Automatic Broker failover is implemented; Controller HA remains future work. / 客户端 SDK 支持固定退避连接重试、可配置请求超时、类型化异常、Topic 级元数据缓存失效，以及遇到 `NOT_LEADER` 或 `BROKER_FENCED` 后刷新元数据重试一次。Broker 自动故障转移已实现，Controller 高可用仍是后续工作。
+6. Maintenance report, execution, and metrics are exposed through token-protected admin APIs and single-target CLI commands. Destructive maintenance remains opt-in and Broker-local. / 维护报告、执行和指标已通过令牌保护的管理 API 与单目标 CLI 命令开放；破坏性维护仍需显式触发，并且只作用于本地 Broker。
 
 ## 9. Architecture Glossary / 架构名词表
 

@@ -19,7 +19,7 @@ Kafka 风格的 Java 分布式消息队列（作品集 / 面试向）。
 
 - **Netty** 自研二进制协议
 - **Append-Only Log** 持久化
-- **3 Broker** 分区分布（Broker-0 为 Controller）
+- **3 Broker** 分区副本、Broker 租约与自动故障转移（Broker-0 为静态 Controller）
 - **Consumer Group** + Offset 提交
 
 ## 模块
@@ -45,34 +45,48 @@ mvn test -gs .mvn/settings.xml -s .mvn/settings.xml
 
 ```powershell
 # Terminal 1
-java -cp mq-demo/target/mq-demo-2.4.0.jar com.minimq.demo.BrokerMain --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller --admin-token <secret>
+java -cp mq-demo/target/mq-demo-2.5.0.jar com.minimq.demo.BrokerMain --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller --admin-token <secret>
 
 # Terminal 2
-java -cp mq-demo/target/mq-demo-2.4.0.jar com.minimq.demo.BrokerMain --broker-id 1 --port 9093 --data-dir ./data/broker-1 --controller-addr localhost:9092 --admin-token <secret>
+java -cp mq-demo/target/mq-demo-2.5.0.jar com.minimq.demo.BrokerMain --broker-id 1 --port 9093 --data-dir ./data/broker-1 --controller-addr localhost:9092 --admin-token <secret>
 
 # Terminal 3
-java -cp mq-demo/target/mq-demo-2.4.0.jar com.minimq.demo.BrokerMain --broker-id 2 --port 9094 --data-dir ./data/broker-2 --controller-addr localhost:9092 --admin-token <secret>
+java -cp mq-demo/target/mq-demo-2.5.0.jar com.minimq.demo.BrokerMain --broker-id 2 --port 9094 --data-dir ./data/broker-2 --controller-addr localhost:9092 --admin-token <secret>
 ```
 
 或使用 fat jar：
 
 ```bash
 mvn -pl mq-demo package
-java -jar mq-demo/target/mq-demo-2.4.0.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller --admin-token <secret>
+java -jar mq-demo/target/mq-demo-2.5.0.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller --admin-token <secret>
 ```
 
 ## Demo 流程
 
 ```bash
 # 1. 创建 Topic
-java -jar mq-demo/target/mq-demo-2.4.0.jar create-topic --brokers localhost:9092 --name orders --partitions 3
+java -jar mq-demo/target/mq-demo-2.5.0.jar create-topic --brokers localhost:9092 --name orders --partitions 3
 
 # 2. 发送消息
-java -jar mq-demo/target/mq-demo-2.4.0.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
+java -jar mq-demo/target/mq-demo-2.5.0.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
 
 # 3. 消费消息
-java -jar mq-demo/target/mq-demo-2.4.0.jar consume --brokers localhost:9092 --topic orders --group order-processors
+java -jar mq-demo/target/mq-demo-2.5.0.jar consume --brokers localhost:9092 --topic orders --group order-processors
 ```
+
+## Broker 租约与自动故障转移（2.5.0）
+
+Broker 启动后通过 `REGISTER_BROKER` 获取持久化 `brokerEpoch`，并使用 API 16 `BROKER_HEARTBEAT` 续租。运行状态按 `STARTING -> ACTIVE -> FENCED -> RECOVERING -> ACTIVE` 转换；非 `ACTIVE` Broker 会拒绝生产、消费、副本拉取和维护执行请求，并返回 `BROKER_FENCED`。
+
+租约时间必须满足：
+
+```text
+broker heartbeat interval < broker self-fence timeout < controller broker lease timeout
+```
+
+对应启动参数为 `--broker-heartbeat-interval-ms`、`--broker-self-fence-timeout-ms` 和 `--controller-broker-lease-timeout-ms`。Controller 租约过期后会从在线 ISR 中按 LEO 选择替代 Leader；没有可选 ISR 时分区进入 frozen 状态并保留原 Leader，只有该原 Broker 使用更高 epoch 重新注册后才能恢复。
+
+Producer 和 Consumer 遇到 `NOT_LEADER` 或 `BROKER_FENCED` 时会失效旧 Broker 连接、刷新一次元数据并重试一次。Controller 自身高可用、数据面 Leader epoch 和 unclean election 仍未实现。
 
 
 ## Web 前端主流程
@@ -125,7 +139,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-web.ps1 
 也可以直接运行开发启动器：
 
 ```powershell
-java -Dminimq.web.port=18082 -Dminimq.broker.port=19092 -Dminimq.data.dir=.run/data-live -cp mq-demo/target/mq-demo-2.4.0.jar com.minimq.demo.web.MiniMqWebDevMain
+java -Dminimq.web.port=18082 -Dminimq.broker.port=19092 -Dminimq.data.dir=.run/data-live -cp mq-demo/target/mq-demo-2.5.0.jar com.minimq.demo.web.MiniMqWebDevMain
 ```
 
 前端自动化测试覆盖：静态页面资源、真实 MiniMQ 主流程、Broker 不可用时的 mock fallback、HTTP 错误处理、表单默认值与模式归一化。
