@@ -29,6 +29,7 @@ public final class ReplicaFetcher implements AutoCloseable {
     private final PartitionManager partitionManager;
     private final BrokerAvailabilityGuard availabilityGuard;
     private final ReplicaConnectionPool connectionPool = new ReplicaConnectionPool();
+    private final LeaderEpochStateStore epochStateStore;
     private final Thread thread;
     private volatile boolean running = true;
 
@@ -48,6 +49,7 @@ public final class ReplicaFetcher implements AutoCloseable {
         this.clusterController = clusterController;
         this.partitionManager = partitionManager;
         this.availabilityGuard = availabilityGuard;
+        this.epochStateStore = new LeaderEpochStateStore(config.dataDir().resolve("leader-epochs"));
         this.thread = new Thread(this::runLoop, "replica-fetcher-" + config.brokerId());
         this.thread.setDaemon(true);
     }
@@ -109,12 +111,24 @@ public final class ReplicaFetcher implements AutoCloseable {
             return;
         }
         long fetchOffset = partitionManager.highWatermark(topicName, partition.partitionId);
+        long appliedEpoch = epochStateStore.load(topicName, partition.partitionId)
+                .map(LeaderEpochState::leaderEpoch)
+                .orElse(-1L);
+        if (partition.leaderEpoch > appliedEpoch) {
+            if (fetchOffset > partition.leaderEpochStartOffset) {
+                partitionManager.truncateTo(topicName, partition.partitionId, partition.leaderEpochStartOffset);
+                fetchOffset = partition.leaderEpochStartOffset;
+            }
+            epochStateStore.save(topicName, partition.partitionId,
+                    new LeaderEpochState(partition.leaderEpoch, partition.leaderEpochStartOffset, true));
+        }
         try {
             LeaderReplicaClient client = connectionPool.client(leader.host, leader.port);
             ReplicaFetchResponse response = client.replicaFetch(
                     topicName,
                     partition.partitionId,
                     config.brokerId(),
+                    partition.leaderEpoch,
                     fetchOffset,
                     FETCH_MAX_BYTES);
             for (FetchedRecord record : response.records()) {
@@ -134,6 +148,10 @@ public final class ReplicaFetcher implements AutoCloseable {
             }
         } catch (RuntimeException failure) {
             connectionPool.invalidate(leader.host, leader.port);
+            if (!config.controller()) {
+                MetadataSync.refresh(config, clusterController);
+                return;
+            }
             throw failure;
         }
     }

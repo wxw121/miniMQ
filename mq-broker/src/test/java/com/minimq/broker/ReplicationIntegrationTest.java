@@ -7,6 +7,8 @@ import com.minimq.common.error.ErrorCode;
 import com.minimq.protocol.ApiKeys;
 import com.minimq.protocol.codec.MqDecoder;
 import com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest;
+import com.minimq.protocol.message.ProtocolMessages.DiscoverControllerRequest;
+import com.minimq.protocol.message.ProtocolMessages.DiscoverControllerResponse;
 import com.minimq.protocol.message.ProtocolMessages.FetchRequest;
 import com.minimq.protocol.message.ProtocolMessages.FetchResponse;
 import com.minimq.protocol.message.ProtocolMessages.MarkBrokerOfflineRequest;
@@ -83,6 +85,8 @@ class ReplicationIntegrationTest {
             waitForFollowerReplication(broker2, "orders", 0, 1);
             waitForControllerLeo(admin, "orders", 0, 1, 1L);
             waitForControllerLeo(admin, "orders", 0, 2, 1L);
+            waitForControllerLeo(admin, "orders", 0, 1, 1L);
+            waitForControllerLeo(admin, "orders", 0, 2, 1L);
 
             MetadataResponse metadata = (MetadataResponse) admin.send(
                     ApiKeys.METADATA, new MetadataRequest("orders")).body();
@@ -110,15 +114,21 @@ class ReplicationIntegrationTest {
             produce(leaderClient, "orders", 0, "before-failover");
             waitForFollowerReplication(broker1, "orders", 0, 1);
             waitForFollowerReplication(broker2, "orders", 0, 1);
+            waitForControllerLeo(admin, "orders", 0, 1, 1L);
+            waitForControllerLeo(admin, "orders", 0, 2, 1L);
 
             MqDecoder.DecodedResponse offline = admin.send(
                     ApiKeys.MARK_BROKER_OFFLINE, new MarkBrokerOfflineRequest(0));
             assertEquals(ErrorCode.NONE, offline.header().errorCode());
 
+            int electedLeader = partition(metadata(admin, "orders"), "orders", 0).leaderBrokerId();
             TestNetworkClient newLeaderClient = new TestNetworkClient();
-            newLeaderClient.connect("127.0.0.1", broker1.port());
+            newLeaderClient.connect("127.0.0.1", electedLeader == 1 ? broker1.port() : broker2.port());
             MqDecoder.DecodedResponse fetchResponse = newLeaderClient.send(
-                    ApiKeys.FETCH, new FetchRequest("orders", 0, 0, 1024 * 1024));
+                    ApiKeys.FETCH, new FetchRequest(
+                            "orders", 0,
+                            partition(metadata(admin, "orders"), "orders", 0).leaderEpoch(),
+                            0, 1024 * 1024));
             assertEquals(ErrorCode.NONE, fetchResponse.header().errorCode());
             FetchResponse fetch = (FetchResponse) fetchResponse.body();
             assertEquals(1, fetch.records().size());
@@ -144,19 +154,31 @@ class ReplicationIntegrationTest {
             produce(leaderClient, "orders", 0, "before-failover");
             waitForFollowerReplication(broker1, "orders", 0, 1);
             waitForFollowerReplication(broker2, "orders", 0, 1);
+            waitForControllerLeo(admin, "orders", 0, 1, 1L);
+            waitForControllerLeo(admin, "orders", 0, 2, 1L);
 
             MqDecoder.DecodedResponse offline = admin.send(
                     ApiKeys.MARK_BROKER_OFFLINE, new MarkBrokerOfflineRequest(0));
             assertEquals(ErrorCode.NONE, offline.header().errorCode());
 
+            int electedLeader = partition(metadata(admin, "orders"), "orders", 0).leaderBrokerId();
             TestNetworkClient newLeaderClient = new TestNetworkClient();
-            newLeaderClient.connect("127.0.0.1", broker1.port());
+            newLeaderClient.connect("127.0.0.1", electedLeader == 1 ? broker1.port() : broker2.port());
             produce(newLeaderClient, "orders", 0, "after-failover");
-            waitForFollowerReplication(broker2, "orders", 0, 2);
-            waitForControllerLeo(admin, "orders", 0, 2, 2L);
+            BrokerTestHarness electedLeaderHarness = electedLeader == 1 ? broker1 : broker2;
+            assertEquals(2L, electedLeaderHarness.localHighWatermark("orders", 0),
+                    "promoted Leader did not append the post-failover record");
+            BrokerTestHarness survivingFollower = electedLeader == 1 ? broker2 : broker1;
+            int survivingFollowerId = electedLeader == 1 ? 2 : 1;
+            waitForLocalLeader(survivingFollower, "orders", 0, electedLeader);
+            waitForFollowerReplication(survivingFollower, "orders", 0, 2);
+            waitForControllerLeo(admin, "orders", 0, survivingFollowerId, 2L);
 
             MqDecoder.DecodedResponse fetchResponse = newLeaderClient.send(
-                    ApiKeys.FETCH, new FetchRequest("orders", 0, 0, 1024 * 1024));
+                    ApiKeys.FETCH, new FetchRequest(
+                            "orders", 0,
+                            partition(metadata(admin, "orders"), "orders", 0).leaderEpoch(),
+                            0, 1024 * 1024));
             assertEquals(ErrorCode.NONE, fetchResponse.header().errorCode());
             FetchResponse fetch = (FetchResponse) fetchResponse.body();
             assertTrue(fetch.records().size() >= 2);
@@ -249,7 +271,7 @@ class ReplicationIntegrationTest {
                             + ", leader=" + observedLeader);
             assertTrue(fencedAt <= electedAt,
                     "broker fenced after election: fencedAt=" + fencedAt + ", electedAt=" + electedAt);
-            assertEquals(2, observedLeader);
+            assertEquals(0, observedLeader);
 
             MqDecoder.DecodedResponse oldLeader = broker1Client.send(
                     ApiKeys.PRODUCE,
@@ -258,7 +280,7 @@ class ReplicationIntegrationTest {
                             1,
                             List.of(new ProduceRecord(null, "blocked".getBytes(StandardCharsets.UTF_8)))));
             assertEquals(ErrorCode.BROKER_FENCED, oldLeader.header().errorCode());
-            produce(broker2Client, "orders", 1, "after-failover");
+            produce(admin, "orders", 1, "after-failover");
         }
     }
 
@@ -392,11 +414,21 @@ class ReplicationIntegrationTest {
 
     private static void produce(TestNetworkClient client, String topic, int partition, String value)
             throws InterruptedException {
+        MqDecoder.DecodedResponse discovered = client.send(
+                ApiKeys.DISCOVER_CONTROLLER, new DiscoverControllerRequest());
+        assertEquals(ErrorCode.NONE, discovered.header().errorCode());
+        DiscoverControllerResponse controller = (DiscoverControllerResponse) discovered.body();
+        long leaderEpoch;
+        try (TestNetworkClient metadataClient = new TestNetworkClient()) {
+            metadataClient.connect(controller.controller().host(), controller.controller().port());
+            leaderEpoch = partition(metadata(metadataClient, topic), topic, partition).leaderEpoch();
+        }
         MqDecoder.DecodedResponse response = client.send(
                 ApiKeys.PRODUCE,
                 new ProduceRequest(
                         topic,
                         partition,
+                        leaderEpoch,
                         List.of(new ProduceRecord(
                                 "key".getBytes(StandardCharsets.UTF_8),
                                 value.getBytes(StandardCharsets.UTF_8)))));
@@ -441,5 +473,18 @@ class ReplicationIntegrationTest {
                 metadata.topics().get(0).partitions().get(partition)
                         .replicaLogEndOffsets().get(brokerId),
                 "Controller did not observe confirmed follower LEO");
+    }
+
+    private static void waitForLocalLeader(
+            BrokerTestHarness broker, String topic, int partitionId, int expectedLeader)
+            throws InterruptedException {
+        for (int attempt = 0; attempt < 100; attempt++) {
+            if (broker.localLeaderBrokerId(topic, partitionId) == expectedLeader) {
+                return;
+            }
+            Thread.sleep(50);
+        }
+        assertEquals(expectedLeader, broker.localLeaderBrokerId(topic, partitionId),
+                "broker did not refresh the elected Leader");
     }
 }

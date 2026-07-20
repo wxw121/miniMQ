@@ -15,6 +15,7 @@ import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerResponse;
 import com.minimq.protocol.message.ProtocolMessages.UpdateReplicaLeoRequest;
 import com.minimq.protocol.message.ProtocolMessages.DiscoverControllerRequest;
 import com.minimq.protocol.message.ProtocolMessages.DiscoverControllerResponse;
+import com.minimq.protocol.message.ProtocolMessages.LeaderReadyRequest;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.*;
@@ -109,6 +110,11 @@ public class ControllerClient implements AutoCloseable {
 
     private MqDecoder.DecodedResponse awaitResponse(short apiKey) throws InterruptedException {
         return awaitResponse(apiKey, 5, TimeUnit.SECONDS);
+    }
+
+    public synchronized void leaderReady(LeaderReadyRequest request) throws InterruptedException {
+        send(ApiKeys.LEADER_READY, request);
+        ensureSuccess(awaitResponse(ApiKeys.LEADER_READY));
     }
 
     public synchronized DiscoverControllerResponse discoverController() throws InterruptedException {

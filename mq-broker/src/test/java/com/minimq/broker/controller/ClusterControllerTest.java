@@ -159,7 +159,7 @@ class ClusterControllerTest {
     }
 
     @Test
-    void markBrokerOfflineElectsFirstSurvivingReplicaByConfiguredOrder() {
+    void markBrokerOfflineBreaksLeoTiesByLowestBrokerId() {
         ClusterController controller = new ClusterController(new MetadataStore(tempDir));
         controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
         controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
@@ -177,8 +177,10 @@ class ClusterControllerTest {
 
         PartitionMetadata partition = controller.metadata(new MetadataRequest("orders"))
                 .topics().get(0).partitions().get(0);
-        assertEquals(1, partition.leaderBrokerId());
+        assertEquals(0, partition.leaderBrokerId());
         assertEquals(List.of(1, 0), partition.isrBrokerIds());
+        assertEquals(1L, partition.leaderEpoch());
+        assertFalse(partition.leaderReady());
     }
 
     @Test

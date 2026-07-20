@@ -111,6 +111,10 @@ public final class BrokerTestHarness implements AutoCloseable {
         return server.localHighWatermark(topic, partition);
     }
 
+    public int localLeaderBrokerId(String topic, int partition) {
+        return server.localLeaderBrokerId(topic, partition);
+    }
+
     @Override
     public void close() throws Exception {
         server.stop();

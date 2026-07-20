@@ -48,8 +48,11 @@ public final class ReplicaLeoReporter implements AutoCloseable {
             return result;
         }
         try {
+            var broker = controller.getBroker(brokerId);
+            long brokerEpoch = broker == null || broker.brokerEpoch <= 0 ? 1L : broker.brokerEpoch;
             controllerClient().updateReplicaLeo(new UpdateReplicaLeoRequest(
-                    topicName, partitionId, brokerId, logEndOffset));
+                    topicName, partitionId, brokerId, brokerEpoch,
+                    controller.snapshot().controllerEpoch, logEndOffset));
             confirmedLeos.put(key, logEndOffset);
             return ErrorCode.NONE;
         } catch (InterruptedException failure) {

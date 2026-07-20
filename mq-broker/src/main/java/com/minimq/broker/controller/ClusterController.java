@@ -16,6 +16,7 @@ import com.minimq.protocol.message.ProtocolMessages.PartitionMetadata;
 import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
 import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerResponse;
 import com.minimq.protocol.message.ProtocolMessages.TopicMetadata;
+import com.minimq.protocol.message.ProtocolMessages.LeaderReadyRequest;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -167,6 +168,7 @@ public class ClusterController {
         next.brokers.get(brokerId).online = false;
         for (TopicEntry topic : next.topics.values()) {
             for (PartitionEntry partition : topic.partitions) {
+                long cleanRecoveryOffset = recoveryOffset(partition);
                 partition.isrBrokerIds.removeIf(id -> id == brokerId);
                 if (partition.leaderBrokerId != brokerId) {
                     continue;
@@ -179,7 +181,9 @@ public class ClusterController {
                 } else {
                     partition.leaderBrokerId = replacement;
                     partition.frozen = false;
-                    partition.leaderReady = true;
+                    partition.leaderEpoch = Math.addExact(partition.leaderEpoch, 1L);
+                    partition.leaderEpochStartOffset = cleanRecoveryOffset;
+                    partition.leaderReady = false;
                 }
             }
         }
@@ -237,6 +241,7 @@ public class ClusterController {
         }
         ClusterMetadata next = copyMetadata(metadata);
         Map<PartitionEntry, Integer> replacementLeaders = new IdentityHashMap<>();
+        Map<PartitionEntry, Long> recoveryOffsets = new IdentityHashMap<>();
         for (TopicEntry topic : next.topics.values()) {
             for (PartitionEntry partition : topic.partitions) {
                 normalizePartition(next, partition);
@@ -246,6 +251,7 @@ public class ClusterController {
                         return ErrorCode.INVALID_REQUEST;
                     }
                     replacementLeaders.put(partition, replacementLeader);
+                    recoveryOffsets.put(partition, recoveryOffset(partition));
                 }
             }
         }
@@ -256,6 +262,9 @@ public class ClusterController {
                 Integer replacementLeader = replacementLeaders.get(partition);
                 if (replacementLeader != null) {
                     partition.leaderBrokerId = replacementLeader;
+                    partition.leaderEpoch = Math.addExact(partition.leaderEpoch, 1L);
+                    partition.leaderEpochStartOffset = recoveryOffsets.get(partition);
+                    partition.leaderReady = false;
                 }
             }
         }
@@ -282,13 +291,55 @@ public class ClusterController {
                     && replica != null
                     && replica.online) {
                 long replicaLeo = partition.replicaLogEndOffsets.getOrDefault(replicaId, 0L);
-                if (selectedBrokerId == null || replicaLeo > selectedLeo) {
+                if (selectedBrokerId == null || replicaLeo > selectedLeo
+                        || (replicaLeo == selectedLeo && replicaId < selectedBrokerId)) {
                     selectedBrokerId = replicaId;
                     selectedLeo = replicaLeo;
                 }
             }
         }
         return selectedBrokerId;
+    }
+
+    private long recoveryOffset(PartitionEntry partition) {
+        if (partition.isrBrokerIds.isEmpty()) {
+            return 0L;
+        }
+        long recoveryOffset = Long.MAX_VALUE;
+        for (int brokerId : partition.isrBrokerIds) {
+            Long leo = partition.replicaLogEndOffsets.get(brokerId);
+            if (leo == null || leo < 0) {
+                return 0L;
+            }
+            recoveryOffset = Math.min(recoveryOffset, leo);
+        }
+        return recoveryOffset == Long.MAX_VALUE ? 0L : recoveryOffset;
+    }
+
+    public synchronized ErrorCode leaderReady(LeaderReadyRequest request) {
+        if (request.controllerEpoch() != metadata.controllerEpoch) {
+            return ErrorCode.CONTROLLER_FENCED;
+        }
+        BrokerEntry broker = metadata.brokers.get(request.brokerId());
+        if (broker == null || !broker.online || broker.brokerEpoch != request.brokerEpoch()) {
+            return ErrorCode.BROKER_FENCED;
+        }
+        ClusterMetadata next = copyMetadata(metadata);
+        PartitionEntry partition = getPartitionEntry(next, request.topicName(), request.partitionId());
+        if (partition == null || partition.leaderBrokerId != request.brokerId()) {
+            return ErrorCode.NOT_LEADER;
+        }
+        if (partition.leaderEpoch != request.leaderEpoch()) {
+            return ErrorCode.STALE_LEADER_EPOCH;
+        }
+        if (request.logEndOffset() < partition.leaderEpochStartOffset) {
+            return ErrorCode.LEADER_NOT_READY;
+        }
+        if (partition.leaderReady) {
+            return ErrorCode.NONE;
+        }
+        partition.leaderReady = true;
+        return commit(next);
     }
 
     private long deadlineFrom(long now) {
@@ -399,6 +450,27 @@ public class ClusterController {
 
     public synchronized ErrorCode updateReplicaLogEndOffset(
             String topicName, int partitionId, int brokerId, long logEndOffset) {
+        BrokerEntry broker = metadata.brokers.get(brokerId);
+        if (broker == null) {
+            return ErrorCode.INVALID_REQUEST;
+        }
+        return updateReplicaLogEndOffset(
+                topicName, partitionId, brokerId,
+                broker.brokerEpoch,
+                metadata.controllerEpoch,
+                logEndOffset);
+    }
+
+    public synchronized ErrorCode updateReplicaLogEndOffset(
+            String topicName, int partitionId, int brokerId,
+            long brokerEpoch, long controllerEpoch, long logEndOffset) {
+        if (controllerEpoch != metadata.controllerEpoch) {
+            return ErrorCode.CONTROLLER_FENCED;
+        }
+        BrokerEntry broker = metadata.brokers.get(brokerId);
+        if (broker == null || !broker.online || broker.brokerEpoch != brokerEpoch) {
+            return ErrorCode.BROKER_FENCED;
+        }
         ClusterMetadata next = copyMetadata(metadata);
         PartitionEntry partition = getPartitionEntry(next, topicName, partitionId);
         if (partition == null || logEndOffset < 0
@@ -466,6 +538,19 @@ public class ClusterController {
         metadata = copyMetadata(result.value().metadata());
         metadataRevision = result.value().revision();
         return ErrorCode.NONE;
+    }
+
+    public synchronized ErrorCode validateLeaderEpoch(
+            String topicName, int partitionId, long requestLeaderEpoch) {
+        PartitionEntry partition = getPartitionEntry(topicName, partitionId);
+        if (partition == null) {
+            return ErrorCode.UNKNOWN_PARTITION;
+        }
+        if (partition.frozen || !partition.leaderReady) {
+            return ErrorCode.LEADER_NOT_READY;
+        }
+        return partition.leaderEpoch == requestLeaderEpoch
+                ? ErrorCode.NONE : ErrorCode.STALE_LEADER_EPOCH;
     }
 
     private PartitionEntry getPartitionEntry(String topicName, int partitionId) {

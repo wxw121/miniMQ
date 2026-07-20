@@ -11,6 +11,9 @@ import com.minimq.broker.controller.GroupCoordinator;
 import com.minimq.broker.metadata.ClusterMetadata;
 import com.minimq.broker.replication.ReplicaStateManager;
 import com.minimq.broker.replication.ReplicaLeoReporter;
+import com.minimq.broker.replication.LeaderActivationService;
+import com.minimq.broker.replication.LeaderEpochStateStore;
+import com.minimq.broker.ControllerClient;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.common.model.Record;
 import com.minimq.protocol.ApiKeys;
@@ -47,6 +50,7 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     private final FetchResponseWriter fetchResponseWriter;
     private final MaintenanceAdminService maintenanceAdminService;
     private final BrokerAvailabilityGuard availabilityGuard;
+    private final LeaderActivationService leaderActivationService;
 
     public MqRequestHandler(
             BrokerConfig config,
@@ -122,6 +126,9 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         this.fetchResponseWriter = new FetchResponseWriter(config, fetchTransferMetrics);
         this.maintenanceAdminService = maintenanceAdminService;
         this.availabilityGuard = availabilityGuard;
+        this.leaderActivationService = new LeaderActivationService(
+                partitionManager,
+                new LeaderEpochStateStore(config.dataDir().resolve("leader-epochs")));
     }
 
     @Override
@@ -175,9 +182,18 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                             request.topicName(),
                             request.partitionId(),
                             request.replicaBrokerId(),
+                            request.brokerEpoch(),
+                            request.controllerEpoch(),
                             request.logEndOffset());
                     if (errorCode == ErrorCode.NONE) {
                         responseBody = new UpdateReplicaLeoResponse();
+                    }
+                }
+                case ApiKeys.LEADER_READY -> {
+                    ensureController();
+                    errorCode = clusterController.leaderReady((LeaderReadyRequest) requestBody);
+                    if (errorCode == ErrorCode.NONE) {
+                        responseBody = new LeaderReadyResponse();
                     }
                 }
                 case ApiKeys.PRODUCE -> {
@@ -185,6 +201,10 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                     errorCode = requireActiveDataPlane();
                     if (errorCode == ErrorCode.NONE) {
                         errorCode = ensureLeader(request.topicName(), request.partitionId());
+                    }
+                    if (errorCode == ErrorCode.NONE) {
+                        errorCode = clusterController.validateLeaderEpoch(
+                                request.topicName(), request.partitionId(), request.leaderEpoch());
                     }
                     if (errorCode == ErrorCode.NONE) {
                         responseBody = handleProduce(request);
@@ -195,6 +215,10 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                     errorCode = requireActiveDataPlane();
                     if (errorCode == ErrorCode.NONE) {
                         errorCode = ensureLeader(request.topicName(), request.partitionId());
+                    }
+                    if (errorCode == ErrorCode.NONE) {
+                        errorCode = clusterController.validateLeaderEpoch(
+                                request.topicName(), request.partitionId(), request.leaderEpoch());
                     }
                     if (errorCode == ErrorCode.NONE) {
                         PartitionLog partitionLog =
@@ -395,7 +419,8 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 request.topicName(), request.partitionId(), request.replicaBrokerId())) {
             return ErrorCode.INVALID_REQUEST;
         }
-        return ErrorCode.NONE;
+        return clusterController.validateLeaderEpoch(
+                request.topicName(), request.partitionId(), request.leaderEpoch());
     }
 
     private ReplicaFetchResponse buildReplicaFetchResponse(ReplicaFetchRequest request) {
@@ -425,6 +450,8 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 request.topicName(),
                 request.partitionId(),
                 replicationHighWatermark,
+                request.leaderEpoch(),
+                partitionLog.highWatermark(),
                 fetched);
     }
 
@@ -468,15 +495,62 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                     return ErrorCode.INVALID_REQUEST;
                 }
                 leaderId = clusterController.getLeaderBrokerId(topicName, partitionId);
-                if (leaderId == config.brokerId()) {
-                    noteLeadership(topicName, partitionId);
-                    return ErrorCode.NONE;
-                }
             }
-            return ErrorCode.NOT_LEADER;
+            if (leaderId != config.brokerId()) {
+                return ErrorCode.NOT_LEADER;
+            }
+        }
+        ErrorCode activationError = ensureLocalLeaderReady(topicName, partitionId);
+        if (activationError != ErrorCode.NONE) {
+            return activationError;
         }
         noteLeadership(topicName, partitionId);
         return ErrorCode.NONE;
+    }
+
+    private ErrorCode ensureLocalLeaderReady(String topicName, int partitionId) {
+        ClusterMetadata.TopicEntry topic = clusterController.getTopic(topicName);
+        if (topic == null) {
+            return ErrorCode.UNKNOWN_TOPIC;
+        }
+        ClusterMetadata.PartitionEntry partition = topic.partitions.stream()
+                .filter(candidate -> candidate.partitionId == partitionId)
+                .findFirst()
+                .orElse(null);
+        if (partition == null) {
+            return ErrorCode.UNKNOWN_PARTITION;
+        }
+        if (partition.leaderReady) {
+            return ErrorCode.NONE;
+        }
+        ErrorCode activation = leaderActivationService.activate(
+                topicName, partitionId, partition.leaderEpoch, partition.leaderEpochStartOffset);
+        if (activation != ErrorCode.NONE) {
+            return activation;
+        }
+        ClusterMetadata.BrokerEntry broker = clusterController.getBroker(config.brokerId());
+        long brokerEpoch = broker == null || broker.brokerEpoch <= 0 ? 1L : broker.brokerEpoch;
+        LeaderReadyRequest request = new LeaderReadyRequest(
+                topicName, partitionId, config.brokerId(), brokerEpoch,
+                clusterController.snapshot().controllerEpoch,
+                partition.leaderEpoch,
+                partitionManager.highWatermark(topicName, partitionId));
+        try {
+            if (config.controller()) {
+                return clusterController.leaderReady(request);
+            }
+            try (ControllerClient client = new ControllerClient()) {
+                client.connect(config.controllerHost(), config.controllerPort());
+                client.leaderReady(request);
+            }
+            MetadataSync.refresh(config, clusterController);
+            return ErrorCode.NONE;
+        } catch (ControllerClient.ControllerRequestException e) {
+            return e.errorCode();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return ErrorCode.LEADER_NOT_READY;
+        }
     }
 
     private void noteLeadership(String topicName, int partitionId) {
@@ -490,8 +564,11 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     }
 
     private void reportReplicaLeo(String topicName, int partitionId, int brokerId, long logEndOffset) {
-        if (replicaLeoReporter.report(topicName, partitionId, brokerId, logEndOffset) != ErrorCode.NONE) {
-            throw new IllegalStateException("Controller did not accept replica LEO update");
+        ErrorCode error = replicaLeoReporter.report(
+                topicName, partitionId, brokerId, logEndOffset);
+        if (error != ErrorCode.NONE) {
+            log.debug("Deferred replica LEO update topic={} partition={} broker={} offset={} error={}",
+                    topicName, partitionId, brokerId, logEndOffset, error);
         }
     }
 

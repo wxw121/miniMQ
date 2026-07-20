@@ -255,7 +255,7 @@ class EmbeddedBrokerChannelTest {
         MqDecoder.DecodedResponse response = send(
                 channel,
                 ApiKeys.UPDATE_REPLICA_LEO,
-                new UpdateReplicaLeoRequest("orders", 0, 1, 9L));
+                new UpdateReplicaLeoRequest("orders", 0, 1, 1L, 0L, 9L));
 
         assertEquals(ErrorCode.NONE, response.header().errorCode());
         assertEquals(9L, clusterController.replicaLogEndOffset("orders", 0, 1));

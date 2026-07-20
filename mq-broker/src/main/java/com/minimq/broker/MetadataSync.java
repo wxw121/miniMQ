@@ -33,6 +33,10 @@ public final class MetadataSync {
         controller.updateMetadata(snapshot -> {
             snapshot.brokers.clear();
             snapshot.topics.clear();
+            snapshot.metadataVersion = metadata.metadataVersion();
+            if (metadata.controller() != null) {
+                snapshot.controllerEpoch = metadata.controller().controllerEpoch();
+            }
 
             for (BrokerMetadata broker : metadata.brokers()) {
                 BrokerEntry entry = new BrokerEntry();
@@ -54,6 +58,9 @@ public final class MetadataSync {
                     partitionEntry.replicaLogEndOffsets =
                             new HashMap<>(partition.replicaLogEndOffsets());
                     partitionEntry.frozen = partition.frozen();
+                    partitionEntry.leaderEpoch = partition.leaderEpoch();
+                    partitionEntry.leaderEpochStartOffset = partition.leaderEpochStartOffset();
+                    partitionEntry.leaderReady = partition.leaderReady();
                     entry.partitions.add(partitionEntry);
                 }
                 snapshot.topics.put(entry.topicName, entry);

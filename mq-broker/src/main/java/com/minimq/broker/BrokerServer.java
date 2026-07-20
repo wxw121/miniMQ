@@ -59,6 +59,10 @@ public class BrokerServer {
         return partitionManager.highWatermark(topic, partition);
     }
 
+    public int localLeaderBrokerId(String topic, int partition) {
+        return clusterController.getLeaderBrokerId(topic, partition);
+    }
+
     public BrokerAvailabilityGuard.State availabilityState() {
         return availabilityGuard.state();
     }
