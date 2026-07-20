@@ -84,6 +84,7 @@ public final class ProtocolSerdes {
                     ByteBufSerde.readString(payload),
                     payload.readInt(),
                     payload.readLong(),
+                    payload.readLong(),
                     payload.readInt());
             case ApiKeys.JOIN_GROUP -> new JoinGroupRequest(
                     ByteBufSerde.readString(payload),
@@ -106,13 +107,14 @@ public final class ProtocolSerdes {
                     ByteBufSerde.readString(payload),
                     payload.readInt());
             case ApiKeys.REGISTER_BROKER -> new RegisterBrokerRequest(
-                    payload.readInt(), ByteBufSerde.readString(payload), payload.readInt());
+                    payload.readInt(), ByteBufSerde.readString(payload), payload.readInt(), payload.readLong());
             case ApiKeys.BROKER_HEARTBEAT ->
-                    new BrokerHeartbeatRequest(payload.readInt(), payload.readLong());
+                    new BrokerHeartbeatRequest(payload.readInt(), payload.readLong(), payload.readLong());
             case ApiKeys.REPLICA_FETCH -> new ReplicaFetchRequest(
                     ByteBufSerde.readString(payload),
                     payload.readInt(),
                     payload.readInt(),
+                    payload.readLong(),
                     payload.readLong(),
                     payload.readInt());
             case ApiKeys.MARK_BROKER_OFFLINE -> new MarkBrokerOfflineRequest(payload.readInt());
@@ -120,6 +122,8 @@ public final class ProtocolSerdes {
                     ByteBufSerde.readString(payload),
                     payload.readInt(),
                     payload.readInt(),
+                    payload.readLong(),
+                    payload.readLong(),
                     payload.readLong());
             case ApiKeys.MAINTENANCE_REPORT ->
                     new MaintenanceReportRequest(ByteBufSerde.readString(payload));
@@ -127,6 +131,15 @@ public final class ProtocolSerdes {
                     new MaintenanceRunRequest(ByteBufSerde.readString(payload));
             case ApiKeys.MAINTENANCE_METRICS ->
                     new MaintenanceMetricsRequest(ByteBufSerde.readString(payload));
+            case ApiKeys.DISCOVER_CONTROLLER -> new DiscoverControllerRequest();
+            case ApiKeys.LEADER_READY -> new LeaderReadyRequest(
+                    ByteBufSerde.readString(payload),
+                    payload.readInt(),
+                    payload.readInt(),
+                    payload.readLong(),
+                    payload.readLong(),
+                    payload.readLong(),
+                    payload.readLong());
             default -> throw new IllegalArgumentException("Unknown apiKey: " + apiKey);
         };
     }
@@ -158,6 +171,9 @@ public final class ProtocolSerdes {
             case ApiKeys.UPDATE_REPLICA_LEO -> new UpdateReplicaLeoResponse();
             case ApiKeys.MAINTENANCE_REPORT, ApiKeys.MAINTENANCE_RUN -> decodeMaintenanceReportResponse(payload);
             case ApiKeys.MAINTENANCE_METRICS -> decodeMaintenanceMetricsResponse(payload);
+            case ApiKeys.DISCOVER_CONTROLLER -> new DiscoverControllerResponse(
+                    readControllerMetadata(payload), payload.readLong());
+            case ApiKeys.LEADER_READY -> new LeaderReadyResponse();
             default -> throw new IllegalArgumentException("Unknown apiKey: " + apiKey);
         };
     }
@@ -176,6 +192,7 @@ public final class ProtocolSerdes {
                 FetchRequest req = (FetchRequest) body;
                 ByteBufSerde.writeString(buf, req.topicName());
                 buf.writeInt(req.partitionId());
+                buf.writeLong(req.leaderEpoch());
                 buf.writeLong(req.fetchOffset());
                 buf.writeInt(req.maxBytes());
             }
@@ -215,11 +232,13 @@ public final class ProtocolSerdes {
                 buf.writeInt(req.brokerId());
                 ByteBufSerde.writeString(buf, req.host());
                 buf.writeInt(req.port());
+                buf.writeLong(req.controllerEpoch());
             }
             case ApiKeys.BROKER_HEARTBEAT -> {
                 BrokerHeartbeatRequest req = (BrokerHeartbeatRequest) body;
                 buf.writeInt(req.brokerId());
                 buf.writeLong(req.brokerEpoch());
+                buf.writeLong(req.controllerEpoch());
             }
             case ApiKeys.REPLICA_FETCH -> writeReplicaFetchRequest(buf, (ReplicaFetchRequest) body);
             case ApiKeys.MARK_BROKER_OFFLINE -> buf.writeInt(((MarkBrokerOfflineRequest) body).brokerId());
@@ -228,6 +247,8 @@ public final class ProtocolSerdes {
                 ByteBufSerde.writeString(buf, req.topicName());
                 buf.writeInt(req.partitionId());
                 buf.writeInt(req.replicaBrokerId());
+                buf.writeLong(req.brokerEpoch());
+                buf.writeLong(req.controllerEpoch());
                 buf.writeLong(req.logEndOffset());
             }
             case ApiKeys.MAINTENANCE_REPORT ->
@@ -236,6 +257,19 @@ public final class ProtocolSerdes {
                     ByteBufSerde.writeString(buf, ((MaintenanceRunRequest) body).adminToken());
             case ApiKeys.MAINTENANCE_METRICS ->
                     ByteBufSerde.writeString(buf, ((MaintenanceMetricsRequest) body).adminToken());
+            case ApiKeys.DISCOVER_CONTROLLER -> {
+                // Empty request body.
+            }
+            case ApiKeys.LEADER_READY -> {
+                LeaderReadyRequest req = (LeaderReadyRequest) body;
+                ByteBufSerde.writeString(buf, req.topicName());
+                buf.writeInt(req.partitionId());
+                buf.writeInt(req.brokerId());
+                buf.writeLong(req.brokerEpoch());
+                buf.writeLong(req.controllerEpoch());
+                buf.writeLong(req.leaderEpoch());
+                buf.writeLong(req.logEndOffset());
+            }
             default -> throw new IllegalArgumentException("Unknown apiKey: " + apiKey);
         }
     }
@@ -271,6 +305,11 @@ public final class ProtocolSerdes {
             writeMaintenanceReportResponse(buf, res);
         } else if (body instanceof MaintenanceMetricsResponse res) {
             writeMaintenanceMetricsResponse(buf, res);
+        } else if (body instanceof DiscoverControllerResponse res) {
+            writeControllerMetadata(buf, res.controller());
+            buf.writeLong(res.metadataVersion());
+        } else if (body instanceof LeaderReadyResponse) {
+            // Successful Leader ready responses have no body fields.
         }
     }
 
@@ -301,19 +340,21 @@ public final class ProtocolSerdes {
 
     private static ProduceRequest decodeProduceRequest(ByteBuf buf) {
         String topic = ByteBufSerde.readString(buf);
-        requireReadable(buf, Integer.BYTES * 2, "produce request");
+        requireReadable(buf, Integer.BYTES * 2 + Long.BYTES, "produce request");
         int partitionId = buf.readInt();
+        long leaderEpoch = buf.readLong();
         int count = readItemCount(buf, "produce records");
         List<ProduceRecord> records = new ArrayList<>();
         for (int i = 0; i < count; i++) {
             records.add(new ProduceRecord(ByteBufSerde.readBytes(buf), ByteBufSerde.readBytes(buf)));
         }
-        return new ProduceRequest(topic, partitionId, records);
+        return new ProduceRequest(topic, partitionId, leaderEpoch, records);
     }
 
     private static void writeProduceRequest(ByteBuf buf, ProduceRequest req) {
         ByteBufSerde.writeString(buf, req.topicName());
         buf.writeInt(req.partitionId());
+        buf.writeLong(req.leaderEpoch());
         writeItemCount(buf, req.records().size(), "produce records");
         for (ProduceRecord record : req.records()) {
             ByteBufSerde.writeBytes(buf, record.key());
@@ -345,19 +386,28 @@ public final class ProtocolSerdes {
                 List<Integer> replicaBrokerIds = readBrokerIdList(buf, "replica brokers");
                 List<Integer> isrBrokerIds = readBrokerIdList(buf, "isr brokers");
                 Map<Integer, Long> replicaLogEndOffsets = readReplicaLogEndOffsets(buf);
-                requireReadable(buf, 1, "partition frozen flag");
+                requireReadable(buf, 1 + Long.BYTES * 2 + 1, "partition epoch metadata");
                 boolean frozen = buf.readBoolean();
+                long leaderEpoch = buf.readLong();
+                long leaderEpochStartOffset = buf.readLong();
+                boolean leaderReady = buf.readBoolean();
                 partitions.add(new PartitionMetadata(
                         partitionId,
                         leaderBrokerId,
                         replicaBrokerIds,
                         isrBrokerIds,
                         replicaLogEndOffsets,
-                        frozen));
+                        frozen,
+                        leaderEpoch,
+                        leaderEpochStartOffset,
+                        leaderReady));
             }
             topics.add(new TopicMetadata(topicName, partitions));
         }
-        return new MetadataResponse(brokers, topics);
+        requireReadable(buf, 1, "controller metadata presence");
+        ControllerMetadata controller = buf.readBoolean() ? readControllerMetadata(buf) : null;
+        requireReadable(buf, Long.BYTES, "metadata version");
+        return new MetadataResponse(brokers, topics, controller, buf.readLong());
     }
 
     private static void writeMetadataResponse(ByteBuf buf, MetadataResponse res) {
@@ -378,8 +428,31 @@ public final class ProtocolSerdes {
                 writeBrokerIdList(buf, partition.isrBrokerIds(), "isr brokers");
                 writeReplicaLogEndOffsets(buf, partition.replicaLogEndOffsets());
                 buf.writeBoolean(partition.frozen());
+                buf.writeLong(partition.leaderEpoch());
+                buf.writeLong(partition.leaderEpochStartOffset());
+                buf.writeBoolean(partition.leaderReady());
             }
         }
+        buf.writeBoolean(res.controller() != null);
+        if (res.controller() != null) {
+            writeControllerMetadata(buf, res.controller());
+        }
+        buf.writeLong(res.metadataVersion());
+    }
+
+    private static ControllerMetadata readControllerMetadata(ByteBuf buf) {
+        requireReadable(buf, Integer.BYTES, "controller broker id");
+        int brokerId = buf.readInt();
+        String host = ByteBufSerde.readString(buf);
+        requireReadable(buf, Integer.BYTES + Long.BYTES, "controller metadata");
+        return new ControllerMetadata(brokerId, host, buf.readInt(), buf.readLong());
+    }
+
+    private static void writeControllerMetadata(ByteBuf buf, ControllerMetadata controller) {
+        buf.writeInt(controller.brokerId());
+        ByteBufSerde.writeString(buf, controller.host());
+        buf.writeInt(controller.port());
+        buf.writeLong(controller.controllerEpoch());
     }
 
     private static MaintenanceReportResponse decodeMaintenanceReportResponse(ByteBuf buf) {
@@ -469,48 +542,39 @@ public final class ProtocolSerdes {
     }
 
     private static ReplicaFetchResponse decodeReplicaFetchResponse(ByteBuf buf) {
-        return decodeFetchLikeResponse(buf, ReplicaFetchResponse::new);
-    }
-
-    private static void writeReplicaFetchRequest(ByteBuf buf, ReplicaFetchRequest req) {
-        ByteBufSerde.writeString(buf, req.topicName());
-        buf.writeInt(req.partitionId());
-        buf.writeInt(req.replicaBrokerId());
-        buf.writeLong(req.fetchOffset());
-        buf.writeInt(req.maxBytes());
-    }
-
-    private static void writeReplicaFetchResponse(ByteBuf buf, ReplicaFetchResponse res) {
-        writeFetchLikeResponse(buf, res.topicName(), res.partitionId(), res.highWatermark(), res.records());
-    }
-
-    private static ReplicaFetchResponse decodeFetchLikeResponse(
-            ByteBuf buf,
-            FetchLikeResponseFactory<ReplicaFetchResponse> factory) {
         String topic = ByteBufSerde.readString(buf);
-        requireReadable(buf, Integer.BYTES + Long.BYTES, "replica fetch response");
+        requireReadable(buf, Integer.BYTES + Long.BYTES * 3, "replica fetch response");
         int partitionId = buf.readInt();
         long highWatermark = buf.readLong();
+        long leaderEpoch = buf.readLong();
+        long leaderLogEndOffset = buf.readLong();
         int count = readItemCount(buf, "replica fetched records");
         List<FetchedRecord> records = new ArrayList<>();
         for (int i = 0; i < count; i++) {
             requireReadable(buf, Long.BYTES, "replica fetched record offset");
             records.add(new FetchedRecord(buf.readLong(), ByteBufSerde.readBytes(buf), ByteBufSerde.readBytes(buf)));
         }
-        return factory.create(topic, partitionId, highWatermark, records);
+        return new ReplicaFetchResponse(
+                topic, partitionId, highWatermark, leaderEpoch, leaderLogEndOffset, records);
     }
 
-    private static void writeFetchLikeResponse(
-            ByteBuf buf,
-            String topicName,
-            int partitionId,
-            long highWatermark,
-            List<FetchedRecord> records) {
-        ByteBufSerde.writeString(buf, topicName);
-        buf.writeInt(partitionId);
-        buf.writeLong(highWatermark);
-        writeItemCount(buf, records.size(), "replica fetched records");
-        for (FetchedRecord record : records) {
+    private static void writeReplicaFetchRequest(ByteBuf buf, ReplicaFetchRequest req) {
+        ByteBufSerde.writeString(buf, req.topicName());
+        buf.writeInt(req.partitionId());
+        buf.writeInt(req.replicaBrokerId());
+        buf.writeLong(req.leaderEpoch());
+        buf.writeLong(req.fetchOffset());
+        buf.writeInt(req.maxBytes());
+    }
+
+    private static void writeReplicaFetchResponse(ByteBuf buf, ReplicaFetchResponse res) {
+        ByteBufSerde.writeString(buf, res.topicName());
+        buf.writeInt(res.partitionId());
+        buf.writeLong(res.highWatermark());
+        buf.writeLong(res.leaderEpoch());
+        buf.writeLong(res.leaderLogEndOffset());
+        writeItemCount(buf, res.records().size(), "replica fetched records");
+        for (FetchedRecord record : res.records()) {
             buf.writeLong(record.offset());
             ByteBufSerde.writeBytes(buf, record.key());
             ByteBufSerde.writeBytes(buf, record.value());
@@ -560,11 +624,6 @@ public final class ProtocolSerdes {
                     buf.writeInt(entry.getKey());
                     buf.writeLong(entry.getValue());
                 });
-    }
-
-    @FunctionalInterface
-    private interface FetchLikeResponseFactory<T> {
-        T create(String topicName, int partitionId, long highWatermark, List<FetchedRecord> records);
     }
 
     private static FetchResponse decodeFetchResponse(ByteBuf buf) {
