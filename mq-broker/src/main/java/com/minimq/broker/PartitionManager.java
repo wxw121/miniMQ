@@ -31,6 +31,10 @@ public class PartitionManager {
         return logManager.getOrCreate(topic, partitionId).highWatermark();
     }
 
+    public void truncateTo(String topic, int partitionId, long offset) {
+        logManager.truncateTo(topic, partitionId, offset);
+    }
+
     public void checkpoint() {
         logManager.checkpoint();
     }
