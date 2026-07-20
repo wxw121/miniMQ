@@ -516,7 +516,17 @@ The matching CLI options are `--broker-heartbeat-interval-ms`, `--broker-self-fe
 
 When a lease expires, the Controller removes the Broker from ISR and chooses the highest-LEO online ISR replica, preserving replica order as the tie-breaker. If no online ISR survives, the partition becomes frozen with an empty ISR and retains its original Leader ID. Only that original Broker can unfreeze the partition by registering with a higher epoch. Unclean election is deliberately not performed.
 
-Producer and Consumer treat `BROKER_FENCED` like `NOT_LEADER`: invalidate the routed Broker client, refresh metadata once, and retry once. Controller HA, a data-plane Leader epoch carried by produce/fetch requests, and unclean election remain deferred.
+Producer and Consumer treat `BROKER_FENCED` like `NOT_LEADER`: invalidate the routed Broker client, refresh metadata once, and retry once.
+
+### 11.2 V3.0.0 Controller HA And Leader Epoch Fencing / Controller 高可用与 Leader epoch
+
+Every production Broker connects to etcd and campaigns for one lease-bound Controller role. The winner increments `/controller/epoch`, installs an exact identity under the lease, and may mutate `/metadata/snapshot` only when both that identity and the expected etcd revision still match. Followers install snapshots through one serialized monotonic watch; SDK clients discover the Controller through any bootstrap Broker and never connect to etcd.
+
+生产 Broker 都连接 etcd 并竞选唯一的 lease-bound Controller。胜者递增 `/controller/epoch`，在 lease 下安装精确身份；只有该身份和预期 etcd revision 同时匹配时才可修改 `/metadata/snapshot`。Follower 通过单线程单调 watch 安装快照；SDK 可通过任意 bootstrap Broker 发现 Controller，但不连接 etcd。
+
+Partition metadata now includes `leaderEpoch`, `leaderEpochStartOffset`, and `leaderReady`. `PRODUCE`, `FETCH`, and `REPLICA_FETCH` require an exact epoch. A promoted Leader persists its epoch proof, crash-safely truncates to the recovery offset, sends `LEADER_READY`, and only then serves data. WAL replay recognizes committed truncation so a divergent tail cannot return after restart. Unclean election remains deliberately unsupported.
+
+分区元数据新增 `leaderEpoch`、`leaderEpochStartOffset` 和 `leaderReady`；三个数据 API 都要求精确 epoch。提升后的 Leader 先持久化 epoch 证明、崩溃安全截断到恢复点，再发送 `LEADER_READY`，最后开放数据面。WAL 重放识别已提交截断，分叉尾部不会在重启后复活。unclean election 仍明确不支持。
 
 Known limitations fixed in follow-up `2.3.1` are tracked in `docs/code-review-2026-07-17-v2.3-replication.md`.
 
@@ -529,7 +539,7 @@ Known limitations fixed in follow-up `2.3.1` are tracked in `docs/code-review-20
 | Custom binary protocol / 自定义二进制协议 | Easy to inspect low-level messaging behavior. / 便于观察底层消息行为。 | More validation and compatibility work than JSON/HTTP. / 比 JSON/HTTP 需要更多校验和兼容性工作。 |
 | Segmented local log per partition / 每分区本地分段日志 | Supports sparse indexing, faster recovery boundaries, whole-segment retention, sealed-segment compaction, dry-run reports, and maintenance metrics. / 支持稀疏索引、更清晰的恢复边界、整段保留删除、sealed segment 压缩、dry-run 报告和维护指标。 | External operator APIs still need to render maintenance reports and metrics. / 仍需要外部运维 API 输出维护报告与指标。 |
 | JSON metadata store / JSON 元数据存储 | Human-readable and easy for demos. / 人类可读，适合演示。 | Not a scalable metadata log. / 不是可扩展的元数据日志。 |
-| Static controller role / 静态 Controller 角色 | Simple bootstrapping. / 启动流程简单。 | No controller high availability. / 没有 Controller 高可用。 |
+| etcd-fenced Controller role / etcd fencing 的 Controller 角色 | Automatic takeover with epoch and revision fencing. / 使用 epoch 与 revision fencing 自动接管。 | Production Brokers require reachable etcd; SDK clients do not. / 生产 Broker 依赖可达 etcd，但 SDK 不依赖。 |
 | Synchronous client API / 同步客户端 API | Easy to use and test. / 易用且易测。 | Lower throughput than async batching. / 吞吐低于异步批量方案。 |
 | Sendfile FETCH path / sendfile FETCH 路径 | Removes payload copies on the Broker network write path. / 去掉 Broker 网络写路径上的 payload 复制。 | TLS and unsupported pipelines still use heap fallback. / TLS 与不支持的 pipeline 仍走 heap 回退。 |
 

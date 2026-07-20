@@ -19,7 +19,7 @@ Kafka 风格的 Java 分布式消息队列（作品集 / 面试向）。
 
 - **Netty** 自研二进制协议
 - **Append-Only Log** 持久化
-- **3 Broker** 分区副本、Broker 租约与自动故障转移（Broker-0 为静态 Controller）
+- **3 Broker + etcd** Controller 自动选举、分区副本、Leader epoch fencing 与自动故障转移
 - **Consumer Group** + Offset 提交
 
 ## 模块
@@ -44,37 +44,40 @@ mvn test -gs .mvn/settings.xml -s .mvn/settings.xml
 ## 启动 3 Broker（Windows PowerShell）
 
 ```powershell
+# 先启动 etcd
+docker compose -f deploy/etcd/docker-compose.yml up -d
+
 # Terminal 1
-java -cp mq-demo/target/mq-demo-2.5.0.jar com.minimq.demo.BrokerMain --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller --admin-token <secret>
+java -cp mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar com.minimq.demo.BrokerMain --broker-id 0 --port 9092 --data-dir ./data/broker-0 --etcd-endpoints http://localhost:2379 --initialize-empty-cluster --admin-token <secret>
 
 # Terminal 2
-java -cp mq-demo/target/mq-demo-2.5.0.jar com.minimq.demo.BrokerMain --broker-id 1 --port 9093 --data-dir ./data/broker-1 --controller-addr localhost:9092 --admin-token <secret>
+java -cp mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar com.minimq.demo.BrokerMain --broker-id 1 --port 9093 --data-dir ./data/broker-1 --etcd-endpoints http://localhost:2379 --admin-token <secret>
 
 # Terminal 3
-java -cp mq-demo/target/mq-demo-2.5.0.jar com.minimq.demo.BrokerMain --broker-id 2 --port 9094 --data-dir ./data/broker-2 --controller-addr localhost:9092 --admin-token <secret>
+java -cp mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar com.minimq.demo.BrokerMain --broker-id 2 --port 9094 --data-dir ./data/broker-2 --etcd-endpoints http://localhost:2379 --admin-token <secret>
 ```
 
 或使用 fat jar：
 
 ```bash
 mvn -pl mq-demo package
-java -jar mq-demo/target/mq-demo-2.5.0.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller --admin-token <secret>
+java -jar mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --etcd-endpoints http://localhost:2379 --initialize-empty-cluster --admin-token <secret>
 ```
 
 ## Demo 流程
 
 ```bash
 # 1. 创建 Topic
-java -jar mq-demo/target/mq-demo-2.5.0.jar create-topic --brokers localhost:9092 --name orders --partitions 3
+java -jar mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar create-topic --brokers localhost:9092,localhost:9093,localhost:9094 --name orders --partitions 3
 
 # 2. 发送消息
-java -jar mq-demo/target/mq-demo-2.5.0.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
+java -jar mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar produce --brokers localhost:9092,localhost:9093,localhost:9094 --topic orders --key user-1 --message hello
 
 # 3. 消费消息
-java -jar mq-demo/target/mq-demo-2.5.0.jar consume --brokers localhost:9092 --topic orders --group order-processors
+java -jar mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar consume --brokers localhost:9092,localhost:9093,localhost:9094 --topic orders --group order-processors
 ```
 
-## Broker 租约与自动故障转移（2.5.0）
+## Controller HA 与 Leader epoch（3.0.0）
 
 Broker 启动后通过 `REGISTER_BROKER` 获取持久化 `brokerEpoch`，并使用 API 16 `BROKER_HEARTBEAT` 续租。运行状态按 `STARTING -> ACTIVE -> FENCED -> RECOVERING -> ACTIVE` 转换；非 `ACTIVE` Broker 会拒绝生产、消费、副本拉取和维护执行请求，并返回 `BROKER_FENCED`。
 
@@ -86,7 +89,11 @@ broker heartbeat interval < broker self-fence timeout < controller broker lease 
 
 对应启动参数为 `--broker-heartbeat-interval-ms`、`--broker-self-fence-timeout-ms` 和 `--controller-broker-lease-timeout-ms`。Controller 租约过期后会从在线 ISR 中按 LEO 选择替代 Leader；没有可选 ISR 时分区进入 frozen 状态并保留原 Leader，只有该原 Broker 使用更高 epoch 重新注册后才能恢复。
 
-Producer 和 Consumer 遇到 `NOT_LEADER` 或 `BROKER_FENCED` 时会失效旧 Broker 连接、刷新一次元数据并重试一次。Controller 自身高可用、数据面 Leader epoch 和 unclean election 仍未实现。
+所有 Broker 通过 etcd lease 竞选 Controller；共享元数据写入同时校验 Controller 身份和值与 etcd revision，旧 Controller 无法提交。Producer 和 Consumer 可使用任意 Broker bootstrap 自动发现 Controller，并在 `NOT_LEADER`、`BROKER_FENCED`、`STALE_LEADER_EPOCH` 或 `LEADER_NOT_READY` 时刷新一次路由。
+
+Leader 切换会先按旧 ISR 已确认 LEO 计算恢复点，持久化 Leader epoch 状态并崩溃安全地截断分叉尾部，完成 `LEADER_READY` 握手后才开放读写。3.0.0 仍不支持 unclean election；没有在线 ISR 时分区保持 frozen。SDK 不连接 etcd。
+
+2.x 数据目录升级时，仅首个节点使用 `--initialize-cluster-from-local` 将本地元数据显式 CAS 导入空的 etcd 集群；全新集群使用 `--initialize-empty-cluster`。导入后不要让 2.x 与 3.0 同时写同一数据目录，回退前也必须保留升级前备份。
 
 
 ## Web 前端主流程
@@ -139,7 +146,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-web.ps1 
 也可以直接运行开发启动器：
 
 ```powershell
-java -Dminimq.web.port=18082 -Dminimq.broker.port=19092 -Dminimq.data.dir=.run/data-live -cp mq-demo/target/mq-demo-2.5.0.jar com.minimq.demo.web.MiniMqWebDevMain
+java -Dminimq.web.port=18082 -Dminimq.broker.port=19092 -Dminimq.data.dir=.run/data-live -cp mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar com.minimq.demo.web.MiniMqWebDevMain
 ```
 
 前端自动化测试覆盖：静态页面资源、真实 MiniMQ 主流程、Broker 不可用时的 mock fallback、HTTP 错误处理、表单默认值与模式归一化。

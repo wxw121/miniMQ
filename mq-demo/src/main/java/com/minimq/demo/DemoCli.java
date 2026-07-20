@@ -1,6 +1,7 @@
 package com.minimq.demo;
 
 import com.minimq.client.Consumer;
+import com.minimq.client.ControllerAwareNetworkClient;
 import com.minimq.client.NetworkClient;
 import com.minimq.client.Producer;
 import com.minimq.client.model.ConsumerRecord;
@@ -46,9 +47,9 @@ public final class DemoCli {
         String brokers = arg(args, "--brokers", "localhost:9092");
         String name = arg(args, "--name", "orders");
         int partitions = Integer.parseInt(arg(args, "--partitions", "3"));
-        String[] hp = parseFirstHostPort(brokers);
-        try (NetworkClient client = new NetworkClient("demo-admin")) {
-            client.connect(hp[0], Integer.parseInt(hp[1]));
+        try (ControllerAwareNetworkClient client =
+                     new ControllerAwareNetworkClient(brokers, "demo-admin")) {
+            client.connect();
             MqDecoder.DecodedResponse response = client.send(
                     ApiKeys.CREATE_TOPIC, new CreateTopicRequest(name, partitions));
             client.ensureSuccess(response);
@@ -228,7 +229,7 @@ public final class DemoCli {
     private static void printUsage() {
         System.out.println("""
                 Usage:
-                  java -jar mq-demo.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller --admin-token <secret>
+                  java -jar mq-demo.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --etcd-endpoints http://localhost:2379 --initialize-empty-cluster --admin-token <secret>
                   java -jar mq-demo.jar create-topic --brokers localhost:9092 --name orders --partitions 3
                   java -jar mq-demo.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
                   java -jar mq-demo.jar consume --brokers localhost:9092 --topic orders --group demo-group

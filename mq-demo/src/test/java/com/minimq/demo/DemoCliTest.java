@@ -31,7 +31,7 @@ class DemoCliTest {
         assertTrue(noArgs.contains("maintenance-report"));
         assertTrue(unknown.contains("maintenance-metrics"));
         String brokerUsage =
-                "broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller --admin-token <secret>";
+                "broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --etcd-endpoints http://localhost:2379 --initialize-empty-cluster --admin-token <secret>";
         assertTrue(noArgs.contains(brokerUsage));
         assertTrue(unknown.contains(brokerUsage));
         assertTrue(noArgs.contains("--broker localhost:9092 --admin-token"));
@@ -66,14 +66,15 @@ class DemoCliTest {
                 "--host", "127.0.0.1",
                 "--port", "19092",
                 "--data-dir", "./tmp/broker-3",
-                "--controller",
+                "--etcd-endpoints", "http://127.0.0.1:2379",
+                "--initialize-empty-cluster",
                 "--admin-token", "test-admin-token"
         });
 
         assertEquals(3, config.brokerId());
         assertEquals("127.0.0.1", config.host());
         assertEquals(19092, config.port());
-        assertTrue(config.controller());
+        assertTrue(config.initializeEmptyCluster());
     }
 
     @Test

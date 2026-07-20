@@ -200,7 +200,7 @@ V2.2 零拷贝 FETCH 收口记录见 `docs/test-report-2026-07-17-v2.2-read-perf
 Benchmark command / 基准命令：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-2.5.0.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
+java -jar mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
 ```
 
 ### 7.5 V2.3 Replication Closeout / V2.3 副本机制收口
@@ -343,7 +343,21 @@ The slowest tests are integration and E2E tests that start brokers, open Netty c
 | `ConsumerIntegrationTest` | Includes subscribe, heartbeat scheduling, poll, and commit. / 包含订阅、心跳调度、poll 和提交。 |
 | `DemoCliTest` | Runs CLI create/produce/consume and maintenance admin commands against a real test broker. / 通过真实测试 Broker 运行 CLI 创建、生产、消费和维护管理命令。 |
 
-## 11. Terms / 测试名词解释
+## 11. V3.0.0 Controller HA Verification / Controller 高可用验证
+
+V3.0 adds focused unit suites for Controller election, revision-CAS metadata, monotonic watches, Leader activation state, crash-safe truncation, exact data-plane epochs, complete bootstrap discovery, and bounded retries. Real etcd tests run under the `etcd-it` profile:
+
+```powershell
+mvn -q -gs .mvn/settings.xml -pl mq-broker -am -Petcd-it -Dtest=NoSuchUnitTest -Dsurefire.failIfNoSpecifiedTests=false -Dit.test=ControllerFailoverIT,LeaderEpochFailoverIT -Djacoco.skip=true verify
+```
+
+The targeted command skips unrelated unit coverage aggregation; the final `mvn clean verify` remains responsible for the JaCoCo gate. `ControllerFailoverIT` starts real etcd and real Brokers, verifies unique election, epoch increments, bootstrap discovery, and takeover. `LeaderEpochFailoverIT` verifies that an old Controller identity cannot commit after takeover. Unclean election is intentionally absent and no-ISR partitions must remain frozen.
+
+V3.0 增加 Controller 选举、revision CAS、单调 watch、Leader 激活状态、崩溃安全截断、数据面精确 epoch、完整 bootstrap 发现与有界重试测试。定向 etcd 命令只跳过无关模块的覆盖率聚合；最终 `mvn clean verify` 仍负责 JaCoCo 门禁。真实测试会启动 etcd 与 Broker，并验证唯一选举、epoch 递增、发现、接管和旧 Controller 写 fencing。unclean election 明确不在范围内，无 ISR 分区必须保持 frozen。
+
+Evidence / 验证证据：`docs/test-report-2026-07-20-v3.0.0-control-plane-ha.md`。
+
+## 12. Terms / 测试名词解释
 
 | Term / 术语 | 中文解释 | English explanation / 英文解释 |
 | --- | --- | --- |
