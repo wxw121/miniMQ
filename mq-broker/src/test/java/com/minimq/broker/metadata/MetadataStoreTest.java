@@ -379,6 +379,7 @@ class MetadataStoreTest {
         partition.isrBrokerIds = List.of();
         partition.replicaLogEndOffsets.put(0, 9L);
         partition.frozen = true;
+        partition.leaderReady = false;
         topic.partitions.add(partition);
         metadata.topics.put("orders", topic);
 
@@ -389,6 +390,91 @@ class MetadataStoreTest {
         assertEquals(4L, loaded.brokers.get(0).brokerEpoch);
         assertTrue(loaded.topics.get("orders").partitions.get(0).frozen);
         assertTrue(loaded.topics.get("orders").partitions.get(0).isrBrokerIds.isEmpty());
+    }
+
+    @Test
+    void compareAndSetAdvancesRevisionAndFencesStaleWriter(@TempDir Path dir) {
+        MetadataStore repository = new MetadataStore(dir);
+        VersionedClusterMetadata initial = repository.read();
+        ClusterMetadata next = initial.metadata();
+        next.controllerEpoch = 3L;
+
+        ClusterMetadataRepository.UpdateResult committed =
+                repository.compareAndSet(initial.revision(), next);
+        ClusterMetadataRepository.UpdateResult stale =
+                repository.compareAndSet(initial.revision(), new ClusterMetadata());
+
+        assertEquals(com.minimq.common.error.ErrorCode.NONE, committed.errorCode());
+        assertEquals(1L, committed.value().revision());
+        assertEquals(1L, committed.value().metadata().metadataVersion);
+        assertEquals(com.minimq.common.error.ErrorCode.CONTROLLER_FENCED, stale.errorCode());
+        assertEquals(1L, stale.value().revision());
+        assertEquals(3L, repository.read().metadata().controllerEpoch);
+    }
+
+    @Test
+    void initializeIsIdempotentForSameSnapshotAndRejectsConflicts(@TempDir Path dir) {
+        MetadataStore repository = new MetadataStore(dir);
+        ClusterMetadata initial = new ClusterMetadata();
+        initial.controllerEpoch = 2L;
+
+        ClusterMetadataRepository.UpdateResult created = repository.initialize(initial);
+        ClusterMetadataRepository.UpdateResult repeated = repository.initialize(initial);
+        ClusterMetadata conflicting = new ClusterMetadata();
+        conflicting.controllerEpoch = 3L;
+        ClusterMetadataRepository.UpdateResult conflict = repository.initialize(conflicting);
+
+        assertEquals(com.minimq.common.error.ErrorCode.NONE, created.errorCode());
+        assertEquals(com.minimq.common.error.ErrorCode.NONE, repeated.errorCode());
+        assertEquals(com.minimq.common.error.ErrorCode.INVALID_REQUEST, conflict.errorCode());
+        assertEquals(2L, repository.read().metadata().controllerEpoch);
+    }
+
+    @Test
+    void loadMigratesLegacy25MetadataAndInitializesEpochFields(@TempDir Path dir) throws IOException {
+        Files.writeString(dir.resolve("cluster-metadata.json"), """
+                {
+                  "brokers": {},
+                  "topics": {
+                    "orders": {
+                      "topicName": "orders",
+                      "partitions": [{
+                        "partitionId": 0,
+                        "leaderBrokerId": 0,
+                        "replicaBrokerIds": [0],
+                        "isrBrokerIds": [0],
+                        "replicaLogEndOffsets": {"0": 7},
+                        "frozen": false
+                      }]
+                    }
+                  },
+                  "consumerGroups": {}
+                }
+                """, StandardCharsets.UTF_8);
+
+        ClusterMetadata migrated = new MetadataStore(dir).load();
+        ClusterMetadata.PartitionEntry partition = migrated.topics.get("orders").partitions.get(0);
+
+        assertEquals(3, migrated.metadataFormatVersion);
+        assertEquals(0L, migrated.controllerEpoch);
+        assertEquals(0L, migrated.metadataVersion);
+        assertEquals(0L, partition.leaderEpoch);
+        assertEquals(0L, partition.leaderEpochStartOffset);
+        assertTrue(partition.leaderReady);
+    }
+
+    @Test
+    void loadRejectsUnknownMetadataFormatVersion(@TempDir Path dir) throws IOException {
+        assertInvalidMetadata(dir, """
+                {
+                  "metadataFormatVersion": 99,
+                  "controllerEpoch": 0,
+                  "metadataVersion": 0,
+                  "brokers": {},
+                  "topics": {},
+                  "consumerGroups": {}
+                }
+                """, "metadataFormatVersion");
     }
 
     @Test

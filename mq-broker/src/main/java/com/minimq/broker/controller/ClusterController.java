@@ -4,7 +4,8 @@ import com.minimq.broker.metadata.ClusterMetadata;
 import com.minimq.broker.metadata.ClusterMetadata.BrokerEntry;
 import com.minimq.broker.metadata.ClusterMetadata.PartitionEntry;
 import com.minimq.broker.metadata.ClusterMetadata.TopicEntry;
-import com.minimq.broker.metadata.MetadataStore;
+import com.minimq.broker.metadata.ClusterMetadataRepository;
+import com.minimq.broker.metadata.VersionedClusterMetadata;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.protocol.message.ProtocolMessages.BrokerMetadata;
 import com.minimq.protocol.message.ProtocolMessages.BrokerHeartbeatRequest;
@@ -34,11 +35,12 @@ public class ClusterController {
     private static final long ISR_LAG_TOLERANCE_RECORDS = 10L;
     private static final long DEFAULT_LEASE_TIMEOUT_MS = 5_000L;
 
-    private final MetadataStore metadataStore;
+    private final ClusterMetadataRepository metadataRepository;
     private final long leaseTimeoutMs;
     private final LongSupplier nanoTime;
     private final Map<Integer, BrokerLease> brokerLeases = new HashMap<>();
     private ClusterMetadata metadata;
+    private long metadataRevision;
 
     public record BrokerRegistration(ErrorCode errorCode, RegisterBrokerResponse response) {
         static BrokerRegistration failed(ErrorCode errorCode) {
@@ -52,19 +54,22 @@ public class ClusterController {
     private record BrokerLeaseKey(int brokerId, long brokerEpoch) {
     }
 
-    public ClusterController(MetadataStore metadataStore) {
-        this(metadataStore, DEFAULT_LEASE_TIMEOUT_MS);
+    public ClusterController(ClusterMetadataRepository metadataRepository) {
+        this(metadataRepository, DEFAULT_LEASE_TIMEOUT_MS);
     }
 
-    public ClusterController(MetadataStore metadataStore, long leaseTimeoutMs) {
-        this(metadataStore, leaseTimeoutMs, System::nanoTime);
+    public ClusterController(ClusterMetadataRepository metadataRepository, long leaseTimeoutMs) {
+        this(metadataRepository, leaseTimeoutMs, System::nanoTime);
     }
 
-    ClusterController(MetadataStore metadataStore, long leaseTimeoutMs, LongSupplier nanoTime) {
-        this.metadataStore = metadataStore;
+    ClusterController(
+            ClusterMetadataRepository metadataRepository, long leaseTimeoutMs, LongSupplier nanoTime) {
+        this.metadataRepository = metadataRepository;
         this.leaseTimeoutMs = leaseTimeoutMs;
         this.nanoTime = nanoTime;
-        this.metadata = metadataStore.load();
+        VersionedClusterMetadata loaded = metadataRepository.read();
+        this.metadata = copyMetadata(loaded.metadata());
+        this.metadataRevision = loaded.revision();
         normalizeMetadata();
         long deadline = deadlineFrom(nanoTime.getAsLong());
         metadata.brokers.values().stream()
@@ -91,8 +96,10 @@ public class ClusterController {
         entry.online = true;
         entry.brokerEpoch = current == null ? 1L : Math.addExact(current.brokerEpoch, 1L);
         restoreFrozenPartitions(next, request.brokerId());
-        metadataStore.save(next);
-        metadata = next;
+        ErrorCode commitError = commit(next);
+        if (commitError != ErrorCode.NONE) {
+            return BrokerRegistration.failed(commitError);
+        }
         brokerLeases.put(request.brokerId(), new BrokerLease(entry.brokerEpoch, deadlineFrom(now)));
         return new BrokerRegistration(
                 ErrorCode.NONE, new RegisterBrokerResponse(entry.brokerEpoch, leaseTimeoutMs));
@@ -157,16 +164,19 @@ public class ClusterController {
                 Integer replacement = preferredSurvivingLeader(next, partition, brokerId);
                 if (replacement == null) {
                     partition.frozen = true;
+                    partition.leaderReady = false;
                     partition.isrBrokerIds.clear();
                 } else {
                     partition.leaderBrokerId = replacement;
                     partition.frozen = false;
+                    partition.leaderReady = true;
                 }
             }
         }
 
-        metadataStore.save(next);
-        metadata = next;
+        if (commit(next) != ErrorCode.NONE) {
+            return false;
+        }
         brokerLeases.remove(brokerId, lease);
         return true;
     }
@@ -186,6 +196,7 @@ public class ClusterController {
         if (onlineBrokers.isEmpty() || request.replicationFactor() > onlineBrokers.size()) {
             return ErrorCode.INVALID_REQUEST;
         }
+        ClusterMetadata next = copyMetadata(metadata);
         TopicEntry topic = new TopicEntry();
         topic.topicName = request.topicName();
         for (int i = 0; i < request.numPartitions(); i++) {
@@ -202,9 +213,8 @@ public class ClusterController {
             replicas.forEach(replicaId -> partition.replicaLogEndOffsets.put(replicaId, 0L));
             topic.partitions.add(partition);
         }
-        metadata.topics.put(request.topicName(), topic);
-        metadataStore.save(metadata);
-        return ErrorCode.NONE;
+        next.topics.put(request.topicName(), topic);
+        return commit(next);
     }
 
     public synchronized ErrorCode markBrokerOffline(int brokerId) {
@@ -212,12 +222,13 @@ public class ClusterController {
         if (broker == null) {
             return ErrorCode.INVALID_REQUEST;
         }
+        ClusterMetadata next = copyMetadata(metadata);
         Map<PartitionEntry, Integer> replacementLeaders = new IdentityHashMap<>();
-        for (TopicEntry topic : metadata.topics.values()) {
+        for (TopicEntry topic : next.topics.values()) {
             for (PartitionEntry partition : topic.partitions) {
-                normalizePartition(partition);
+                normalizePartition(next, partition);
                 if (partition.leaderBrokerId == brokerId) {
-                    Integer replacementLeader = preferredSurvivingLeader(partition, brokerId);
+                    Integer replacementLeader = preferredSurvivingLeader(next, partition, brokerId);
                     if (replacementLeader == null) {
                         return ErrorCode.INVALID_REQUEST;
                     }
@@ -225,8 +236,8 @@ public class ClusterController {
                 }
             }
         }
-        broker.online = false;
-        for (TopicEntry topic : metadata.topics.values()) {
+        next.brokers.get(brokerId).online = false;
+        for (TopicEntry topic : next.topics.values()) {
             for (PartitionEntry partition : topic.partitions) {
                 partition.isrBrokerIds.removeIf(id -> id == brokerId);
                 Integer replacementLeader = replacementLeaders.get(partition);
@@ -235,7 +246,10 @@ public class ClusterController {
                 }
             }
         }
-        metadataStore.save(metadata);
+        ErrorCode commitError = commit(next);
+        if (commitError != ErrorCode.NONE) {
+            return commitError;
+        }
         brokerLeases.remove(brokerId);
         return ErrorCode.NONE;
     }
@@ -273,6 +287,7 @@ public class ClusterController {
             for (PartitionEntry partition : topic.partitions) {
                 if (partition.frozen && partition.leaderBrokerId == brokerId) {
                     partition.frozen = false;
+                    partition.leaderReady = true;
                     partition.isrBrokerIds = new ArrayList<>(List.of(brokerId));
                 }
             }
@@ -296,7 +311,7 @@ public class ClusterController {
                     .collect(Collectors.toList());
             topics.add(new TopicMetadata(topic.topicName, partitions));
         }
-        return new MetadataResponse(brokers, topics);
+        return new MetadataResponse(brokers, topics, null, metadata.metadataVersion);
     }
 
     public synchronized TopicEntry getTopic(String topicName) {
@@ -333,21 +348,22 @@ public class ClusterController {
 
     public synchronized ErrorCode updateReplicaLogEndOffset(
             String topicName, int partitionId, int brokerId, long logEndOffset) {
-        PartitionEntry partition = getPartitionEntry(topicName, partitionId);
+        ClusterMetadata next = copyMetadata(metadata);
+        PartitionEntry partition = getPartitionEntry(next, topicName, partitionId);
         if (partition == null || logEndOffset < 0
                 || !partition.replicaBrokerIds.contains(brokerId)) {
             return ErrorCode.INVALID_REQUEST;
         }
-        normalizePartition(partition);
+        normalizePartition(next, partition);
         long current = partition.replicaLogEndOffsets.getOrDefault(brokerId, 0L);
         boolean leoChanged = false;
         if (logEndOffset > current) {
             partition.replicaLogEndOffsets.put(brokerId, logEndOffset);
             leoChanged = true;
         }
-        boolean isrChanged = reconcileIsrByLeo(partition);
+        boolean isrChanged = reconcileIsrByLeo(next, partition);
         if (leoChanged || isrChanged) {
-            metadataStore.save(metadata);
+            return commit(next);
         }
         return ErrorCode.NONE;
     }
@@ -371,20 +387,42 @@ public class ClusterController {
     }
 
     public synchronized void replaceMetadata(ClusterMetadata metadata) {
-        this.metadata = copyMetadata(metadata);
-        normalizeMetadata();
-        metadataStore.save(this.metadata);
+        ClusterMetadata next = copyMetadata(metadata);
+        normalizeMetadata(next);
+        ErrorCode error = commit(next);
+        if (error != ErrorCode.NONE) {
+            throw new IllegalStateException("Metadata replacement failed: " + error);
+        }
     }
 
     public synchronized <T> T updateMetadata(Function<ClusterMetadata, T> updater) {
-        T result = updater.apply(metadata);
-        normalizeMetadata();
-        metadataStore.save(metadata);
+        ClusterMetadata next = copyMetadata(metadata);
+        T result = updater.apply(next);
+        normalizeMetadata(next);
+        ErrorCode error = commit(next);
+        if (error != ErrorCode.NONE) {
+            throw new IllegalStateException("Metadata update failed: " + error);
+        }
         return result;
     }
 
+    private ErrorCode commit(ClusterMetadata next) {
+        ClusterMetadataRepository.UpdateResult result =
+                metadataRepository.compareAndSet(metadataRevision, next);
+        if (result.errorCode() != ErrorCode.NONE) {
+            return result.errorCode();
+        }
+        metadata = copyMetadata(result.value().metadata());
+        metadataRevision = result.value().revision();
+        return ErrorCode.NONE;
+    }
+
     private PartitionEntry getPartitionEntry(String topicName, int partitionId) {
-        TopicEntry topic = metadata.topics.get(topicName);
+        return getPartitionEntry(metadata, topicName, partitionId);
+    }
+
+    private PartitionEntry getPartitionEntry(ClusterMetadata source, String topicName, int partitionId) {
+        TopicEntry topic = source.topics.get(topicName);
         if (topic == null) {
             return null;
         }
@@ -402,13 +440,20 @@ public class ClusterController {
                 List.copyOf(partition.replicaBrokerIds),
                 List.copyOf(partition.isrBrokerIds),
                 Map.copyOf(partition.replicaLogEndOffsets),
-                partition.frozen);
+                partition.frozen,
+                partition.leaderEpoch,
+                partition.leaderEpochStartOffset,
+                partition.leaderReady);
     }
 
     private void normalizeMetadata() {
-        for (TopicEntry topic : metadata.topics.values()) {
+        normalizeMetadata(metadata);
+    }
+
+    private void normalizeMetadata(ClusterMetadata source) {
+        for (TopicEntry topic : source.topics.values()) {
             for (PartitionEntry partition : topic.partitions) {
-                normalizePartition(partition);
+                normalizePartition(source, partition);
             }
         }
     }
@@ -437,6 +482,7 @@ public class ClusterController {
             partition.replicaLogEndOffsets.putIfAbsent(replicaId, 0L);
         }
         if (partition.frozen) {
+            partition.leaderReady = false;
             partition.isrBrokerIds.clear();
             return;
         }
@@ -499,6 +545,9 @@ public class ClusterController {
     // Return deep copies so callers cannot mutate controller-owned state directly.
     private static ClusterMetadata copyMetadata(ClusterMetadata source) {
         ClusterMetadata copy = new ClusterMetadata();
+        copy.metadataFormatVersion = source.metadataFormatVersion;
+        copy.controllerEpoch = source.controllerEpoch;
+        copy.metadataVersion = source.metadataVersion;
         source.brokers.forEach((id, broker) -> copy.brokers.put(id, copyBroker(broker)));
         source.topics.forEach((name, topic) -> copy.topics.put(name, copyTopic(topic)));
         source.consumerGroups.forEach((id, group) -> copy.consumerGroups.put(id, copyConsumerGroup(group)));
@@ -526,6 +575,9 @@ public class ClusterController {
             partitionCopy.isrBrokerIds = new ArrayList<>(partition.isrBrokerIds);
             partitionCopy.replicaLogEndOffsets = new java.util.HashMap<>(partition.replicaLogEndOffsets);
             partitionCopy.frozen = partition.frozen;
+            partitionCopy.leaderEpoch = partition.leaderEpoch;
+            partitionCopy.leaderEpochStartOffset = partition.leaderEpochStartOffset;
+            partitionCopy.leaderReady = partition.leaderReady;
             copy.partitions.add(partitionCopy);
         }
         return copy;

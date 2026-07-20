@@ -2,6 +2,8 @@ package com.minimq.broker.controller;
 
 import com.minimq.broker.metadata.MetadataStore;
 import com.minimq.broker.metadata.ClusterMetadata;
+import com.minimq.broker.metadata.ClusterMetadataRepository;
+import com.minimq.broker.metadata.VersionedClusterMetadata;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.protocol.message.ProtocolMessages.BrokerHeartbeatRequest;
 import com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest;
@@ -26,6 +28,43 @@ class ClusterControllerTest {
 
     @TempDir
     Path tempDir;
+
+    @Test
+    void repositoryCasFailureDoesNotChangeControllerMemory() {
+        RejectingMetadataRepository repository = new RejectingMetadataRepository();
+        ClusterController controller = new ClusterController(repository);
+
+        ClusterController.BrokerRegistration result =
+                controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
+
+        assertEquals(ErrorCode.CONTROLLER_FENCED, result.errorCode());
+        assertTrue(controller.snapshot().brokers.isEmpty());
+    }
+
+    @Test
+    void snapshotDeepCopiesLeaderEpochFields() {
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.createTopic(new CreateTopicRequest("orders", 1));
+        controller.updateMetadata(metadata -> {
+            var partition = metadata.topics.get("orders").partitions.get(0);
+            partition.leaderEpoch = 7L;
+            partition.leaderEpochStartOffset = 11L;
+            partition.leaderReady = false;
+            return null;
+        });
+
+        ClusterMetadata first = controller.snapshot();
+        first.controllerEpoch = 99L;
+        first.topics.get("orders").partitions.get(0).leaderEpoch = 99L;
+
+        ClusterMetadata second = controller.snapshot();
+        assertEquals(0L, second.controllerEpoch);
+        assertEquals(7L, second.topics.get("orders").partitions.get(0).leaderEpoch);
+        assertEquals(11L, second.topics.get("orders").partitions.get(0).leaderEpochStartOffset);
+        assertFalse(second.topics.get("orders").partitions.get(0).leaderReady);
+        assertTrue(controller.metadata(new MetadataRequest("orders")).metadataVersion() > 0L);
+    }
 
     @Test
     void createTopicRoundRobin() {
@@ -415,6 +454,26 @@ class ClusterControllerTest {
         controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
         controller.createTopic(new CreateTopicRequest("orders", 1, 2));
         return controller;
+    }
+
+    private static final class RejectingMetadataRepository implements ClusterMetadataRepository {
+        private final VersionedClusterMetadata current =
+                new VersionedClusterMetadata(new ClusterMetadata(), 0L);
+
+        @Override
+        public VersionedClusterMetadata read() {
+            return current;
+        }
+
+        @Override
+        public UpdateResult initialize(ClusterMetadata metadata) {
+            return new UpdateResult(ErrorCode.CONTROLLER_FENCED, current);
+        }
+
+        @Override
+        public UpdateResult compareAndSet(long expectedRevision, ClusterMetadata metadata) {
+            return new UpdateResult(ErrorCode.CONTROLLER_FENCED, current);
+        }
     }
 
     private static final class CountingMetadataStore extends MetadataStore {
