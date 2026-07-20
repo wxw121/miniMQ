@@ -4,6 +4,8 @@ import com.minimq.storage.FlushPolicy;
 import com.minimq.storage.SegmentedLogConfig;
 
 import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.List;
 
 /**
  * Broker 启动配置，集中保存 brokerId、监听地址、数据目录和 Controller 模式。
@@ -34,6 +36,13 @@ public record BrokerConfig(
         long brokerHeartbeatIntervalMs,
         long brokerSelfFenceTimeoutMs,
         long controllerBrokerLeaseTimeoutMs,
+        String clusterId,
+        List<String> etcdEndpoints,
+        int controllerSessionTtlSeconds,
+        long controllerFailoverGraceMs,
+        long leaderActivationTimeoutMs,
+        boolean initializeEmptyCluster,
+        boolean initializeClusterFromLocal,
         String adminToken) {
 
     public static final int DEFAULT_COMPACTION_MAX_SEGMENTS = 4;
@@ -43,6 +52,11 @@ public record BrokerConfig(
     public static final long DEFAULT_BROKER_HEARTBEAT_INTERVAL_MS = 1_000L;
     public static final long DEFAULT_BROKER_SELF_FENCE_TIMEOUT_MS = 3_000L;
     public static final long DEFAULT_CONTROLLER_BROKER_LEASE_TIMEOUT_MS = 5_000L;
+    public static final String DEFAULT_CLUSTER_ID = "minimq";
+    public static final List<String> DEFAULT_ETCD_ENDPOINTS = List.of("http://localhost:2379");
+    public static final int DEFAULT_CONTROLLER_SESSION_TTL_SECONDS = 15;
+    public static final long DEFAULT_CONTROLLER_FAILOVER_GRACE_MS = 10_000L;
+    public static final long DEFAULT_LEADER_ACTIVATION_TIMEOUT_MS = 5_000L;
 
     public BrokerConfig(
             int brokerId,
@@ -130,6 +144,13 @@ public record BrokerConfig(
                 DEFAULT_BROKER_HEARTBEAT_INTERVAL_MS,
                 DEFAULT_BROKER_SELF_FENCE_TIMEOUT_MS,
                 DEFAULT_CONTROLLER_BROKER_LEASE_TIMEOUT_MS,
+                DEFAULT_CLUSTER_ID,
+                DEFAULT_ETCD_ENDPOINTS,
+                DEFAULT_CONTROLLER_SESSION_TTL_SECONDS,
+                DEFAULT_CONTROLLER_FAILOVER_GRACE_MS,
+                DEFAULT_LEADER_ACTIVATION_TIMEOUT_MS,
+                false,
+                false,
                 adminToken);
     }
 
@@ -161,6 +182,13 @@ public record BrokerConfig(
         long brokerHeartbeatIntervalMs = DEFAULT_BROKER_HEARTBEAT_INTERVAL_MS;
         long brokerSelfFenceTimeoutMs = DEFAULT_BROKER_SELF_FENCE_TIMEOUT_MS;
         long controllerBrokerLeaseTimeoutMs = DEFAULT_CONTROLLER_BROKER_LEASE_TIMEOUT_MS;
+        String clusterId = DEFAULT_CLUSTER_ID;
+        List<String> etcdEndpoints = DEFAULT_ETCD_ENDPOINTS;
+        int controllerSessionTtlSeconds = DEFAULT_CONTROLLER_SESSION_TTL_SECONDS;
+        long controllerFailoverGraceMs = DEFAULT_CONTROLLER_FAILOVER_GRACE_MS;
+        long leaderActivationTimeoutMs = DEFAULT_LEADER_ACTIVATION_TIMEOUT_MS;
+        boolean initializeEmptyCluster = false;
+        boolean initializeClusterFromLocal = false;
         String adminToken = null;
 
         for (int i = 0; i < args.length; i++) {
@@ -169,7 +197,23 @@ public record BrokerConfig(
                 case "--host" -> host = value(args, ++i, "--host");
                 case "--port" -> port = Integer.parseInt(value(args, ++i, "--port"));
                 case "--data-dir" -> dataDir = Path.of(value(args, ++i, "--data-dir"));
-                case "--controller" -> controller = true;
+                case "--cluster-id" -> clusterId = value(args, ++i, "--cluster-id");
+                case "--etcd-endpoints" -> etcdEndpoints =
+                        parseEtcdEndpoints(value(args, ++i, "--etcd-endpoints"));
+                case "--controller-session-ttl-seconds" -> controllerSessionTtlSeconds =
+                        parsePositiveInt(
+                                value(args, ++i, "--controller-session-ttl-seconds"),
+                                "--controller-session-ttl-seconds");
+                case "--controller-failover-grace-ms" -> controllerFailoverGraceMs =
+                        parsePositiveLong(
+                                value(args, ++i, "--controller-failover-grace-ms"),
+                                "--controller-failover-grace-ms");
+                case "--leader-activation-timeout-ms" -> leaderActivationTimeoutMs =
+                        parsePositiveLong(
+                                value(args, ++i, "--leader-activation-timeout-ms"),
+                                "--leader-activation-timeout-ms");
+                case "--initialize-empty-cluster" -> initializeEmptyCluster = true;
+                case "--initialize-cluster-from-local" -> initializeClusterFromLocal = true;
                 case "--recover-corrupt-metadata" -> recoverCorruptMetadata = true;
                 case "--flush-policy" -> flushPolicyName = value(args, ++i, "--flush-policy");
                 case "--flush-every-n-appends" -> flushEveryNAppends =
@@ -226,22 +270,23 @@ public record BrokerConfig(
                                 value(args, ++i, "--controller-broker-lease-timeout-ms"),
                                 "--controller-broker-lease-timeout-ms");
                 case "--admin-token" -> adminToken = value(args, ++i, "--admin-token");
-                case "--controller-addr" -> {
-                    String[] parts = value(args, ++i, "--controller-addr").split(":", 2);
-                    if (parts.length != 2 || parts[0].isBlank() || parts[1].isBlank()) {
-                        throw new IllegalArgumentException("--controller-addr must be host:port");
-                    }
-                    controllerHost = parts[0];
-                    controllerPort = Integer.parseInt(parts[1]);
-                }
                 default -> throw new IllegalArgumentException("Unknown argument: " + args[i]);
             }
+        }
+        validateClusterId(clusterId);
+        if (initializeEmptyCluster && initializeClusterFromLocal) {
+            throw new IllegalArgumentException(
+                    "--initialize-empty-cluster and --initialize-cluster-from-local are mutually exclusive");
         }
         validateMaintenanceWindowPair(maintenanceWindowStartHour, maintenanceWindowEndHour);
         validateBrokerLeaseTiming(
                 brokerHeartbeatIntervalMs,
                 brokerSelfFenceTimeoutMs,
                 controllerBrokerLeaseTimeoutMs);
+        validateControlPlaneTiming(
+                controllerBrokerLeaseTimeoutMs,
+                controllerFailoverGraceMs,
+                controllerSessionTtlSeconds);
         if (adminToken == null || adminToken.isBlank()) {
             throw new IllegalArgumentException("--admin-token is required and must not be blank");
         }
@@ -271,7 +316,38 @@ public record BrokerConfig(
                 brokerHeartbeatIntervalMs,
                 brokerSelfFenceTimeoutMs,
                 controllerBrokerLeaseTimeoutMs,
+                clusterId,
+                List.copyOf(etcdEndpoints),
+                controllerSessionTtlSeconds,
+                controllerFailoverGraceMs,
+                leaderActivationTimeoutMs,
+                initializeEmptyCluster,
+                initializeClusterFromLocal,
                 adminToken);
+    }
+
+    private static List<String> parseEtcdEndpoints(String value) {
+        List<String> endpoints = Arrays.stream(value.split(",", -1))
+                .map(String::trim)
+                .toList();
+        if (endpoints.isEmpty() || endpoints.stream().anyMatch(String::isBlank)) {
+            throw new IllegalArgumentException("--etcd-endpoints must contain non-blank endpoints");
+        }
+        return endpoints;
+    }
+
+    private static void validateClusterId(String clusterId) {
+        if (!clusterId.matches("[a-zA-Z0-9._-]+")) {
+            throw new IllegalArgumentException("--cluster-id must match [a-zA-Z0-9._-]+");
+        }
+    }
+
+    private static void validateControlPlaneTiming(long leaseMs, long graceMs, int sessionTtlSeconds) {
+        long sessionTtlMs = sessionTtlSeconds * 1_000L;
+        if (leaseMs > graceMs || graceMs >= sessionTtlMs) {
+            throw new IllegalArgumentException(
+                    "control-plane timing must satisfy controller lease <= failover grace < session TTL");
+        }
     }
 
     private static String value(String[] args, int index, String name) {

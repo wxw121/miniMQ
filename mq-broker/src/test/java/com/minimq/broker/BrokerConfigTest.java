@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import com.minimq.storage.FlushPolicy;
 
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -19,9 +20,13 @@ class BrokerConfigTest {
                 "--host", "0.0.0.0",
                 "--port", "9094",
                 "--data-dir", "./data/broker-2",
-                "--controller",
+                "--cluster-id", "orders-prod",
+                "--etcd-endpoints", "http://etcd-1:2379,http://etcd-2:2379",
+                "--controller-session-ttl-seconds", "30",
+                "--controller-failover-grace-ms", "12000",
+                "--leader-activation-timeout-ms", "7000",
+                "--initialize-empty-cluster",
                 "--recover-corrupt-metadata",
-                "--controller-addr", "localhost:9092",
                 "--flush-policy", "every-n-appends",
                 "--flush-every-n-appends", "5",
                 "--checkpoint-every-n-appends", "10",
@@ -47,10 +52,14 @@ class BrokerConfigTest {
         assertEquals("0.0.0.0", config.host());
         assertEquals(9094, config.port());
         assertEquals(Path.of("./data/broker-2"), config.dataDir());
-        assertTrue(config.controller());
+        assertEquals("orders-prod", config.clusterId());
+        assertEquals(List.of("http://etcd-1:2379", "http://etcd-2:2379"), config.etcdEndpoints());
+        assertEquals(30, config.controllerSessionTtlSeconds());
+        assertEquals(12_000, config.controllerFailoverGraceMs());
+        assertEquals(7_000, config.leaderActivationTimeoutMs());
+        assertTrue(config.initializeEmptyCluster());
+        assertEquals(false, config.initializeClusterFromLocal());
         assertTrue(config.recoverCorruptMetadata());
-        assertEquals("localhost", config.controllerHost());
-        assertEquals(9092, config.controllerPort());
         assertEquals(FlushPolicy.everyNAppends(5), config.flushPolicy());
         assertEquals(10, config.checkpointEveryNAppends());
         assertEquals(4096, config.segmentMaxBytes());
@@ -146,6 +155,23 @@ class BrokerConfigTest {
         assertInvalidLeaseArgs(
                 "--broker-self-fence-timeout-ms", "500",
                 "--controller-broker-lease-timeout-ms", "500");
+    }
+
+    @Test
+    void rejectsInvalidControlPlaneConfiguration() {
+        assertInvalidLeaseArgs("--cluster-id", "bad/id");
+        assertInvalidLeaseArgs("--etcd-endpoints", "   ");
+        assertInvalidLeaseArgs("--controller-session-ttl-seconds", "0");
+        assertInvalidLeaseArgs(
+                "--controller-failover-grace-ms", "5000",
+                "--controller-session-ttl-seconds", "5");
+        assertInvalidLeaseArgs(
+                "--controller-broker-lease-timeout-ms", "5000",
+                "--controller-failover-grace-ms", "4999");
+        assertInvalidLeaseArgs("--leader-activation-timeout-ms", "0");
+        assertInvalidLeaseArgs("--initialize-empty-cluster", "--initialize-cluster-from-local");
+        assertInvalidLeaseArgs("--controller");
+        assertInvalidLeaseArgs("--controller-addr", "localhost:9092");
     }
 
     private static void assertInvalidLeaseArgs(String... leaseArgs) {
