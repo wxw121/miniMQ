@@ -44,6 +44,7 @@ public final class BrokerLeaseMonitor implements AutoCloseable {
 
     void runOnce() {
         try {
+            clusterController.advanceRecoveryWindow();
             clusterController.expireOverdueBrokerLeases();
         } catch (RuntimeException failure) {
             log.warn("Broker lease scan failed", failure);

@@ -448,6 +448,32 @@ class ClusterControllerTest {
         assertFalse(restarted.getBroker(0).online);
     }
 
+    @Test
+    void recoveryWindowAllowsReregistrationAndOnlyExpiresMissingBrokersAfterGrace() {
+        AtomicLong now = new AtomicLong();
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir), 5_000L, now::get);
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
+
+        controller.beginRecovery(2_000L);
+        assertTrue(controller.isRecovering());
+        assertEquals(ErrorCode.CONTROLLER_NOT_READY,
+                controller.createTopic(new CreateTopicRequest("blocked", 1, 1)));
+        assertEquals(ErrorCode.NONE,
+                controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092)).errorCode());
+
+        now.set(TimeUnit.MILLISECONDS.toNanos(1_999));
+        assertFalse(controller.advanceRecoveryWindow());
+        assertTrue(controller.getBroker(0).online);
+        assertTrue(controller.getBroker(1).online);
+
+        now.set(TimeUnit.MILLISECONDS.toNanos(2_001));
+        assertTrue(controller.advanceRecoveryWindow());
+        assertFalse(controller.isRecovering());
+        assertTrue(controller.getBroker(0).online);
+        assertFalse(controller.getBroker(1).online);
+    }
+
     private ClusterController controllerWithReplicatedTopic() {
         ClusterController controller = new ClusterController(new MetadataStore(tempDir));
         controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));

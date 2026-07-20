@@ -23,6 +23,8 @@ import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
@@ -41,6 +43,9 @@ public class ClusterController {
     private final Map<Integer, BrokerLease> brokerLeases = new HashMap<>();
     private ClusterMetadata metadata;
     private long metadataRevision;
+    private boolean recovering;
+    private long recoveryDeadlineNanos;
+    private final Set<Integer> awaitingRecoveryBrokers = new HashSet<>();
 
     public record BrokerRegistration(ErrorCode errorCode, RegisterBrokerResponse response) {
         static BrokerRegistration failed(ErrorCode errorCode) {
@@ -83,7 +88,8 @@ public class ClusterController {
         long now = nanoTime.getAsLong();
         BrokerEntry current = metadata.brokers.get(request.brokerId());
         BrokerLease currentLease = brokerLeases.get(request.brokerId());
-        if (current != null && current.online && currentLease != null
+        boolean expectedRecovery = recovering && awaitingRecoveryBrokers.contains(request.brokerId());
+        if (!expectedRecovery && current != null && current.online && currentLease != null
                 && now < currentLease.deadlineNanos()) {
             return BrokerRegistration.failed(ErrorCode.BROKER_ID_IN_USE);
         }
@@ -101,6 +107,7 @@ public class ClusterController {
             return BrokerRegistration.failed(commitError);
         }
         brokerLeases.put(request.brokerId(), new BrokerLease(entry.brokerEpoch, deadlineFrom(now)));
+        awaitingRecoveryBrokers.remove(request.brokerId());
         return new BrokerRegistration(
                 ErrorCode.NONE, new RegisterBrokerResponse(entry.brokerEpoch, leaseTimeoutMs));
     }
@@ -119,6 +126,9 @@ public class ClusterController {
     }
 
     public synchronized int expireOverdueBrokerLeases() {
+        if (recovering) {
+            return 0;
+        }
         long now = nanoTime.getAsLong();
         List<BrokerLeaseKey> expired = brokerLeases.entrySet().stream()
                 .filter(entry -> now >= entry.getValue().deadlineNanos())
@@ -182,6 +192,9 @@ public class ClusterController {
     }
 
     public synchronized ErrorCode createTopic(CreateTopicRequest request) {
+        if (recovering) {
+            return ErrorCode.CONTROLLER_NOT_READY;
+        }
         if (request.topicName() == null || request.topicName().isBlank()
                 || request.numPartitions() <= 0 || request.replicationFactor() <= 0) {
             return ErrorCode.INVALID_REQUEST;
@@ -280,6 +293,44 @@ public class ClusterController {
 
     private long deadlineFrom(long now) {
         return Math.addExact(now, TimeUnit.MILLISECONDS.toNanos(leaseTimeoutMs));
+    }
+
+    /** Starts the takeover grace period during which persisted online brokers may re-register. */
+    public synchronized void beginRecovery(long graceMs) {
+        if (graceMs < 0) {
+            throw new IllegalArgumentException("recovery grace must be non-negative");
+        }
+        recovering = true;
+        recoveryDeadlineNanos = Math.addExact(
+                nanoTime.getAsLong(), TimeUnit.MILLISECONDS.toNanos(graceMs));
+        awaitingRecoveryBrokers.clear();
+        metadata.brokers.values().stream()
+                .filter(broker -> broker.online)
+                .map(broker -> broker.brokerId)
+                .forEach(awaitingRecoveryBrokers::add);
+    }
+
+    /** Ends recovery when due and expires only brokers that did not re-register. */
+    public synchronized boolean advanceRecoveryWindow() {
+        if (!recovering || nanoTime.getAsLong() < recoveryDeadlineNanos) {
+            return false;
+        }
+        recovering = false;
+        long now = nanoTime.getAsLong();
+        List<Integer> missing = List.copyOf(awaitingRecoveryBrokers);
+        awaitingRecoveryBrokers.clear();
+        for (int brokerId : missing) {
+            BrokerEntry broker = metadata.brokers.get(brokerId);
+            if (broker != null && broker.online) {
+                brokerLeases.put(brokerId, new BrokerLease(broker.brokerEpoch, now));
+                expireBrokerLease(brokerId, broker.brokerEpoch);
+            }
+        }
+        return true;
+    }
+
+    public synchronized boolean isRecovering() {
+        return recovering;
     }
 
     private static void restoreFrozenPartitions(ClusterMetadata metadata, int brokerId) {

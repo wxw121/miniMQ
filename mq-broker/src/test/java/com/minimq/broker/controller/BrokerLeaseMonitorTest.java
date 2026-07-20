@@ -42,8 +42,22 @@ class BrokerLeaseMonitorTest {
         monitor.close();
     }
 
+    @Test
+    void givesRecoveryWindowControlBeforeScanningLeases() {
+        CountingController controller = new CountingController(new MetadataStore(tempDir));
+        BrokerLeaseMonitor monitor = new BrokerLeaseMonitor(
+                controller, 100L, new ScheduledThreadPoolExecutor(1));
+
+        monitor.runOnce();
+
+        assertEquals(1, controller.recoveryCalls);
+        assertEquals(1, controller.expireCalls);
+        monitor.close();
+    }
+
     private static final class CountingController extends ClusterController {
         private int expireCalls;
+        private int recoveryCalls;
         private boolean failNext;
 
         private CountingController(MetadataStore store) {
@@ -58,6 +72,12 @@ class BrokerLeaseMonitorTest {
                 throw new IllegalStateException("scan failed");
             }
             return 0;
+        }
+
+        @Override
+        public synchronized boolean advanceRecoveryWindow() {
+            recoveryCalls++;
+            return false;
         }
     }
 }
