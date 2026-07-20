@@ -19,21 +19,16 @@ import java.util.Map;
  * 同步生产者客户端，负责获取元数据、选择目标分区并把消息发送到 leader Broker。
  */
 public class Producer implements AutoCloseable {
-    private final NetworkClient client;
-    private final String bootstrapHost;
-    private final int bootstrapPort;
+    private final ControllerAwareNetworkClient client;
     private final Map<Integer, NetworkClient> brokerClients = new HashMap<>();
     private final Map<String, MetadataResponse> metadataCache = new HashMap<>();
 
     public Producer(String bootstrapServers, String clientId) {
-        String[] parts = parseBootstrapServer(bootstrapServers);
-        this.bootstrapHost = parts[0];
-        this.bootstrapPort = Integer.parseInt(parts[1]);
-        this.client = new NetworkClient(clientId);
+        this.client = new ControllerAwareNetworkClient(bootstrapServers, clientId);
     }
 
     public void start() throws InterruptedException {
-        client.connect(bootstrapHost, bootstrapPort);
+        client.connect();
     }
 
     // 每次发送前读取最新元数据。若 leader 过期，V1.3 会刷新元数据并重试一次。
@@ -44,6 +39,7 @@ public class Producer implements AutoCloseable {
             ProduceRequest request = new ProduceRequest(
                     record.topic(),
                     route.partitionId(),
+                    route.leaderEpoch(),
                     List.of(new ProduceRecord(record.key(), record.value())));
             MqDecoder.DecodedResponse response = sendProduce(route.leader(), request);
             MqResponseHeader header = response.header();
@@ -67,7 +63,10 @@ public class Producer implements AutoCloseable {
     }
 
     private static boolean isStaleLeaderError(ErrorCode errorCode) {
-        return errorCode == ErrorCode.NOT_LEADER || errorCode == ErrorCode.BROKER_FENCED;
+        return errorCode == ErrorCode.NOT_LEADER
+                || errorCode == ErrorCode.BROKER_FENCED
+                || errorCode == ErrorCode.STALE_LEADER_EPOCH
+                || errorCode == ErrorCode.LEADER_NOT_READY;
     }
 
     private MetadataResponse cachedMetadata(String topicName) throws InterruptedException {
@@ -80,8 +79,12 @@ public class Producer implements AutoCloseable {
 
     private MetadataResponse refreshMetadata(String topicName) throws InterruptedException {
         MetadataResponse metadata = fetchMetadata(topicName);
-        metadataCache.put(topicName, metadata);
-        return metadata;
+        MetadataResponse current = metadataCache.get(topicName);
+        if (current == null || metadata.metadataVersion() >= current.metadataVersion()) {
+            metadataCache.put(topicName, metadata);
+            return metadata;
+        }
+        return current;
     }
 
     private void invalidateMetadata(String topicName) {
@@ -141,7 +144,7 @@ public class Producer implements AutoCloseable {
                 .orElseThrow(() -> new MiniMqMetadataException(
                         "Leader broker " + partition.leaderBrokerId() + " not found"));
 
-        return new ProduceRoute(partitionId, leader);
+        return new ProduceRoute(partitionId, partition.leaderEpoch(), leader);
     }
 
     protected MqDecoder.DecodedResponse sendProduce(
@@ -170,14 +173,6 @@ public class Producer implements AutoCloseable {
         }
     }
 
-    private static String[] parseBootstrapServer(String bootstrapServers) {
-        String[] parts = bootstrapServers.split(",", 2)[0].split(":", 2);
-        if (parts.length != 2 || parts[0].isBlank() || parts[1].isBlank()) {
-            throw new IllegalArgumentException("bootstrapServers must contain host:port");
-        }
-        return parts;
-    }
-
     @Override
     public void close() throws InterruptedException {
         client.close();
@@ -186,6 +181,6 @@ public class Producer implements AutoCloseable {
         }
     }
 
-    private record ProduceRoute(int partitionId, BrokerMetadata leader) {
+    private record ProduceRoute(int partitionId, long leaderEpoch, BrokerMetadata leader) {
     }
 }
