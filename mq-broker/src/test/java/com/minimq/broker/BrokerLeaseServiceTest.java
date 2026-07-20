@@ -211,12 +211,11 @@ class BrokerLeaseServiceTest {
                 "--host", "127.0.0.1",
                 "--port", "19093",
                 "--data-dir", tempDir.resolve("broker-1").toString(),
-                "--controller-addr", "127.0.0.1:19092",
                 "--broker-heartbeat-interval-ms", "100",
                 "--broker-self-fence-timeout-ms", "300",
                 "--controller-broker-lease-timeout-ms", "500",
                 "--admin-token", "test-token"
-        });
+        }).withLegacyController(false, "127.0.0.1", 19092);
     }
 
     private static final class FakeControllerClient extends ControllerClient {

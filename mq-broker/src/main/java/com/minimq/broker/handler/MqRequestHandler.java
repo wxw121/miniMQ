@@ -8,6 +8,7 @@ import com.minimq.broker.MaintenanceAdminService;
 import com.minimq.broker.PartitionManager;
 import com.minimq.broker.controller.ClusterController;
 import com.minimq.broker.controller.GroupCoordinator;
+import com.minimq.broker.metadata.ClusterMetadata;
 import com.minimq.broker.replication.ReplicaStateManager;
 import com.minimq.broker.replication.ReplicaLeoReporter;
 import com.minimq.common.error.ErrorCode;
@@ -134,6 +135,7 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             header = ProtocolSerdes.decodeRequestHeader(payload);
             Object requestBody = ProtocolSerdes.decodeRequestBody(header.apiKey(), payload);
             switch (header.apiKey()) {
+                case ApiKeys.DISCOVER_CONTROLLER -> responseBody = discoverController();
                 case ApiKeys.CREATE_TOPIC -> {
                     ensureController();
                     errorCode = clusterController.createTopic((CreateTopicRequest) requestBody);
@@ -269,6 +271,8 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 }
                 default -> errorCode = ErrorCode.INVALID_REQUEST;
             }
+        } catch (NotControllerException ex) {
+            errorCode = ErrorCode.NOT_CONTROLLER;
         } catch (IllegalArgumentException | IllegalStateException | IndexOutOfBoundsException ex) {
             errorCode = ErrorCode.INVALID_REQUEST;
         } catch (Exception ex) {
@@ -493,7 +497,27 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
     private void ensureController() {
         if (!config.controller()) {
-            throw new IllegalStateException("Not controller");
+            throw new NotControllerException();
         }
+    }
+
+    private DiscoverControllerResponse discoverController() {
+        ClusterMetadata.BrokerEntry leader = config.controller()
+                ? clusterController.getBroker(config.brokerId())
+                : clusterController.snapshot().brokers.values().stream()
+                        .filter(broker -> broker.online
+                                && broker.host.equals(config.controllerHost())
+                                && broker.port == config.controllerPort())
+                        .findFirst()
+                        .orElse(null);
+        int brokerId = leader != null ? leader.brokerId : (config.controller() ? config.brokerId() : 0);
+        String host = config.controller() ? config.host() : config.controllerHost();
+        int port = config.controller() ? config.port() : config.controllerPort();
+        long controllerEpoch = clusterController.snapshot().controllerEpoch;
+        ControllerMetadata controller = new ControllerMetadata(brokerId, host, port, controllerEpoch);
+        return new DiscoverControllerResponse(controller, clusterController.snapshot().metadataVersion);
+    }
+
+    private static final class NotControllerException extends IllegalStateException {
     }
 }

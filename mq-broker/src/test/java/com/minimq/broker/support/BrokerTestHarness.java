@@ -55,10 +55,10 @@ public final class BrokerTestHarness implements AutoCloseable {
                 "--host", "127.0.0.1",
                 "--port", Integer.toString(freePort()),
                 "--data-dir", dataDir.toString(),
-                "--controller",
                 "--admin-token", ADMIN_TOKEN));
         args.addAll(List.of(extraArgs));
-        return BrokerConfig.parse(args.toArray(String[]::new));
+        BrokerConfig parsed = BrokerConfig.parse(args.toArray(String[]::new));
+        return parsed.withLegacyController(true, parsed.host(), parsed.port());
     }
 
     public static BrokerTestHarness startFollower(
@@ -77,10 +77,10 @@ public final class BrokerTestHarness implements AutoCloseable {
                 "--host", "127.0.0.1",
                 "--port", Integer.toString(freePort()),
                 "--data-dir", dataDir.toString(),
-                "--controller-addr", controllerHost + ":" + controllerPort,
                 "--admin-token", ADMIN_TOKEN));
         args.addAll(List.of(extraArgs));
-        return start(BrokerConfig.parse(args.toArray(String[]::new)));
+        return start(BrokerConfig.parse(args.toArray(String[]::new))
+                .withLegacyController(false, controllerHost, controllerPort));
     }
 
     public String bootstrapServers() {

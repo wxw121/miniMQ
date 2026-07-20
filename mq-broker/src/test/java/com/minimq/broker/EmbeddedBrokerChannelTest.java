@@ -13,6 +13,8 @@ import com.minimq.protocol.codec.MqDecoder;
 import com.minimq.protocol.codec.MqEncoder;
 import com.minimq.protocol.message.MqRequestHeader;
 import com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest;
+import com.minimq.protocol.message.ProtocolMessages.DiscoverControllerRequest;
+import com.minimq.protocol.message.ProtocolMessages.DiscoverControllerResponse;
 import com.minimq.protocol.message.ProtocolMessages.FetchRequest;
 import com.minimq.protocol.message.ProtocolMessages.FetchResponse;
 import com.minimq.protocol.message.ProtocolMessages.HeartbeatRequest;
@@ -167,7 +169,24 @@ class EmbeddedBrokerChannelTest {
 
         MqDecoder.DecodedResponse response = send(channel, ApiKeys.METADATA, new MetadataRequest("orders"));
 
-        assertEquals(ErrorCode.INVALID_REQUEST, response.header().errorCode());
+        assertEquals(ErrorCode.NOT_CONTROLLER, response.header().errorCode());
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void anyBrokerAnswersControllerDiscovery() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
+        clusterController.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092));
+        EmbeddedChannel channel = newChannel(clusterController, false, 1);
+
+        MqDecoder.DecodedResponse decoded = send(
+                channel, ApiKeys.DISCOVER_CONTROLLER, new DiscoverControllerRequest());
+        DiscoverControllerResponse response = (DiscoverControllerResponse) decoded.body();
+
+        assertEquals(ErrorCode.NONE, decoded.header().errorCode());
+        assertEquals(0, response.controller().brokerId());
+        assertEquals("127.0.0.1", response.controller().host());
+        assertEquals(9092, response.controller().port());
         channel.finishAndReleaseAll();
     }
 
@@ -253,7 +272,7 @@ class EmbeddedBrokerChannelTest {
                 ApiKeys.UPDATE_REPLICA_LEO,
                 new UpdateReplicaLeoRequest("orders", 0, 1, 9L));
 
-        assertEquals(ErrorCode.INVALID_REQUEST, response.header().errorCode());
+        assertEquals(ErrorCode.NOT_CONTROLLER, response.header().errorCode());
         channel.finishAndReleaseAll();
     }
 

@@ -45,6 +45,20 @@ public record BrokerConfig(
         boolean initializeClusterFromLocal,
         String adminToken) {
 
+    /** Internal compatibility hook for in-process tests while the public 3.0 CLI uses discovery. */
+    public BrokerConfig withLegacyController(boolean controller, String controllerHost, int controllerPort) {
+        return new BrokerConfig(
+                brokerId, host, port, dataDir, controller, controllerHost, controllerPort,
+                recoverCorruptMetadata, flushPolicy, checkpointEveryNAppends, segmentMaxBytes,
+                sparseIndexIntervalRecords, retentionMs, retentionBytes, compactionEnabled,
+                compactionMaxSegments, compactionMaxBytes, maintenanceWindowStartHour,
+                maintenanceWindowEndHour, maintenanceEveryNAppends, fetchTransferMode,
+                fetchTransferTimeoutMs, brokerHeartbeatIntervalMs, brokerSelfFenceTimeoutMs,
+                controllerBrokerLeaseTimeoutMs, clusterId, etcdEndpoints,
+                controllerSessionTtlSeconds, controllerFailoverGraceMs, leaderActivationTimeoutMs,
+                initializeEmptyCluster, initializeClusterFromLocal, adminToken);
+    }
+
     public static final int DEFAULT_COMPACTION_MAX_SEGMENTS = 4;
     public static final int MAINTENANCE_WINDOW_DISABLED = -1;
     public static final FetchTransferMode DEFAULT_FETCH_TRANSFER_MODE = FetchTransferMode.AUTO;
