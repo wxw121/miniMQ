@@ -8,6 +8,7 @@ import com.minimq.broker.replication.ReplicaFetcher;
 import com.minimq.broker.replication.ReplicaStateManager;
 import com.minimq.broker.replication.ReplicaLeoReporter;
 import com.minimq.broker.metadata.MetadataStore;
+import com.minimq.broker.metadata.SwitchableClusterMetadataRepository;
 import com.minimq.protocol.codec.MqDecoder;
 import com.minimq.protocol.codec.MqEncoder;
 import com.minimq.storage.LogManagerConfig;
@@ -45,6 +46,8 @@ public class BrokerServer {
     private final BrokerAvailabilityGuard availabilityGuard = new BrokerAvailabilityGuard();
     private BrokerLeaseService brokerLeaseService;
     private BrokerLeaseMonitor brokerLeaseMonitor;
+    private ControllerRuntime controllerRuntime;
+    private ControllerRole controllerRole;
     private boolean stopped;
 
     public BrokerServer(BrokerConfig config) {
@@ -73,8 +76,18 @@ public class BrokerServer {
 
     public void start() throws InterruptedException {
         MetadataStore metadataStore = new MetadataStore(config.dataDir(), config.recoverCorruptMetadata());
+        boolean etcdRuntime = !config.usesLegacyControllerMode();
+        SwitchableClusterMetadataRepository switchableRepository = etcdRuntime
+                ? new SwitchableClusterMetadataRepository(metadataStore) : null;
         clusterController = new ClusterController(
-                metadataStore, config.controllerBrokerLeaseTimeoutMs());
+                etcdRuntime ? switchableRepository : metadataStore,
+                config.controllerBrokerLeaseTimeoutMs());
+        controllerRole = ControllerRole.legacy(config);
+        if (etcdRuntime) {
+            controllerRuntime = new ControllerRuntime(
+                    config, clusterController, switchableRepository, this::activateControllerMonitor);
+            controllerRole = controllerRuntime;
+        }
         GroupCoordinator groupCoordinator = new GroupCoordinator(clusterController);
         ReplicaStateManager replicaStateManager = new ReplicaStateManager();
         LogManager logManager = new LogManager(
@@ -97,9 +110,12 @@ public class BrokerServer {
                                 config.maintenanceWindowEndHour())));
         partitionManager = new PartitionManager(logManager);
         maintenanceAdminService = new MaintenanceAdminService(config.adminToken(), partitionManager);
-        replicaFetcher = new ReplicaFetcher(config, clusterController, partitionManager, availabilityGuard);
-        replicaLeoReporter = new ReplicaLeoReporter(config, clusterController, availabilityGuard);
-        brokerLeaseService = new BrokerLeaseService(config, clusterController, availabilityGuard);
+        replicaFetcher = new ReplicaFetcher(
+                config, clusterController, partitionManager, availabilityGuard, controllerRole);
+        replicaLeoReporter = new ReplicaLeoReporter(
+                config, clusterController, availabilityGuard, controllerRole);
+        brokerLeaseService = new BrokerLeaseService(
+                config, clusterController, availabilityGuard, controllerRole);
         if (config.controller()) {
             brokerLeaseMonitor = new BrokerLeaseMonitor(
                     clusterController, config.brokerHeartbeatIntervalMs());
@@ -124,16 +140,22 @@ public class BrokerServer {
                                         fetchTransferMetrics,
                                         replicaLeoReporter,
                                         availabilityGuard,
-                                        maintenanceAdminService))
+                                        maintenanceAdminService,
+                                        controllerRole))
                                 .addLast(new MqEncoder());
                     }
                 });
 
         try {
             channelFuture = bootstrap.bind(config.host(), config.port()).sync();
-            brokerLeaseService.initialize();
-            if (brokerLeaseMonitor != null) {
-                brokerLeaseMonitor.start();
+            if (controllerRuntime != null) {
+                controllerRuntime.start();
+                initializeEtcdBrokerLease();
+            } else {
+                brokerLeaseService.initialize();
+                if (brokerLeaseMonitor != null) {
+                    brokerLeaseMonitor.start();
+                }
             }
             brokerLeaseService.start();
             replicaFetcher.start();
@@ -151,7 +173,30 @@ public class BrokerServer {
             throw failure;
         }
         log.info("Broker {} started on {}:{} controller={}", config.brokerId(), config.host(), config.port(),
-                config.controller());
+                controllerRole.isActive());
+    }
+
+    private void initializeEtcdBrokerLease() throws InterruptedException {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(15);
+        RuntimeException lastFailure = null;
+        while (System.nanoTime() < deadline) {
+            try {
+                brokerLeaseService.initialize();
+                return;
+            } catch (RuntimeException failure) {
+                lastFailure = failure;
+                Thread.sleep(100);
+            }
+        }
+        throw new IllegalStateException("Controller discovery timed out during Broker registration", lastFailure);
+    }
+
+    private synchronized void activateControllerMonitor() {
+        if (brokerLeaseMonitor == null) {
+            brokerLeaseMonitor = new BrokerLeaseMonitor(
+                    clusterController, config.brokerHeartbeatIntervalMs());
+            brokerLeaseMonitor.start();
+        }
     }
 
     private void cleanupAfterFailedStart(Throwable failure) {
@@ -169,6 +214,9 @@ public class BrokerServer {
         }
         if (brokerLeaseService != null) {
             brokerLeaseService.close();
+        }
+        if (controllerRuntime != null) {
+            controllerRuntime.close();
         }
         if (brokerLeaseMonitor != null) {
             brokerLeaseMonitor.close();

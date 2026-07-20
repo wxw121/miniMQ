@@ -529,6 +529,16 @@ public class ClusterController {
         return result;
     }
 
+    /** Installs an externally revisioned snapshot without writing it back. */
+    public synchronized void installMetadata(VersionedClusterMetadata value) {
+        if (value.revision() < metadataRevision) {
+            return;
+        }
+        metadata = copyMetadata(value.metadata());
+        metadataRevision = value.revision();
+        normalizeMetadata();
+    }
+
     private ErrorCode commit(ClusterMetadata next) {
         ClusterMetadataRepository.UpdateResult result =
                 metadataRepository.compareAndSet(metadataRevision, next);

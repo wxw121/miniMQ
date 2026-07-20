@@ -30,7 +30,7 @@ public final class EtcdClusterMetadataRepository implements ClusterMetadataRepos
         this(kv, clusterId, leadership.identityBytes(), new ObjectMapper());
     }
 
-    EtcdClusterMetadataRepository(KV kv, String clusterId, byte[] identityBytes, ObjectMapper mapper) {
+    public EtcdClusterMetadataRepository(KV kv, String clusterId, byte[] identityBytes, ObjectMapper mapper) {
         this.kv = java.util.Objects.requireNonNull(kv, "kv");
         this.mapper = java.util.Objects.requireNonNull(mapper, "mapper");
         this.snapshotKey = bytes(snapshotKey(clusterId));

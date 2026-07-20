@@ -14,6 +14,7 @@ import com.minimq.broker.replication.ReplicaLeoReporter;
 import com.minimq.broker.replication.LeaderActivationService;
 import com.minimq.broker.replication.LeaderEpochStateStore;
 import com.minimq.broker.ControllerClient;
+import com.minimq.broker.ControllerRole;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.common.model.Record;
 import com.minimq.protocol.ApiKeys;
@@ -51,6 +52,7 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     private final MaintenanceAdminService maintenanceAdminService;
     private final BrokerAvailabilityGuard availabilityGuard;
     private final LeaderActivationService leaderActivationService;
+    private final ControllerRole controllerRole;
 
     public MqRequestHandler(
             BrokerConfig config,
@@ -117,6 +119,22 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             ReplicaLeoReporter replicaLeoReporter,
             BrokerAvailabilityGuard availabilityGuard,
             MaintenanceAdminService maintenanceAdminService) {
+        this(config, clusterController, groupCoordinator, partitionManager, replicaStateManager,
+                fetchTransferMetrics, replicaLeoReporter, availabilityGuard,
+                maintenanceAdminService, ControllerRole.legacy(config));
+    }
+
+    public MqRequestHandler(
+            BrokerConfig config,
+            ClusterController clusterController,
+            GroupCoordinator groupCoordinator,
+            PartitionManager partitionManager,
+            ReplicaStateManager replicaStateManager,
+            FetchTransferMetrics fetchTransferMetrics,
+            ReplicaLeoReporter replicaLeoReporter,
+            BrokerAvailabilityGuard availabilityGuard,
+            MaintenanceAdminService maintenanceAdminService,
+            ControllerRole controllerRole) {
         this.config = config;
         this.replicaLeoReporter = replicaLeoReporter;
         this.clusterController = clusterController;
@@ -126,6 +144,7 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         this.fetchResponseWriter = new FetchResponseWriter(config, fetchTransferMetrics);
         this.maintenanceAdminService = maintenanceAdminService;
         this.availabilityGuard = availabilityGuard;
+        this.controllerRole = controllerRole;
         this.leaderActivationService = new LeaderActivationService(
                 partitionManager,
                 new LeaderEpochStateStore(config.dataDir().resolve("leader-epochs")));
@@ -467,9 +486,9 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
     private ErrorCode ensureLeader(String topicName, int partitionId) {
         int leaderId = clusterController.getLeaderBrokerId(topicName, partitionId);
-        if (leaderId < 0 && !config.controller()) {
+        if (leaderId < 0 && !controllerRole.isActive()) {
             try {
-                MetadataSync.refresh(config, clusterController);
+                MetadataSync.refresh(config, clusterController, controllerRole);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return ErrorCode.INVALID_REQUEST;
@@ -486,10 +505,10 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             return partitionExists ? ErrorCode.INVALID_REQUEST : ErrorCode.UNKNOWN_PARTITION;
         }
         if (leaderId != config.brokerId()) {
-            if (!config.controller()
+            if (!controllerRole.isActive()
                     && clusterController.isReplica(topicName, partitionId, config.brokerId())) {
                 try {
-                    MetadataSync.refresh(config, clusterController);
+                    MetadataSync.refresh(config, clusterController, controllerRole);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     return ErrorCode.INVALID_REQUEST;
@@ -536,14 +555,18 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 partition.leaderEpoch,
                 partitionManager.highWatermark(topicName, partitionId));
         try {
-            if (config.controller()) {
+            if (controllerRole.isActive()) {
                 return clusterController.leaderReady(request);
             }
             try (ControllerClient client = new ControllerClient()) {
-                client.connect(config.controllerHost(), config.controllerPort());
+                var identity = controllerRole.currentLeader();
+                if (identity == null) {
+                    return ErrorCode.LEADER_NOT_READY;
+                }
+                client.connect(identity.host(), identity.port());
                 client.leaderReady(request);
             }
-            MetadataSync.refresh(config, clusterController);
+            MetadataSync.refresh(config, clusterController, controllerRole);
             return ErrorCode.NONE;
         } catch (ControllerClient.ControllerRequestException e) {
             return e.errorCode();
@@ -573,25 +596,18 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     }
 
     private void ensureController() {
-        if (!config.controller()) {
+        if (!controllerRole.isActive()) {
             throw new NotControllerException();
         }
     }
 
     private DiscoverControllerResponse discoverController() {
-        ClusterMetadata.BrokerEntry leader = config.controller()
-                ? clusterController.getBroker(config.brokerId())
-                : clusterController.snapshot().brokers.values().stream()
-                        .filter(broker -> broker.online
-                                && broker.host.equals(config.controllerHost())
-                                && broker.port == config.controllerPort())
-                        .findFirst()
-                        .orElse(null);
-        int brokerId = leader != null ? leader.brokerId : (config.controller() ? config.brokerId() : 0);
-        String host = config.controller() ? config.host() : config.controllerHost();
-        int port = config.controller() ? config.port() : config.controllerPort();
-        long controllerEpoch = clusterController.snapshot().controllerEpoch;
-        ControllerMetadata controller = new ControllerMetadata(brokerId, host, port, controllerEpoch);
+        var identity = controllerRole.currentLeader();
+        if (identity == null) {
+            throw new NotControllerException();
+        }
+        ControllerMetadata controller = new ControllerMetadata(
+                identity.brokerId(), identity.host(), identity.port(), identity.controllerEpoch());
         return new DiscoverControllerResponse(controller, clusterController.snapshot().metadataVersion);
     }
 

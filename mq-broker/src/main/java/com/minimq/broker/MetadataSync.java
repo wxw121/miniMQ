@@ -20,11 +20,25 @@ public final class MetadataSync {
     }
 
     public static void refresh(BrokerConfig config, ClusterController controller) throws InterruptedException {
-        if (config.controller()) {
+        refresh(config, controller, ControllerRole.legacy(config));
+    }
+
+    public static void refresh(
+            BrokerConfig config, ClusterController controller, ControllerRole controllerRole)
+            throws InterruptedException {
+        if (controllerRole.isActive()) {
             return;
         }
+        if (!config.usesLegacyControllerMode()) {
+            // Production followers are installed by MetadataWatchService with the etcd revision.
+            return;
+        }
+        var identity = controllerRole.currentLeader();
+        if (identity == null) {
+            throw new IllegalStateException("Controller is not available");
+        }
         try (ControllerClient client = new ControllerClient()) {
-            client.connect(config.controllerHost(), config.controllerPort());
+            client.connect(identity.host(), identity.port());
             applyMetadata(controller, client.fetchMetadata());
         }
     }

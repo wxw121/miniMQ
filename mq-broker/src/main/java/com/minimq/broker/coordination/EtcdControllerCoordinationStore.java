@@ -68,7 +68,8 @@ public final class EtcdControllerCoordinationStore implements ControllerCoordina
         LeaderKey elected = null;
         try {
             String sessionId = UUID.randomUUID().toString();
-            elected = await(election.campaign(bytes(electionName), leaseId, bytes(sessionId))).getLeader();
+            elected = awaitCampaign(election.campaign(
+                    bytes(electionName), leaseId, bytes(sessionId))).getLeader();
             long epoch = incrementEpoch();
             ControllerIdentity identity = new ControllerIdentity(brokerId, host, port, epoch, sessionId);
             byte[] identityBytes = mapper.writeValueAsBytes(identity);
@@ -187,6 +188,14 @@ public final class EtcdControllerCoordinationStore implements ControllerCoordina
             return future.get(OPERATION_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
         } catch (Exception e) {
             throw new IllegalStateException("etcd operation failed", e);
+        }
+    }
+
+    private static <T> T awaitCampaign(java.util.concurrent.CompletableFuture<T> future) {
+        try {
+            return future.get();
+        } catch (Exception e) {
+            throw new IllegalStateException("etcd campaign failed", e);
         }
     }
 

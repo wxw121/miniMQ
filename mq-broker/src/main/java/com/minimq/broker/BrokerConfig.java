@@ -45,6 +45,10 @@ public record BrokerConfig(
         boolean initializeClusterFromLocal,
         String adminToken) {
 
+    public boolean usesLegacyControllerMode() {
+        return controller || !"localhost".equals(controllerHost) || controllerPort != 9092;
+    }
+
     /** Internal compatibility hook for in-process tests while the public 3.0 CLI uses discovery. */
     public BrokerConfig withLegacyController(boolean controller, String controllerHost, int controllerPort) {
         return new BrokerConfig(

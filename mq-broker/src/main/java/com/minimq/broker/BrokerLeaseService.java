@@ -22,6 +22,7 @@ public final class BrokerLeaseService implements AutoCloseable {
     private final BrokerConfig config;
     private final ClusterController localController;
     private final BrokerAvailabilityGuard guard;
+    private final ControllerRole controllerRole;
     private final Supplier<ControllerClient> clientFactory;
     private final LongSupplier nanoTime;
     private final ScheduledExecutorService scheduler;
@@ -38,7 +39,22 @@ public final class BrokerLeaseService implements AutoCloseable {
                 config,
                 localController,
                 guard,
+                ControllerRole.legacy(config),
                 ControllerClient::new,
+                System::nanoTime,
+                Executors.newSingleThreadScheduledExecutor(runnable -> {
+                    Thread thread = new Thread(runnable, "broker-lease-" + config.brokerId());
+                    thread.setDaemon(true);
+                    return thread;
+                }));
+    }
+
+    public BrokerLeaseService(
+            BrokerConfig config,
+            ClusterController localController,
+            BrokerAvailabilityGuard guard,
+            ControllerRole controllerRole) {
+        this(config, localController, guard, controllerRole, ControllerClient::new,
                 System::nanoTime,
                 Executors.newSingleThreadScheduledExecutor(runnable -> {
                     Thread thread = new Thread(runnable, "broker-lease-" + config.brokerId());
@@ -54,9 +70,22 @@ public final class BrokerLeaseService implements AutoCloseable {
             Supplier<ControllerClient> clientFactory,
             LongSupplier nanoTime,
             ScheduledExecutorService scheduler) {
+        this(config, localController, guard, ControllerRole.legacy(config),
+                clientFactory, nanoTime, scheduler);
+    }
+
+    BrokerLeaseService(
+            BrokerConfig config,
+            ClusterController localController,
+            BrokerAvailabilityGuard guard,
+            ControllerRole controllerRole,
+            Supplier<ControllerClient> clientFactory,
+            LongSupplier nanoTime,
+            ScheduledExecutorService scheduler) {
         this.config = config;
         this.localController = localController;
         this.guard = guard;
+        this.controllerRole = controllerRole;
         this.clientFactory = clientFactory;
         this.nanoTime = nanoTime;
         this.scheduler = scheduler;
@@ -128,7 +157,7 @@ public final class BrokerLeaseService implements AutoCloseable {
         long requestStart = nanoTime.getAsLong();
         long confirmedRequestStart = requestStart;
         long actualLeaseTimeoutMs;
-        if (config.controller()) {
+        if (controllerRole.isActive()) {
             BrokerEntry existing = localController.getBroker(config.brokerId());
             if (existing != null && existing.online) {
                 brokerEpoch = existing.brokerEpoch;
@@ -148,14 +177,16 @@ public final class BrokerLeaseService implements AutoCloseable {
             RegisterBrokerResponse response = controllerClient.registerBroker(registrationRequest());
             brokerEpoch = response.brokerEpoch();
             actualLeaseTimeoutMs = response.leaseTimeoutMs();
-            MetadataSync.applyMetadata(localController, controllerClient.fetchMetadata());
+            if (config.usesLegacyControllerMode()) {
+                MetadataSync.applyMetadata(localController, controllerClient.fetchMetadata());
+            }
         }
 
         if (config.brokerSelfFenceTimeoutMs() >= actualLeaseTimeoutMs) {
             throw new IllegalStateException(
                     "Broker self-fence timeout must be less than Controller lease timeout");
         }
-        if (!config.controller()) {
+        if (!controllerRole.isActive()) {
             confirmedRequestStart = nanoTime.getAsLong();
             controllerClient(config.brokerSelfFenceTimeoutMs()).heartbeatBroker(
                     new BrokerHeartbeatRequest(config.brokerId(), brokerEpoch),
@@ -174,7 +205,7 @@ public final class BrokerLeaseService implements AutoCloseable {
     }
 
     private void heartbeat(BrokerHeartbeatRequest request, long responseTimeoutMs) throws InterruptedException {
-        if (config.controller()) {
+        if (controllerRole.isActive()) {
             ensureControllerSuccess(localController.heartbeatBroker(request));
         } else {
             ControllerClient controllerClient = controllerClient(responseTimeoutMs);
@@ -227,8 +258,12 @@ public final class BrokerLeaseService implements AutoCloseable {
 
     private ControllerClient controllerClient(long connectTimeoutMs) throws InterruptedException {
         if (client == null) {
+            var identity = controllerRole.currentLeader();
+            if (identity == null) {
+                throw new IllegalStateException("Controller is not available");
+            }
             client = clientFactory.get();
-            client.connect(config.controllerHost(), config.controllerPort(), connectTimeoutMs);
+            client.connect(identity.host(), identity.port(), connectTimeoutMs);
         }
         return client;
     }
