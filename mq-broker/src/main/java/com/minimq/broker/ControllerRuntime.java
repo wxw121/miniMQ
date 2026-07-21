@@ -14,6 +14,7 @@ import io.etcd.jetcd.Client;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.function.Function;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Owns the production etcd election, fenced repository and monotonic metadata watch. */
@@ -27,6 +28,8 @@ public final class ControllerRuntime implements ControllerRole, AutoCloseable {
     private final EtcdControllerCoordinationStore coordination;
     private final ControllerElectionService election;
     private final MetadataWatchService watch;
+    private final Function<com.minimq.broker.coordination.ControllerCoordinationStore.Leadership,
+            com.minimq.broker.metadata.ClusterMetadataRepository> repositoryFactory;
     private final Runnable activationListener;
     private final AtomicBoolean closed = new AtomicBoolean();
     private final Thread thread;
@@ -50,6 +53,32 @@ public final class ControllerRuntime implements ControllerRole, AutoCloseable {
                 client.getKVClient(), config.clusterId(), new byte[] {0}, new ObjectMapper());
         this.watch = new MetadataWatchService(
                 reader, client.getWatchClient(), config.clusterId(), controller::installMetadata);
+        this.repositoryFactory = leadership -> new EtcdClusterMetadataRepository(
+                client.getKVClient(), config.clusterId(), leadership);
+        this.thread = new Thread(this::campaign, "controller-election-" + config.brokerId());
+        this.thread.setDaemon(true);
+    }
+
+    ControllerRuntime(
+            BrokerConfig config,
+            ClusterController controller,
+            SwitchableClusterMetadataRepository repository,
+            Client client,
+            EtcdControllerCoordinationStore coordination,
+            ControllerElectionService election,
+            MetadataWatchService watch,
+            Function<com.minimq.broker.coordination.ControllerCoordinationStore.Leadership,
+                    com.minimq.broker.metadata.ClusterMetadataRepository> repositoryFactory,
+            Runnable activationListener) {
+        this.config = config;
+        this.controller = controller;
+        this.repository = repository;
+        this.client = client;
+        this.coordination = coordination;
+        this.election = election;
+        this.watch = watch;
+        this.repositoryFactory = repositoryFactory;
+        this.activationListener = activationListener;
         this.thread = new Thread(this::campaign, "controller-election-" + config.brokerId());
         this.thread.setDaemon(true);
     }
@@ -60,10 +89,39 @@ public final class ControllerRuntime implements ControllerRole, AutoCloseable {
     }
 
     private void campaign() {
-        try {
+        while (!closed.get()) {
+            try {
+                campaignOnce();
+                while (!closed.get()
+                        && election.state() == com.minimq.broker.coordination.ControllerState.ACTIVE) {
+                    Thread.sleep(100);
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return;
+            } catch (RuntimeException failure) {
+                if (!closed.get()) {
+                    log.error("Controller runtime failed on broker {}; retrying election",
+                            config.brokerId(), failure);
+                }
+            } finally {
+                active = false;
+                election.close();
+            }
+            if (!closed.get()) {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+    }
+
+    void campaignOnce() {
             var leadership = election.campaign();
-            EtcdClusterMetadataRepository fenced = new EtcdClusterMetadataRepository(
-                    client.getKVClient(), config.clusterId(), leadership);
+            var fenced = repositoryFactory.apply(leadership);
             var shared = fenced.read();
             if (shared.revision() == 0) {
                 if (!config.initializeEmptyCluster() && !config.initializeClusterFromLocal()) {
@@ -86,18 +144,6 @@ public final class ControllerRuntime implements ControllerRole, AutoCloseable {
             election.activate();
             active = true;
             activationListener.run();
-            while (!closed.get() && election.state() == com.minimq.broker.coordination.ControllerState.ACTIVE) {
-                Thread.sleep(100);
-            }
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-        } catch (RuntimeException failure) {
-            if (!closed.get()) {
-                log.error("Controller runtime failed on broker {}", config.brokerId(), failure);
-            }
-        } finally {
-            active = false;
-        }
     }
 
     @Override
@@ -116,15 +162,15 @@ public final class ControllerRuntime implements ControllerRole, AutoCloseable {
             return;
         }
         active = false;
-        election.close();
-        watch.close();
-        coordination.close();
-        client.close();
         thread.interrupt();
+        client.close();
+        watch.close();
         try {
             thread.join(5_000);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+        election.close();
+        coordination.close();
     }
 }

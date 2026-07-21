@@ -42,6 +42,8 @@ class BrokerConfigTest {
                 "--maintenance-every-n-appends", "12",
                 "--fetch-transfer-mode", "heap",
                 "--fetch-transfer-timeout-ms", "2500",
+                "--network-transport", "auto",
+                "--max-in-flight-requests", "128",
                 "--broker-heartbeat-interval-ms", "100",
                 "--broker-self-fence-timeout-ms", "300",
                 "--controller-broker-lease-timeout-ms", "500",
@@ -74,6 +76,8 @@ class BrokerConfigTest {
         assertEquals(12, config.maintenanceEveryNAppends());
         assertEquals(FetchTransferMode.HEAP, config.fetchTransferMode());
         assertEquals(2_500, config.fetchTransferTimeoutMs());
+        assertEquals(com.minimq.broker.netty.NetworkTransportMode.AUTO, config.networkTransportMode());
+        assertEquals(128, config.maxInFlightRequests());
         assertEquals(100, config.brokerHeartbeatIntervalMs());
         assertEquals(300, config.brokerSelfFenceTimeoutMs());
         assertEquals(500, config.controllerBrokerLeaseTimeoutMs());
@@ -86,6 +90,8 @@ class BrokerConfigTest {
                 0, "localhost", 9092, Path.of("./data"), true, "localhost", 9092, false, "ops-secret");
         assertEquals(FetchTransferMode.AUTO, config.fetchTransferMode());
         assertEquals(30_000, config.fetchTransferTimeoutMs());
+        assertEquals(com.minimq.broker.netty.NetworkTransportMode.NIO, config.networkTransportMode());
+        assertEquals(0, config.maxInFlightRequests());
         assertEquals(1_000, config.brokerHeartbeatIntervalMs());
         assertEquals(3_000, config.brokerSelfFenceTimeoutMs());
         assertEquals(5_000, config.controllerBrokerLeaseTimeoutMs());
@@ -143,6 +149,10 @@ class BrokerConfigTest {
                 () -> BrokerConfig.parse(new String[] {"--fetch-transfer-timeout-ms", "0"}));
         assertThrows(IllegalArgumentException.class,
                 () -> BrokerConfig.parse(new String[] {"--fetch-transfer-timeout-ms", "-1"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> BrokerConfig.parse(new String[] {"--network-transport", "kqueue"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> BrokerConfig.parse(new String[] {"--max-in-flight-requests", "-1"}));
     }
 
     @Test

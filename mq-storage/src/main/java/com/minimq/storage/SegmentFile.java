@@ -312,6 +312,10 @@ final class SegmentFile implements AutoCloseable {
         }
     }
 
+    synchronized boolean isClosed() {
+        return closed;
+    }
+
     static Path logPath(Path partitionDir, long baseOffset) {
         return partitionDir.resolve(String.format("%020d.log", baseOffset));
     }

@@ -30,6 +30,8 @@ class DemoCliTest {
         assertTrue(unknown.contains("benchmark-fetch"));
         assertTrue(noArgs.contains("maintenance-report"));
         assertTrue(unknown.contains("maintenance-metrics"));
+        assertTrue(noArgs.contains("runtime-metrics"));
+        assertTrue(unknown.contains("runtime-metrics"));
         String brokerUsage =
                 "broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --etcd-endpoints http://localhost:2379 --initialize-empty-cluster --admin-token <secret>";
         assertTrue(noArgs.contains(brokerUsage));
@@ -171,6 +173,10 @@ class DemoCliTest {
                     "maintenance-metrics", "--broker", brokers,
                     "--admin-token", BrokerTestHarness.ADMIN_TOKEN
             }));
+            String runtimeMetricsOutput = captureStdout(() -> DemoCli.main(new String[] {
+                    "runtime-metrics", "--broker", brokers,
+                    "--admin-token", BrokerTestHarness.ADMIN_TOKEN
+            }));
 
             assertTrue(reportOutput.contains("Maintenance target: " + brokers));
             assertTrue(reportOutput.contains("Maintenance report"));
@@ -181,9 +187,14 @@ class DemoCliTest {
             assertTrue(metricsOutput.contains("Maintenance metrics"));
             assertTrue(metricsOutput.contains("dryRuns=1"));
             assertTrue(metricsOutput.contains("lastRunStatus=SKIPPED_DISABLED"));
+            assertTrue(runtimeMetricsOutput.contains("Runtime metrics"));
+            assertTrue(runtimeMetricsOutput.contains("requestsByApiKey"));
+            assertTrue(runtimeMetricsOutput.contains("responsesByErrorCode"));
+            assertTrue(runtimeMetricsOutput.contains("latencyByApiKey"));
             assertFalse(reportOutput.contains(BrokerTestHarness.ADMIN_TOKEN));
             assertFalse(runOutput.contains(BrokerTestHarness.ADMIN_TOKEN));
             assertFalse(metricsOutput.contains(BrokerTestHarness.ADMIN_TOKEN));
+            assertFalse(runtimeMetricsOutput.contains(BrokerTestHarness.ADMIN_TOKEN));
         }
     }
 

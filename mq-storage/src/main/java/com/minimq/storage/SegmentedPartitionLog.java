@@ -208,7 +208,9 @@ public final class SegmentedPartitionLog implements PartitionLog, TransferablePa
             closed = true;
             beginReaderQuiescence();
             try {
-                flushSegments();
+                // A segment may already have been closed by a completed maintenance/truncation
+                // replacement. Its close path forced both files, so it must not make shutdown fail.
+                segments.stream().filter(segment -> !segment.isClosed()).forEach(SegmentFile::flush);
                 segments.forEach(SegmentFile::close);
             } finally {
                 endReaderQuiescence();

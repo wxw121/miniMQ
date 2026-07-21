@@ -145,6 +145,7 @@ public final class EtcdControllerCoordinationStore implements ControllerCoordina
         private final ControllerIdentity identity;
         private final byte[] identityBytes;
         private final AtomicBoolean valid;
+        private final AtomicBoolean closed = new AtomicBoolean();
         private final CloseableClient keepAlive;
         private final LeaderKey elected;
         private final long leaseId;
@@ -165,9 +166,10 @@ public final class EtcdControllerCoordinationStore implements ControllerCoordina
 
         @Override
         public void close() {
-            if (!valid.getAndSet(false)) {
+            if (!closed.compareAndSet(false, true)) {
                 return;
             }
+            valid.set(false);
             keepAlive.close();
             try { await(election.resign(elected)); } catch (RuntimeException ignored) { }
             try { await(lease.revoke(leaseId)); } catch (RuntimeException ignored) { }

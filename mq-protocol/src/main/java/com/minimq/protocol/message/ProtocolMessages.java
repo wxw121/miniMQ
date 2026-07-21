@@ -301,6 +301,12 @@ public final class ProtocolMessages {
         }
     }
 
+    public record RuntimeMetricsRequest(String adminToken) {
+        public RuntimeMetricsRequest() {
+            this("");
+        }
+    }
+
     public record MaintenanceSegmentInfo(
             String partition,
             String action,
@@ -332,5 +338,34 @@ public final class ProtocolMessages {
             long skippedDueToReaders,
             long cleanupFailures,
             String lastRunStatus) {
+    }
+
+    public record RuntimeMetricCount(short apiKey, long count) {
+        public RuntimeMetricCount {
+            requireNonNegative(count, "count");
+        }
+    }
+
+    public record RuntimeErrorCount(short errorCode, long count) {
+        public RuntimeErrorCount {
+            requireNonNegative(count, "count");
+        }
+    }
+
+    public record RuntimeLatencySummary(short apiKey, long count, long totalLatencyMs, double averageLatencyMs) {
+        public RuntimeLatencySummary {
+            requireNonNegative(count, "count");
+            requireNonNegative(totalLatencyMs, "totalLatencyMs");
+            if (averageLatencyMs < 0.0) {
+                throw new IllegalArgumentException("averageLatencyMs must be non-negative");
+            }
+        }
+    }
+
+    public record RuntimeMetricsResponse(
+            List<RuntimeMetricCount> requestsByApiKey,
+            List<RuntimeErrorCount> responsesByErrorCode,
+            List<RuntimeLatencySummary> latencyByApiKey,
+            List<RuntimeMetricCount> throttledByApiKey) {
     }
 }

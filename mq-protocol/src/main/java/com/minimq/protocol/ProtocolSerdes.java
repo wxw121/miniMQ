@@ -131,6 +131,8 @@ public final class ProtocolSerdes {
                     new MaintenanceRunRequest(ByteBufSerde.readString(payload));
             case ApiKeys.MAINTENANCE_METRICS ->
                     new MaintenanceMetricsRequest(ByteBufSerde.readString(payload));
+            case ApiKeys.RUNTIME_METRICS ->
+                    new RuntimeMetricsRequest(ByteBufSerde.readString(payload));
             case ApiKeys.DISCOVER_CONTROLLER -> new DiscoverControllerRequest();
             case ApiKeys.LEADER_READY -> new LeaderReadyRequest(
                     ByteBufSerde.readString(payload),
@@ -171,6 +173,7 @@ public final class ProtocolSerdes {
             case ApiKeys.UPDATE_REPLICA_LEO -> new UpdateReplicaLeoResponse();
             case ApiKeys.MAINTENANCE_REPORT, ApiKeys.MAINTENANCE_RUN -> decodeMaintenanceReportResponse(payload);
             case ApiKeys.MAINTENANCE_METRICS -> decodeMaintenanceMetricsResponse(payload);
+            case ApiKeys.RUNTIME_METRICS -> decodeRuntimeMetricsResponse(payload);
             case ApiKeys.DISCOVER_CONTROLLER -> new DiscoverControllerResponse(
                     readControllerMetadata(payload), payload.readLong());
             case ApiKeys.LEADER_READY -> new LeaderReadyResponse();
@@ -257,6 +260,8 @@ public final class ProtocolSerdes {
                     ByteBufSerde.writeString(buf, ((MaintenanceRunRequest) body).adminToken());
             case ApiKeys.MAINTENANCE_METRICS ->
                     ByteBufSerde.writeString(buf, ((MaintenanceMetricsRequest) body).adminToken());
+            case ApiKeys.RUNTIME_METRICS ->
+                    ByteBufSerde.writeString(buf, ((RuntimeMetricsRequest) body).adminToken());
             case ApiKeys.DISCOVER_CONTROLLER -> {
                 // Empty request body.
             }
@@ -305,6 +310,8 @@ public final class ProtocolSerdes {
             writeMaintenanceReportResponse(buf, res);
         } else if (body instanceof MaintenanceMetricsResponse res) {
             writeMaintenanceMetricsResponse(buf, res);
+        } else if (body instanceof RuntimeMetricsResponse res) {
+            writeRuntimeMetricsResponse(buf, res);
         } else if (body instanceof DiscoverControllerResponse res) {
             writeControllerMetadata(buf, res.controller());
             buf.writeLong(res.metadataVersion());
@@ -539,6 +546,66 @@ public final class ProtocolSerdes {
         buf.writeLong(res.skippedDueToReaders());
         buf.writeLong(res.cleanupFailures());
         ByteBufSerde.writeString(buf, res.lastRunStatus());
+    }
+
+    private static RuntimeMetricsResponse decodeRuntimeMetricsResponse(ByteBuf buf) {
+        int requestCount = readItemCount(buf, "runtime request metric counts");
+        List<RuntimeMetricCount> requests = new ArrayList<>(requestCount);
+        for (int i = 0; i < requestCount; i++) {
+            requireReadable(buf, Short.BYTES + Long.BYTES, "runtime request metric count");
+            requests.add(new RuntimeMetricCount(buf.readShort(), buf.readLong()));
+        }
+
+        int responseCount = readItemCount(buf, "runtime response error counts");
+        List<RuntimeErrorCount> responses = new ArrayList<>(responseCount);
+        for (int i = 0; i < responseCount; i++) {
+            requireReadable(buf, Short.BYTES + Long.BYTES, "runtime response error count");
+            responses.add(new RuntimeErrorCount(buf.readShort(), buf.readLong()));
+        }
+
+        int latencyCount = readItemCount(buf, "runtime latency summaries");
+        List<RuntimeLatencySummary> latencies = new ArrayList<>(latencyCount);
+        for (int i = 0; i < latencyCount; i++) {
+            requireReadable(buf, Short.BYTES + Long.BYTES * 2 + Double.BYTES, "runtime latency summary");
+            latencies.add(new RuntimeLatencySummary(
+                    buf.readShort(), buf.readLong(), buf.readLong(), buf.readDouble()));
+        }
+
+        int throttledCount = readItemCount(buf, "runtime throttled metric counts");
+        List<RuntimeMetricCount> throttled = new ArrayList<>(throttledCount);
+        for (int i = 0; i < throttledCount; i++) {
+            requireReadable(buf, Short.BYTES + Long.BYTES, "runtime throttled metric count");
+            throttled.add(new RuntimeMetricCount(buf.readShort(), buf.readLong()));
+        }
+        return new RuntimeMetricsResponse(requests, responses, latencies, throttled);
+    }
+
+    private static void writeRuntimeMetricsResponse(ByteBuf buf, RuntimeMetricsResponse res) {
+        writeItemCount(buf, res.requestsByApiKey().size(), "runtime request metric counts");
+        for (RuntimeMetricCount count : res.requestsByApiKey()) {
+            buf.writeShort(count.apiKey());
+            buf.writeLong(count.count());
+        }
+
+        writeItemCount(buf, res.responsesByErrorCode().size(), "runtime response error counts");
+        for (RuntimeErrorCount count : res.responsesByErrorCode()) {
+            buf.writeShort(count.errorCode());
+            buf.writeLong(count.count());
+        }
+
+        writeItemCount(buf, res.latencyByApiKey().size(), "runtime latency summaries");
+        for (RuntimeLatencySummary summary : res.latencyByApiKey()) {
+            buf.writeShort(summary.apiKey());
+            buf.writeLong(summary.count());
+            buf.writeLong(summary.totalLatencyMs());
+            buf.writeDouble(summary.averageLatencyMs());
+        }
+
+        writeItemCount(buf, res.throttledByApiKey().size(), "runtime throttled metric counts");
+        for (RuntimeMetricCount count : res.throttledByApiKey()) {
+            buf.writeShort(count.apiKey());
+            buf.writeLong(count.count());
+        }
     }
 
     private static ReplicaFetchResponse decodeReplicaFetchResponse(ByteBuf buf) {

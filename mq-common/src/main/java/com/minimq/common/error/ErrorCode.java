@@ -19,7 +19,8 @@ public enum ErrorCode {
     NOT_CONTROLLER(12),
     STALE_LEADER_EPOCH(13),
     LEADER_NOT_READY(14),
-    CONTROLLER_NOT_READY(15);
+    CONTROLLER_NOT_READY(15),
+    THROTTLED(16);
 
     public final short code;
 

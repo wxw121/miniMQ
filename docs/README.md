@@ -1,6 +1,6 @@
-﻿# MiniMQ Project Context Index / 项目上下文索引
+# MiniMQ Project Context Index / 项目上下文索引
 
-> Last updated / 最后更新：2026-07-20
+> Last updated / 最后更新：2026-07-21
 > Audience / 适用对象（英文）：new agents, new contributors, reviewers, interview readers
 > 适用对象：新 agent 会话、新贡献者、代码审查者、面试/作品集读者
 
@@ -21,7 +21,7 @@ The current implementation uses etcd-backed Controller election and a single-lea
 | 1 | [Project Architecture](architecture.md) / [项目架构](architecture.md) | Understand modules, runtime topology, dependency graph, and data/control flows. / 理解模块、运行时拓扑、依赖图、数据流与控制流。 |
 | 2 | [System Design](design.md) / [系统设计](design.md) | Understand protocol format, storage format, metadata model, group coordination, and client behavior. / 理解协议格式、存储格式、元数据模型、消费组协调与客户端行为。 |
 | 3 | [Testing Guide](testing.md) / [测试文档](testing.md) | Understand tests, coverage, commands, report locations, and quality gates. / 理解测试、覆盖率、命令、报告位置与质量门槛。 |
-| 4 | [Roadmap](roadmap.md) / [代办与路线图](roadmap.md) | Understand known limitations, TODOs, V2 features, and recommended next tasks. / 理解已知限制、待办事项、V2 功能与推荐下一步任务。 |
+| 4 | [Roadmap](roadmap.md) / [代办与路线图](roadmap.md) | Understand known limitations, backlog items, version features, and recommended next tasks. / 理解已知限制、待办事项、版本功能与推荐下一步任务。 |
 | 5 | [Code Review Fix Log](code-review-2026-07-02.md) / [代码审查修复记录](code-review-2026-07-02.md) | See recently fixed bugs and why they mattered. / 查看近期修复的问题以及它们的重要性。 |
 | 5b | [V2.3 Code Review Fix Log](code-review-2026-07-17-v2.3-replication.md) / [V2.3 代码审查修复记录](code-review-2026-07-17-v2.3-replication.md) | See V2.3 replication review findings, `2.3.0` fixes, and `2.3.1` backlog. / 查看 V2.3 副本审查问题、`2.3.0` 修复与 `2.3.1` 待办。 |
 | 6 | [Test Report](test-report-2026-07-10-v2-storage.md) / [测试报告](test-report-2026-07-10-v2-storage.md) | See the V2.0 storage recovery closeout results. / 查看 V2.0 存储恢复收口测试结果。 |
@@ -30,6 +30,13 @@ The current implementation uses etcd-backed Controller election and a single-lea
 | 7c | [V2.4.0 Maintenance Operations Test Report](test-report-2026-07-19-v2.4.0-maintenance-ops.md) | See the V2.4.0 admin protocol and operator CLI verification. |
 | 7d | [V2.5.0 Broker Leases And Automatic Failover Test Report](test-report-2026-07-19-v2.5.0-broker-leases-auto-failover.md) | See the V2.5.0 lease, fencing, clean failover, frozen partition, and recovery verification. |
 | 7e | [V3.0.0 Control Plane HA Test Report](test-report-2026-07-20-v3.0.0-control-plane-ha.md) | See etcd election, Controller fencing, Leader epoch, truncation, and client discovery evidence. |
+| 7f | [V3.0.1-V3.2 Productionization Test Report](test-report-2026-07-21-v3.0.1-v3.2-productionization.md) | See failover stabilization, runtime resilience, optional native transport, and bounded verification evidence. |
+| 7g | [V3.0.1-V3.2 Known Issues](known-issues-2026-07-20-v3.0.1-v3.2.md) | Track the real-etcd environment gate and bounded-attempt policy. |
+| 7h | [V4 Experimental LSM Design](superpowers/specs/2026-07-20-v4-experimental-lsm-state-store-design.md) | Understand the optional LSM state-store design before any V4 code work. |
+| 7i | [V4 Experimental LSM Implementation Plan](superpowers/plans/2026-07-20-v4-experimental-lsm-state-store-implementation.md) | Follow the documentation-only V4 implementation sequence when the project is ready. |
+| 7j | [V3.3-V3.5 Production Hardening Test Report](test-report-2026-07-21-v3.3-v3.5-production-hardening.md) | See runtime metrics export, resilience matrix, benchmark transport selector, and bounded verification evidence. |
+| 7k | [V5 Multi-Node Operations Design](superpowers/specs/2026-07-21-v5-multi-node-operations-design.md) | Understand the next operations-focused version direction after V3.0.0. |
+| 7l | [V5 Multi-Node Operations Implementation Plan](superpowers/plans/2026-07-21-v5-multi-node-operations-implementation.md) | Follow the future implementation sequence after current gates are complete. |
 | 8 | [Troubleshooting Guide](troubleshooting.md) / [故障排查指南](troubleshooting.md) | Resolve common Maven, port, Windows, test report, and GitHub/SSH issues. / 排查 Maven、端口、Windows、测试报告、GitHub/SSH 常见问题。 |
 
 ## 3. Current Snapshot / 当前快照
@@ -37,7 +44,7 @@ The current implementation uses etcd-backed Controller election and a single-lea
 | Item / 项目 | Value / 值 |
 | --- | --- |
 | Language / 语言 | Java 17 |
-| Project version | 3.0.0-SNAPSHOT |
+| Project version | 3.0.0 |
 | Build tool / 构建工具 | Maven multi-module project / Maven 多模块项目 |
 | Network framework / 网络框架 | Netty 4.1 |
 | Serialization / 序列化 | Custom binary protocol over Netty `ByteBuf` / 基于 Netty `ByteBuf` 的自定义二进制协议 |
@@ -45,9 +52,9 @@ The current implementation uses etcd-backed Controller election and a single-lea
 | Storage / 存储 | WAL-backed segmented log with retention, compaction, dry-run reports, maintenance metrics, zero-copy FETCH sendfile, and ISR-aware replication / 基于 WAL 的分段日志，支持保留策略、压缩、dry-run 报告、维护指标、零拷贝 FETCH sendfile 与 ISR 感知副本 |
 | Tests / 测试 | JUnit 5 + Surefire |
 | Coverage / 覆盖率 | JaCoCo |
-| Latest milestone tag | `v2.3.2-replica-fetch-pooling` |
-| Latest release | V3.0.0 Controller HA and Leader epoch fencing |
-| Latest evidence | [V3.0.0 control-plane HA test report](test-report-2026-07-20-v3.0.0-control-plane-ha.md) |
+| Latest milestone tag | Not cut for the current working tree; latest snapshot is `3.0.0` |
+| Latest release | V3.0.0 production hardening: V3.3 runtime metrics API/CLI, V3.4 resilience matrix, and V3.5 benchmark transport selector |
+| Latest evidence | [V3.3-V3.5 production hardening test report](test-report-2026-07-21-v3.3-v3.5-production-hardening.md) |
 
 ## 4. Module Map / 模块地图
 
@@ -101,25 +108,26 @@ Start a three-broker demo cluster / 启动三节点 Broker 演示集群：
 
 ```powershell
 docker compose -f deploy/etcd/docker-compose.yml up -d
-java -jar mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --etcd-endpoints http://localhost:2379 --initialize-empty-cluster --admin-token <secret>
-java -jar mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar broker --broker-id 1 --port 9093 --data-dir ./data/broker-1 --etcd-endpoints http://localhost:2379 --admin-token <secret>
-java -jar mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar broker --broker-id 2 --port 9094 --data-dir ./data/broker-2 --etcd-endpoints http://localhost:2379 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-3.0.0.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --etcd-endpoints http://localhost:2379 --initialize-empty-cluster --admin-token <secret>
+java -jar mq-demo/target/mq-demo-3.0.0.jar broker --broker-id 1 --port 9093 --data-dir ./data/broker-1 --etcd-endpoints http://localhost:2379 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-3.0.0.jar broker --broker-id 2 --port 9094 --data-dir ./data/broker-2 --etcd-endpoints http://localhost:2379 --admin-token <secret>
 ```
 
 Create, produce, and consume / 创建 Topic、生产消息、消费消息：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar create-topic --brokers localhost:9092,localhost:9093,localhost:9094 --name orders --partitions 3
-java -jar mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar produce --brokers localhost:9092,localhost:9093,localhost:9094 --topic orders --key user-1 --message hello
-java -jar mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar consume --brokers localhost:9092,localhost:9093,localhost:9094 --topic orders --group order-processors
+java -jar mq-demo/target/mq-demo-3.0.0.jar create-topic --brokers localhost:9092,localhost:9093,localhost:9094 --name orders --partitions 3
+java -jar mq-demo/target/mq-demo-3.0.0.jar produce --brokers localhost:9092,localhost:9093,localhost:9094 --topic orders --key user-1 --message hello
+java -jar mq-demo/target/mq-demo-3.0.0.jar consume --brokers localhost:9092,localhost:9093,localhost:9094 --topic orders --group order-processors
 ```
 
 Inspect and run storage maintenance / 查看并执行存储维护：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar maintenance-report --broker localhost:9092 --admin-token <secret>
-java -jar mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar maintenance-run --broker localhost:9092 --admin-token <secret>
-java -jar mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar maintenance-metrics --broker localhost:9092 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-3.0.0.jar maintenance-report --broker localhost:9092 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-3.0.0.jar maintenance-run --broker localhost:9092 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-3.0.0.jar maintenance-metrics --broker localhost:9092 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-3.0.0.jar runtime-metrics --broker localhost:9092 --admin-token <secret>
 ```
 
 All brokers require the shared admin token. Invalid maintenance credentials return `UNAUTHORIZED`, while an overlapping destructive run returns `MAINTENANCE_BUSY`; report/run work executes on the broker's dedicated maintenance executor.
@@ -127,7 +135,7 @@ All brokers require the shared admin token. Invalid maintenance credentials retu
 Benchmark FETCH heap versus sendfile / 对比 HEAP 与 sendfile 的 FETCH 基准：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
+java -jar mq-demo/target/mq-demo-3.0.0.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576 --network-transport nio
 ```
 
 ## 6. Glossary / 专业名词解释

@@ -112,6 +112,7 @@ class ProtocolSerdesTest {
                 new RequestCase(ApiKeys.MAINTENANCE_REPORT, new MaintenanceReportRequest("report-token")),
                 new RequestCase(ApiKeys.MAINTENANCE_RUN, new MaintenanceRunRequest("run-token")),
                 new RequestCase(ApiKeys.MAINTENANCE_METRICS, new MaintenanceMetricsRequest("metrics-token")),
+                new RequestCase(ApiKeys.RUNTIME_METRICS, new RuntimeMetricsRequest("runtime-token")),
                 new RequestCase(ApiKeys.BROKER_HEARTBEAT, new BrokerHeartbeatRequest(1, 7L, 3L)),
                 new RequestCase(ApiKeys.REGISTER_BROKER, new RegisterBrokerRequest(1, "localhost", 9093, 3L)),
                 new RequestCase(ApiKeys.DISCOVER_CONTROLLER, new DiscoverControllerRequest()),
@@ -193,6 +194,11 @@ class ProtocolSerdesTest {
                         3L,
                         4L,
                         "SUCCESS")),
+                new ResponseCase(ApiKeys.RUNTIME_METRICS, new RuntimeMetricsResponse(
+                        List.of(new RuntimeMetricCount(ApiKeys.PRODUCE, 2L)),
+                        List.of(new RuntimeErrorCount(ErrorCode.NONE.code, 2L)),
+                        List.of(new RuntimeLatencySummary(ApiKeys.PRODUCE, 2L, 20L, 10.0)),
+                        List.of(new RuntimeMetricCount(ApiKeys.FETCH, 1L)))),
                 new ResponseCase(ApiKeys.DISCOVER_CONTROLLER, new DiscoverControllerResponse(
                         new ControllerMetadata(1, "localhost", 9093, 3L), 8L)),
                 new ResponseCase(ApiKeys.LEADER_READY, new LeaderReadyResponse()));

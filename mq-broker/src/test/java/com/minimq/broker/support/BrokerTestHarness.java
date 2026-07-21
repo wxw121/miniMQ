@@ -4,6 +4,7 @@ import com.minimq.broker.BrokerConfig;
 import com.minimq.broker.BrokerAvailabilityGuard;
 import com.minimq.broker.BrokerServer;
 import com.minimq.broker.FetchTransferMetricsSnapshot;
+import com.minimq.broker.metrics.BrokerRuntimeMetricsSnapshot;
 
 import java.io.IOException;
 import java.net.ServerSocket;
@@ -105,6 +106,10 @@ public final class BrokerTestHarness implements AutoCloseable {
 
     public FetchTransferMetricsSnapshot fetchTransferMetrics() {
         return server.fetchTransferMetrics();
+    }
+
+    public BrokerRuntimeMetricsSnapshot runtimeMetrics() {
+        return server.runtimeMetrics();
     }
 
     public long localHighWatermark(String topic, int partition) {

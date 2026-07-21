@@ -8,6 +8,7 @@ public final class BrokerAvailabilityGuard {
     public enum State {
         STARTING,
         ACTIVE,
+        STORAGE_DEGRADED,
         FENCED,
         RECOVERING
     }
@@ -22,6 +23,15 @@ public final class BrokerAvailabilityGuard {
         return state() == State.ACTIVE;
     }
 
+    public boolean allowsProduce() {
+        return state() == State.ACTIVE;
+    }
+
+    public boolean allowsFetch() {
+        State current = state();
+        return current == State.ACTIVE || current == State.STORAGE_DEGRADED;
+    }
+
     public boolean allowsMaintenanceRun() {
         return state() == State.ACTIVE;
     }
@@ -31,7 +41,7 @@ public final class BrokerAvailabilityGuard {
     }
 
     public ErrorCode rejectionError() {
-        return ErrorCode.BROKER_FENCED;
+        return state() == State.STORAGE_DEGRADED ? ErrorCode.MAINTENANCE_BUSY : ErrorCode.BROKER_FENCED;
     }
 
     public void activate() {
@@ -40,6 +50,10 @@ public final class BrokerAvailabilityGuard {
 
     public void fence() {
         state.set(State.FENCED);
+    }
+
+    public void degradeStorage() {
+        state.set(State.STORAGE_DEGRADED);
     }
 
     public void startRecovering() {

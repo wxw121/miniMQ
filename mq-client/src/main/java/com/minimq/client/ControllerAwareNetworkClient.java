@@ -1,6 +1,7 @@
 package com.minimq.client;
 
 import com.minimq.client.exception.MiniMqConnectionException;
+import com.minimq.client.exception.MiniMqServerException;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.protocol.ApiKeys;
 import com.minimq.protocol.codec.MqDecoder;
@@ -41,7 +42,9 @@ public final class ControllerAwareNetworkClient implements AutoCloseable {
     }
 
     public void ensureSuccess(MqDecoder.DecodedResponse response, String operation) {
-        controllerClient.ensureSuccess(response, operation);
+        if (response.header().errorCode() != ErrorCode.NONE) {
+            throw new MiniMqServerException(response.header().errorCode(), operation);
+        }
     }
 
     public synchronized long controllerEpoch() {

@@ -22,6 +22,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ClusterControllerTest {
@@ -205,6 +206,31 @@ class ClusterControllerTest {
         PartitionMetadata partition = controller.metadata(new MetadataRequest("orders"))
                 .topics().get(0).partitions().get(0);
         assertEquals(1, partition.leaderBrokerId());
+    }
+
+    @Test
+    void freezesLeaderCandidateThatMissesActivationDeadlineWithoutReelection() {
+        AtomicLong now = new AtomicLong();
+        ClusterController controller = new ClusterController(
+                new MetadataStore(tempDir), 5_000L, now::get);
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
+        controller.createTopic(new CreateTopicRequest("orders", 1, 2));
+        assertEquals(ErrorCode.NONE, controller.markBrokerOffline(0));
+
+        assertEquals(0, controller.expireLeaderActivationTimeouts(2_000));
+        now.set(TimeUnit.MILLISECONDS.toNanos(1_999));
+        assertEquals(0, controller.expireLeaderActivationTimeouts(2_000));
+        now.set(TimeUnit.MILLISECONDS.toNanos(2_001));
+        assertEquals(1, controller.expireLeaderActivationTimeouts(2_000));
+
+        PartitionMetadata partition = controller.metadata(new MetadataRequest("orders"))
+                .topics().get(0).partitions().get(0);
+        assertEquals(1, partition.leaderBrokerId());
+        assertTrue(partition.frozen());
+        assertFalse(partition.leaderReady());
+        assertThrows(IllegalArgumentException.class,
+                () -> controller.expireLeaderActivationTimeouts(0));
     }
 
     @Test

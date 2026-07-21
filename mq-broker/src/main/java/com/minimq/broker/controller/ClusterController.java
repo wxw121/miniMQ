@@ -47,6 +47,7 @@ public class ClusterController {
     private boolean recovering;
     private long recoveryDeadlineNanos;
     private final Set<Integer> awaitingRecoveryBrokers = new HashSet<>();
+    private final Map<String, LeaderActivationDeadline> leaderActivationDeadlines = new HashMap<>();
 
     public record BrokerRegistration(ErrorCode errorCode, RegisterBrokerResponse response) {
         static BrokerRegistration failed(ErrorCode errorCode) {
@@ -58,6 +59,9 @@ public class ClusterController {
     }
 
     private record BrokerLeaseKey(int brokerId, long brokerEpoch) {
+    }
+
+    private record LeaderActivationDeadline(long leaderEpoch, long deadlineNanos) {
     }
 
     public ClusterController(ClusterMetadataRepository metadataRepository) {
@@ -378,6 +382,48 @@ public class ClusterController {
             }
         }
         return true;
+    }
+
+    /** Freezes candidates that never complete the exact-epoch LEADER_READY handshake. */
+    public synchronized int expireLeaderActivationTimeouts(long timeoutMs) {
+        if (timeoutMs <= 0) {
+            throw new IllegalArgumentException("leader activation timeout must be positive");
+        }
+        long now = nanoTime.getAsLong();
+        long timeoutNanos = TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+        ClusterMetadata next = copyMetadata(metadata);
+        Set<String> pending = new HashSet<>();
+        int expired = 0;
+        for (Map.Entry<String, TopicEntry> topicEntry : next.topics.entrySet()) {
+            List<PartitionEntry> partitions = topicEntry.getValue().partitions;
+            for (int partitionId = 0; partitionId < partitions.size(); partitionId++) {
+                PartitionEntry partition = partitions.get(partitionId);
+                String key = topicEntry.getKey() + "\u0000" + partitionId;
+                if (partition.frozen || partition.leaderReady) {
+                    leaderActivationDeadlines.remove(key);
+                    continue;
+                }
+                pending.add(key);
+                LeaderActivationDeadline deadline = leaderActivationDeadlines.get(key);
+                if (deadline == null || deadline.leaderEpoch() != partition.leaderEpoch) {
+                    deadline = new LeaderActivationDeadline(
+                            partition.leaderEpoch, Math.addExact(now, timeoutNanos));
+                    leaderActivationDeadlines.put(key, deadline);
+                }
+                if (now >= deadline.deadlineNanos()) {
+                    partition.frozen = true;
+                    partition.leaderReady = false;
+                    partition.isrBrokerIds.clear();
+                    leaderActivationDeadlines.remove(key);
+                    expired++;
+                }
+            }
+        }
+        leaderActivationDeadlines.keySet().removeIf(key -> !pending.contains(key));
+        if (expired == 0) {
+            return 0;
+        }
+        return commit(next) == ErrorCode.NONE ? expired : 0;
     }
 
     public synchronized boolean isRecovering() {

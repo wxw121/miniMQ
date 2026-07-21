@@ -122,12 +122,15 @@ class ReplicationIntegrationTest {
             assertEquals(ErrorCode.NONE, offline.header().errorCode());
 
             int electedLeader = partition(metadata(admin, "orders"), "orders", 0).leaderBrokerId();
+            BrokerTestHarness electedLeaderHarness = electedLeader == 1 ? broker1 : broker2;
+            waitForLocalLeader(electedLeaderHarness, "orders", 0, electedLeader);
+            PartitionMetadata readyPartition = waitForLeaderReady(admin, "orders", 0, electedLeader);
             TestNetworkClient newLeaderClient = new TestNetworkClient();
             newLeaderClient.connect("127.0.0.1", electedLeader == 1 ? broker1.port() : broker2.port());
             MqDecoder.DecodedResponse fetchResponse = newLeaderClient.send(
                     ApiKeys.FETCH, new FetchRequest(
                             "orders", 0,
-                            partition(metadata(admin, "orders"), "orders", 0).leaderEpoch(),
+                            readyPartition.leaderEpoch(),
                             0, 1024 * 1024));
             assertEquals(ErrorCode.NONE, fetchResponse.header().errorCode());
             FetchResponse fetch = (FetchResponse) fetchResponse.body();
@@ -486,5 +489,24 @@ class ReplicationIntegrationTest {
         }
         assertEquals(expectedLeader, broker.localLeaderBrokerId(topic, partitionId),
                 "broker did not refresh the elected Leader");
+    }
+
+    private static PartitionMetadata waitForLeaderReady(
+            TestNetworkClient admin, String topic, int partitionId, int expectedLeader)
+            throws InterruptedException {
+        PartitionMetadata observed = partition(metadata(admin, topic), topic, partitionId);
+        for (int attempt = 0; attempt < 100; attempt++) {
+            observed = partition(metadata(admin, topic), topic, partitionId);
+            if (observed.leaderBrokerId() == expectedLeader && observed.leaderReady()) {
+                return observed;
+            }
+            Thread.sleep(50);
+        }
+        fail("elected Leader did not complete activation; expected=" + expectedLeader
+                + ", observedLeader=" + observed.leaderBrokerId()
+                + ", leaderReady=" + observed.leaderReady()
+                + ", leaderEpoch=" + observed.leaderEpoch()
+                + ", leaderEpochStartOffset=" + observed.leaderEpochStartOffset());
+        return observed;
     }
 }

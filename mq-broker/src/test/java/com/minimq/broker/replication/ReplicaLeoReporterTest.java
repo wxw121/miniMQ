@@ -4,6 +4,7 @@ import com.minimq.broker.BrokerConfig;
 import com.minimq.broker.BrokerAvailabilityGuard;
 import com.minimq.broker.controller.ClusterController;
 import com.minimq.broker.metadata.MetadataStore;
+import com.minimq.broker.resilience.CircuitBreaker;
 import com.minimq.broker.support.BrokerTestHarness;
 import com.minimq.broker.support.TestNetworkClient;
 import com.minimq.common.error.ErrorCode;
@@ -193,6 +194,58 @@ class ReplicaLeoReporterTest {
                 new ClusterController(new MetadataStore(tempDir.resolve("fenced-metadata"))),
                 guard)) {
             assertEquals(ErrorCode.BROKER_FENCED, reporter.report("orders", 0, 1, 9L));
+        }
+    }
+
+    @Test
+    void followerReporterCircuitBreaksRepeatedControllerFailures() throws Exception {
+        MutableClock clock = new MutableClock();
+        CircuitBreaker breaker = new CircuitBreaker(1, 100, clock::now);
+        BrokerConfig config = new BrokerConfig(
+                1,
+                "127.0.0.1",
+                9093,
+                tempDir.resolve("circuit-follower"),
+                false,
+                "127.0.0.1",
+                unusedPort(),
+                false,
+                BrokerTestHarness.ADMIN_TOKEN);
+        BrokerAvailabilityGuard guard = new BrokerAvailabilityGuard();
+        guard.activate();
+
+        try (ReplicaLeoReporter reporter = new ReplicaLeoReporter(
+                config,
+                new ClusterController(new MetadataStore(tempDir.resolve("circuit-metadata"))),
+                guard,
+                com.minimq.broker.ControllerRole.legacy(config),
+                breaker)) {
+            assertEquals(ErrorCode.INVALID_REQUEST, reporter.report("orders", 0, 1, 9L));
+            assertEquals(CircuitBreaker.State.OPEN, breaker.state());
+
+            assertEquals(ErrorCode.CONTROLLER_NOT_READY, reporter.report("orders", 0, 1, 9L));
+
+            clock.advance(100);
+
+            assertEquals(ErrorCode.INVALID_REQUEST, reporter.report("orders", 0, 1, 9L));
+        }
+    }
+
+    private static final class MutableClock {
+        private long now;
+
+        long now() {
+            return now;
+        }
+
+        void advance(long millis) {
+            now += millis;
+        }
+    }
+
+    private static int unusedPort() throws Exception {
+        try (ServerSocket socket = new ServerSocket(0)) {
+            return socket.getLocalPort();
         }
     }
 }

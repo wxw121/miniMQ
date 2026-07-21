@@ -15,6 +15,8 @@ import com.minimq.protocol.message.ProtocolMessages.MaintenanceMetricsResponse;
 import com.minimq.protocol.message.ProtocolMessages.MaintenanceReportRequest;
 import com.minimq.protocol.message.ProtocolMessages.MaintenanceReportResponse;
 import com.minimq.protocol.message.ProtocolMessages.MaintenanceRunRequest;
+import com.minimq.protocol.message.ProtocolMessages.RuntimeMetricsRequest;
+import com.minimq.protocol.message.ProtocolMessages.RuntimeMetricsResponse;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -38,6 +40,7 @@ public final class DemoCli {
             case "maintenance-report" -> maintenanceReport(args);
             case "maintenance-run" -> maintenanceRun(args);
             case "maintenance-metrics" -> maintenanceMetrics(args);
+            case "runtime-metrics" -> runtimeMetrics(args);
             case "benchmark-fetch" -> FetchBenchmark.run(args, System.out);
             default -> printUsage();
         }
@@ -135,6 +138,20 @@ public final class DemoCli {
                 metrics.skippedDueToReaders(),
                 metrics.cleanupFailures(),
                 metrics.lastRunStatus());
+    }
+
+    private static void runtimeMetrics(String[] args) throws Exception {
+        String adminToken = arg(args, "--admin-token", null);
+        RuntimeMetricsResponse metrics = (RuntimeMetricsResponse) sendAdmin(
+                args,
+                ApiKeys.RUNTIME_METRICS,
+                new RuntimeMetricsRequest(adminToken),
+                "runtime metrics").body();
+        System.out.println("Runtime metrics");
+        System.out.println("requestsByApiKey=" + metrics.requestsByApiKey());
+        System.out.println("responsesByErrorCode=" + metrics.responsesByErrorCode());
+        System.out.println("latencyByApiKey=" + metrics.latencyByApiKey());
+        System.out.println("throttledByApiKey=" + metrics.throttledByApiKey());
     }
 
     private static MqDecoder.DecodedResponse sendAdmin(
@@ -236,7 +253,8 @@ public final class DemoCli {
                   java -jar mq-demo.jar maintenance-report --broker localhost:9092 --admin-token <secret>
                   java -jar mq-demo.jar maintenance-run --broker localhost:9092 --admin-token <secret>
                   java -jar mq-demo.jar maintenance-metrics --broker localhost:9092 --admin-token <secret>
-                  java -jar mq-demo.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
+                  java -jar mq-demo.jar runtime-metrics --broker localhost:9092 --admin-token <secret>
+                  java -jar mq-demo.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576 --network-transport nio
                 """);
     }
 }

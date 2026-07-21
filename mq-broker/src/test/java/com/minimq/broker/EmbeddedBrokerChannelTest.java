@@ -4,6 +4,12 @@ import com.minimq.broker.controller.ClusterController;
 import com.minimq.broker.controller.GroupCoordinator;
 import com.minimq.broker.handler.MqRequestHandler;
 import com.minimq.broker.metadata.MetadataStore;
+import com.minimq.broker.metrics.BrokerRuntimeMetrics;
+import com.minimq.broker.metrics.BrokerRuntimeMetricsSnapshot;
+import com.minimq.broker.replication.ReplicaLeoReporter;
+import com.minimq.broker.replication.ReplicaStateManager;
+import com.minimq.broker.resilience.RequestThrottler;
+import com.minimq.broker.resilience.ThrottleResult;
 import com.minimq.broker.support.BrokerTestHarness;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.protocol.ApiKeys;
@@ -36,6 +42,8 @@ import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
 import com.minimq.protocol.message.ProtocolMessages.BrokerHeartbeatRequest;
 import com.minimq.protocol.message.ProtocolMessages.ReplicaFetchRequest;
 import com.minimq.protocol.message.ProtocolMessages.ReplicaFetchResponse;
+import com.minimq.protocol.message.ProtocolMessages.RuntimeMetricsRequest;
+import com.minimq.protocol.message.ProtocolMessages.RuntimeMetricsResponse;
 import com.minimq.protocol.message.ProtocolMessages.SyncGroupRequest;
 import com.minimq.protocol.message.ProtocolMessages.SyncGroupResponse;
 import com.minimq.protocol.message.ProtocolMessages.UpdateReplicaLeoRequest;
@@ -62,6 +70,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class EmbeddedBrokerChannelTest {
     private final List<MaintenanceAdminService> maintenanceServices = new ArrayList<>();
@@ -422,7 +431,79 @@ class EmbeddedBrokerChannelTest {
         assertEquals(0L, metrics.runs());
         assertEquals(1L, metrics.dryRuns());
         assertEquals("SKIPPED_DISABLED", metrics.lastRunStatus());
+
+        assertEquals(ErrorCode.NONE, send(
+                channel, ApiKeys.METADATA, new MetadataRequest("")).header().errorCode());
+        MqDecoder.DecodedResponse runtimeMetricsResponse = send(
+                channel, ApiKeys.RUNTIME_METRICS,
+                new RuntimeMetricsRequest(BrokerTestHarness.ADMIN_TOKEN));
+        assertEquals(ErrorCode.NONE, runtimeMetricsResponse.header().errorCode());
+        RuntimeMetricsResponse runtimeMetrics = (RuntimeMetricsResponse) runtimeMetricsResponse.body();
+        assertTrue(runtimeMetrics.requestsByApiKey().stream()
+                .anyMatch(count -> count.apiKey() == ApiKeys.METADATA && count.count() >= 1L));
+        assertTrue(runtimeMetrics.responsesByErrorCode().stream()
+                .anyMatch(count -> count.errorCode() == ErrorCode.NONE.code && count.count() >= 1L));
+        assertTrue(runtimeMetrics.latencyByApiKey().stream()
+                .anyMatch(summary -> summary.apiKey() == ApiKeys.METADATA && summary.count() >= 1L));
         channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void storageDegradedMatrixRejectsMutationsButAllowsReadsAndMetrics() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
+        BrokerAvailabilityGuard guard = new BrokerAvailabilityGuard();
+        guard.activate();
+        EmbeddedChannel channel = newChannel(clusterController, true, 0, guard);
+
+        assertEquals(ErrorCode.NONE, send(channel, ApiKeys.REGISTER_BROKER,
+                new RegisterBrokerRequest(0, "127.0.0.1", 9092)).header().errorCode());
+        assertEquals(ErrorCode.NONE, send(channel, ApiKeys.CREATE_TOPIC,
+                new CreateTopicRequest("orders", 1)).header().errorCode());
+        assertEquals(ErrorCode.NONE, send(channel, ApiKeys.PRODUCE,
+                new ProduceRequest("orders", 0,
+                        List.of(new ProduceRecord(null, new byte[] {1})))).header().errorCode());
+
+        guard.degradeStorage();
+
+        assertEquals(ErrorCode.MAINTENANCE_BUSY, send(channel, ApiKeys.PRODUCE,
+                new ProduceRequest("orders", 0,
+                        List.of(new ProduceRecord(null, new byte[] {2})))).header().errorCode());
+        assertEquals(ErrorCode.NONE, send(channel, ApiKeys.FETCH,
+                new FetchRequest("orders", 0, 0L, 1024)).header().errorCode());
+        assertEquals(ErrorCode.NONE, send(channel, ApiKeys.METADATA,
+                new MetadataRequest("orders")).header().errorCode());
+        assertEquals(ErrorCode.NONE, send(channel, ApiKeys.MAINTENANCE_METRICS,
+                new MaintenanceMetricsRequest(BrokerTestHarness.ADMIN_TOKEN)).header().errorCode());
+        assertEquals(ErrorCode.NONE, send(channel, ApiKeys.RUNTIME_METRICS,
+                new RuntimeMetricsRequest(BrokerTestHarness.ADMIN_TOKEN)).header().errorCode());
+        assertEquals(ErrorCode.MAINTENANCE_BUSY, send(channel, ApiKeys.MAINTENANCE_RUN,
+                new MaintenanceRunRequest(BrokerTestHarness.ADMIN_TOKEN)).header().errorCode());
+
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void throttledRequestsReturnThrottledAndUpdateRuntimeMetrics() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
+        BrokerAvailabilityGuard guard = new BrokerAvailabilityGuard();
+        guard.activate();
+        BrokerRuntimeMetrics runtimeMetrics = new BrokerRuntimeMetrics();
+        RequestThrottler requestThrottler = new RequestThrottler(1);
+        ThrottleResult heldSlot = requestThrottler.tryAcquire(ApiKeys.PRODUCE);
+        EmbeddedChannel channel = newChannel(clusterController, true, 0, guard, runtimeMetrics, requestThrottler);
+
+        try {
+            MqDecoder.DecodedResponse response = send(channel, ApiKeys.METADATA, new MetadataRequest(""));
+
+            assertEquals(ErrorCode.THROTTLED, response.header().errorCode());
+            BrokerRuntimeMetricsSnapshot snapshot = runtimeMetrics.snapshot();
+            assertEquals(1L, snapshot.throttledByApiKey().get(ApiKeys.METADATA));
+            assertEquals(1L, snapshot.responsesByErrorCode().get(ErrorCode.THROTTLED));
+            assertEquals(1L, snapshot.requestsByApiKey().get(ApiKeys.METADATA));
+        } finally {
+            heldSlot.release();
+            channel.finishAndReleaseAll();
+        }
     }
 
     @Test
@@ -436,6 +517,11 @@ class EmbeddedBrokerChannelTest {
         assertEquals(11, response.header().correlationId());
         assertEquals(ErrorCode.UNAUTHORIZED, response.header().errorCode());
         assertNull(response.body());
+
+        MqDecoder.DecodedResponse metricsResponse = send(
+                channel, ApiKeys.RUNTIME_METRICS, new RuntimeMetricsRequest("wrong-token"));
+        assertEquals(ErrorCode.UNAUTHORIZED, metricsResponse.header().errorCode());
+        assertNull(metricsResponse.body());
         channel.finishAndReleaseAll();
     }
 
@@ -517,6 +603,22 @@ class EmbeddedBrokerChannelTest {
             boolean controller,
             int brokerId,
             BrokerAvailabilityGuard guard) {
+        return newChannel(
+                clusterController,
+                controller,
+                brokerId,
+                guard,
+                new BrokerRuntimeMetrics(),
+                new RequestThrottler(0));
+    }
+
+    private EmbeddedChannel newChannel(
+            ClusterController clusterController,
+            boolean controller,
+            int brokerId,
+            BrokerAvailabilityGuard guard,
+            BrokerRuntimeMetrics runtimeMetrics,
+            RequestThrottler requestThrottler) {
         GroupCoordinator groupCoordinator = new GroupCoordinator(clusterController);
         LogManager logManager = new LogManager(tempDir);
         PartitionManager partitionManager = new PartitionManager(logManager);
@@ -530,8 +632,14 @@ class EmbeddedBrokerChannelTest {
                         clusterController,
                         groupCoordinator,
                         partitionManager,
+                        new ReplicaStateManager(),
+                        new FetchTransferMetrics(),
+                        new ReplicaLeoReporter(config, clusterController, guard),
                         guard,
-                        maintenanceServiceFor(config, partitionManager)),
+                        maintenanceServiceFor(config, partitionManager),
+                        ControllerRole.legacy(config),
+                        runtimeMetrics,
+                        requestThrottler),
                 new MqEncoder());
     }
 

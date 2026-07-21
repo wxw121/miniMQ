@@ -1,5 +1,6 @@
 package com.minimq.broker;
 
+import com.minimq.broker.netty.NetworkTransportMode;
 import com.minimq.storage.FlushPolicy;
 import com.minimq.storage.SegmentedLogConfig;
 
@@ -33,6 +34,8 @@ public record BrokerConfig(
         int maintenanceEveryNAppends,
         FetchTransferMode fetchTransferMode,
         long fetchTransferTimeoutMs,
+        NetworkTransportMode networkTransportMode,
+        int maxInFlightRequests,
         long brokerHeartbeatIntervalMs,
         long brokerSelfFenceTimeoutMs,
         long controllerBrokerLeaseTimeoutMs,
@@ -57,7 +60,8 @@ public record BrokerConfig(
                 sparseIndexIntervalRecords, retentionMs, retentionBytes, compactionEnabled,
                 compactionMaxSegments, compactionMaxBytes, maintenanceWindowStartHour,
                 maintenanceWindowEndHour, maintenanceEveryNAppends, fetchTransferMode,
-                fetchTransferTimeoutMs, brokerHeartbeatIntervalMs, brokerSelfFenceTimeoutMs,
+                fetchTransferTimeoutMs, networkTransportMode, maxInFlightRequests,
+                brokerHeartbeatIntervalMs, brokerSelfFenceTimeoutMs,
                 controllerBrokerLeaseTimeoutMs, clusterId, etcdEndpoints,
                 controllerSessionTtlSeconds, controllerFailoverGraceMs, leaderActivationTimeoutMs,
                 initializeEmptyCluster, initializeClusterFromLocal, adminToken);
@@ -67,6 +71,8 @@ public record BrokerConfig(
     public static final int MAINTENANCE_WINDOW_DISABLED = -1;
     public static final FetchTransferMode DEFAULT_FETCH_TRANSFER_MODE = FetchTransferMode.AUTO;
     public static final long DEFAULT_FETCH_TRANSFER_TIMEOUT_MS = 30_000;
+    public static final NetworkTransportMode DEFAULT_NETWORK_TRANSPORT_MODE = NetworkTransportMode.NIO;
+    public static final int DEFAULT_MAX_IN_FLIGHT_REQUESTS = 0;
     public static final long DEFAULT_BROKER_HEARTBEAT_INTERVAL_MS = 1_000L;
     public static final long DEFAULT_BROKER_SELF_FENCE_TIMEOUT_MS = 3_000L;
     public static final long DEFAULT_CONTROLLER_BROKER_LEASE_TIMEOUT_MS = 5_000L;
@@ -109,6 +115,8 @@ public record BrokerConfig(
                 0,
                 DEFAULT_FETCH_TRANSFER_MODE,
                 DEFAULT_FETCH_TRANSFER_TIMEOUT_MS,
+                DEFAULT_NETWORK_TRANSPORT_MODE,
+                DEFAULT_MAX_IN_FLIGHT_REQUESTS,
                 adminToken);
     }
 
@@ -135,6 +143,8 @@ public record BrokerConfig(
             int maintenanceEveryNAppends,
             FetchTransferMode fetchTransferMode,
             long fetchTransferTimeoutMs,
+            NetworkTransportMode networkTransportMode,
+            int maxInFlightRequests,
             String adminToken) {
         this(
                 brokerId,
@@ -159,6 +169,8 @@ public record BrokerConfig(
                 maintenanceEveryNAppends,
                 fetchTransferMode,
                 fetchTransferTimeoutMs,
+                networkTransportMode,
+                maxInFlightRequests,
                 DEFAULT_BROKER_HEARTBEAT_INTERVAL_MS,
                 DEFAULT_BROKER_SELF_FENCE_TIMEOUT_MS,
                 DEFAULT_CONTROLLER_BROKER_LEASE_TIMEOUT_MS,
@@ -197,6 +209,8 @@ public record BrokerConfig(
         int maintenanceEveryNAppends = 0;
         FetchTransferMode fetchTransferMode = DEFAULT_FETCH_TRANSFER_MODE;
         long fetchTransferTimeoutMs = DEFAULT_FETCH_TRANSFER_TIMEOUT_MS;
+        NetworkTransportMode networkTransportMode = DEFAULT_NETWORK_TRANSPORT_MODE;
+        int maxInFlightRequests = DEFAULT_MAX_IN_FLIGHT_REQUESTS;
         long brokerHeartbeatIntervalMs = DEFAULT_BROKER_HEARTBEAT_INTERVAL_MS;
         long brokerSelfFenceTimeoutMs = DEFAULT_BROKER_SELF_FENCE_TIMEOUT_MS;
         long controllerBrokerLeaseTimeoutMs = DEFAULT_CONTROLLER_BROKER_LEASE_TIMEOUT_MS;
@@ -275,6 +289,12 @@ public record BrokerConfig(
                         parsePositiveLong(
                                 value(args, ++i, "--fetch-transfer-timeout-ms"),
                                 "--fetch-transfer-timeout-ms");
+                case "--network-transport" -> networkTransportMode =
+                        NetworkTransportMode.parse(value(args, ++i, "--network-transport"));
+                case "--max-in-flight-requests" -> maxInFlightRequests =
+                        parseNonNegativeInt(
+                                value(args, ++i, "--max-in-flight-requests"),
+                                "--max-in-flight-requests");
                 case "--broker-heartbeat-interval-ms" -> brokerHeartbeatIntervalMs =
                         parsePositiveLong(
                                 value(args, ++i, "--broker-heartbeat-interval-ms"),
@@ -331,6 +351,8 @@ public record BrokerConfig(
                 maintenanceEveryNAppends,
                 fetchTransferMode,
                 fetchTransferTimeoutMs,
+                networkTransportMode,
+                maxInFlightRequests,
                 brokerHeartbeatIntervalMs,
                 brokerSelfFenceTimeoutMs,
                 controllerBrokerLeaseTimeoutMs,

@@ -9,6 +9,11 @@ import com.minimq.broker.replication.ReplicaStateManager;
 import com.minimq.broker.replication.ReplicaLeoReporter;
 import com.minimq.broker.metadata.MetadataStore;
 import com.minimq.broker.metadata.SwitchableClusterMetadataRepository;
+import com.minimq.broker.metrics.BrokerRuntimeMetrics;
+import com.minimq.broker.metrics.BrokerRuntimeMetricsSnapshot;
+import com.minimq.broker.netty.NettyTransport;
+import com.minimq.broker.netty.NettyTransportFactory;
+import com.minimq.broker.resilience.RequestThrottler;
 import com.minimq.protocol.codec.MqDecoder;
 import com.minimq.protocol.codec.MqEncoder;
 import com.minimq.storage.LogManagerConfig;
@@ -21,9 +26,7 @@ import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.EventLoopGroup;
-import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
-import io.netty.channel.socket.nio.NioServerSocketChannel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -35,8 +38,11 @@ public class BrokerServer {
 
     private final BrokerConfig config;
     private final FetchTransferMetrics fetchTransferMetrics = new FetchTransferMetrics();
+    private final BrokerRuntimeMetrics runtimeMetrics = new BrokerRuntimeMetrics();
+    private final RequestThrottler requestThrottler;
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
+    private NettyTransport transport;
     private ChannelFuture channelFuture;
     private PartitionManager partitionManager;
     private ClusterController clusterController;
@@ -52,10 +58,15 @@ public class BrokerServer {
 
     public BrokerServer(BrokerConfig config) {
         this.config = config;
+        this.requestThrottler = new RequestThrottler(config.maxInFlightRequests());
     }
 
     public FetchTransferMetricsSnapshot fetchTransferMetrics() {
         return fetchTransferMetrics.snapshot();
+    }
+
+    public BrokerRuntimeMetricsSnapshot runtimeMetrics() {
+        return runtimeMetrics.snapshot();
     }
 
     public long localHighWatermark(String topic, int partition) {
@@ -118,14 +129,18 @@ public class BrokerServer {
                 config, clusterController, availabilityGuard, controllerRole);
         if (config.controller()) {
             brokerLeaseMonitor = new BrokerLeaseMonitor(
-                    clusterController, config.brokerHeartbeatIntervalMs());
+                    clusterController,
+                    config.brokerHeartbeatIntervalMs(),
+                    config.leaderActivationTimeoutMs(),
+                    controllerRole::isActive);
         }
 
-        bossGroup = new NioEventLoopGroup(1);
-        workerGroup = new NioEventLoopGroup();
+        transport = new NettyTransportFactory().create(config.networkTransportMode());
+        bossGroup = transport.bossGroup();
+        workerGroup = transport.workerGroup();
         ServerBootstrap bootstrap = new ServerBootstrap()
                 .group(bossGroup, workerGroup)
-                .channel(NioServerSocketChannel.class)
+                .channel(transport.serverChannelClass())
                 .childHandler(new ChannelInitializer<SocketChannel>() {
                     @Override
                     protected void initChannel(SocketChannel ch) {
@@ -141,7 +156,9 @@ public class BrokerServer {
                                         replicaLeoReporter,
                                         availabilityGuard,
                                         maintenanceAdminService,
-                                        controllerRole))
+                                        controllerRole,
+                                        runtimeMetrics,
+                                        requestThrottler))
                                 .addLast(new MqEncoder());
                     }
                 });

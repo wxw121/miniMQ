@@ -83,6 +83,9 @@ If `errorCode != NONE`, response body is omitted. This rule keeps error response
 | 14 | `MAINTENANCE_RUN` | Admin / 管理面 | Run local storage maintenance immediately. / 立即执行本地存储维护。 |
 | 15 | `MAINTENANCE_METRICS` | Admin / 管理面 | Read cumulative local maintenance counters and the last run status. / 读取本地维护累计指标和最近运行状态。 |
 | 16 | `BROKER_HEARTBEAT` | Control / 控制面 | Renew a Broker lease for one persisted `brokerEpoch`. / 使用持久化 `brokerEpoch` 续期 Broker 租约。 |
+| 17 | `DISCOVER_CONTROLLER` | Control / 控制面 | Discover the active Controller through any bootstrap Broker. / 通过任意 bootstrap Broker 发现当前 Controller。 |
+| 18 | `LEADER_READY` | Control / 控制面 | Confirm a promoted leader has recovered and can serve data. / 确认提升后的 Leader 已恢复并可服务数据面。 |
+| 19 | `RUNTIME_METRICS` | Admin / 管理面 | Read authenticated runtime request, response, latency, and throttling counters. / 鉴权读取运行时请求、响应、延迟与限流指标。 |
 
 ## 3. Serialization Rules / 序列化规则
 
@@ -435,6 +438,7 @@ MiniMQ 在响应头里使用 `ErrorCode`：
 | `INVALID_REQUEST` | Malformed request, invalid arguments, or wrong endpoint role. / 请求畸形、参数非法或端点角色错误。 |
 | `GROUP_NOT_FOUND` | Consumer group/member is missing. / 消费组或成员不存在。 |
 | `REBALANCE_IN_PROGRESS` | Reserved for future rebalance behavior. / 为未来 rebalance 行为预留。 |
+| `THROTTLED` | Broker in-flight request limit rejected the request. / Broker 并发请求限流拒绝了请求。 |
 
 | `BROKER_FENCED` | The Broker epoch or local lease is no longer valid; data-plane work must stop. / Broker epoch 或本地租约已失效，必须停止数据面工作。 |
 | `BROKER_ID_IN_USE` | The Broker ID still has a live Controller lease. / Broker ID 仍有有效的 Controller 租约。 |
@@ -512,7 +516,7 @@ The timing contract is strict:
 brokerHeartbeatIntervalMs < brokerSelfFenceTimeoutMs < controllerBrokerLeaseTimeoutMs
 ```
 
-The matching CLI options are `--broker-heartbeat-interval-ms`, `--broker-self-fence-timeout-ms`, and `--controller-broker-lease-timeout-ms`. A Broker transitions through `STARTING`, `ACTIVE`, `FENCED`, and `RECOVERING`. Only `ACTIVE` admits `PRODUCE`, `FETCH`, `REPLICA_FETCH`, and `MAINTENANCE_RUN`; metadata and maintenance read APIs remain available for diagnosis.
+The matching CLI options are `--broker-heartbeat-interval-ms`, `--broker-self-fence-timeout-ms`, and `--controller-broker-lease-timeout-ms`. A Broker transitions through `STARTING`, `ACTIVE`, `STORAGE_DEGRADED`, `FENCED`, and `RECOVERING`. `ACTIVE` admits all data-plane work. `STORAGE_DEGRADED` keeps read, metadata, discovery, and diagnostic paths available while rejecting produce and destructive maintenance with `MAINTENANCE_BUSY`. Fenced or recovering Brokers reject data-plane work; metadata and maintenance read APIs remain available for diagnosis.
 
 When a lease expires, the Controller removes the Broker from ISR and chooses the highest-LEO online ISR replica, preserving replica order as the tie-breaker. If no online ISR survives, the partition becomes frozen with an empty ISR and retains its original Leader ID. Only that original Broker can unfreeze the partition by registering with a higher epoch. Unclean election is deliberately not performed.
 
@@ -532,6 +536,34 @@ Known limitations fixed in follow-up `2.3.1` are tracked in `docs/code-review-20
 
 已知限制与 `2.3.1` 计划修复项见 `docs/code-review-2026-07-17-v2.3-replication.md`。
 
+### 11.3 V3.1 Operational Resilience / 运行时韧性
+
+V3.1 adds small runtime protection primitives around the existing broker request boundary without changing the wire protocol version:
+
+- `BrokerRuntimeMetrics` records request counts by API key, response counts by `ErrorCode`, per-API latency totals/counts, and throttled request counts. `BrokerServer.runtimeMetrics()` exposes immutable snapshots for tests and future operator endpoints.
+- `RequestThrottler` enforces `--max-in-flight-requests` at `MqRequestHandler.channelRead0`. The default value is `0`, which disables throttling and preserves existing behavior; rejected requests return `THROTTLED`.
+- `CircuitBreaker` protects repeated Controller update failures in `ReplicaLeoReporter`. When the breaker is open, the reporter returns `CONTROLLER_NOT_READY` instead of repeatedly hitting an unhealthy Controller path.
+- `BrokerAvailabilityGuard.State.STORAGE_DEGRADED` rejects `PRODUCE` and destructive maintenance runs with `MAINTENANCE_BUSY`, while allowing `FETCH`, metadata, discovery, and maintenance metrics/reporting for diagnosis.
+
+The V3.1 scope is intentionally in-process. External metrics export, dashboards, alerting, and persistent runtime telemetry remain follow-up work.
+
+### 11.4 V3.2 Network Transport Selection / 网络传输选择
+
+V3.2 introduces `--network-transport nio|auto|epoll` and routes `BrokerServer` event-loop/channel construction through `NettyTransportFactory`.
+
+- `nio` is the default and always uses `NioEventLoopGroup` with `NioServerSocketChannel`, keeping Windows and macOS development safe.
+- `auto` uses reflection-based native availability checks and falls back to NIO when epoll classes or runtime support are unavailable.
+- `epoll` is explicit opt-in. If the native transport is unavailable, startup fails with a clear `IllegalStateException` instead of silently selecting a partial path.
+
+Native transport support is therefore an optional performance path, not a correctness dependency.
+
+### 11.5 V3.3-V3.5 Production Hardening / 生产化增强
+
+V3.3 externalizes the V3.1 in-process `BrokerRuntimeMetrics` snapshot through protocol API 19 (`RUNTIME_METRICS`) and the demo CLI command `runtime-metrics --broker host:port --admin-token <secret>`. The response uses bounded lists for request counts by API key, response counts by error code, per-API latency summaries, and throttled request counts. The same broker admin token model used by maintenance APIs protects the endpoint.
+
+V3.4 adds deterministic resilience coverage instead of a broad fault-injection framework. Embedded-channel tests now verify that `STORAGE_DEGRADED` rejects produce and destructive maintenance while allowing fetch, metadata, maintenance metrics, and runtime metrics. A pre-acquired `RequestThrottler` slot verifies `THROTTLED` responses and runtime throttling counters without sleeps or high concurrency.
+
+V3.5 extends `benchmark-fetch` with `--network-transport nio|auto|epoll`. The benchmark passes the selected mode into `BrokerConfig` and prints `networkTransport=<mode>` before heap/sendfile rows, so transport comparisons are auditable without changing the benchmark's local, bounded shape.
 ## 12. Design Tradeoffs / 设计取舍
 
 | Decision / 决策 | Benefit / 收益 | Cost / 代价 |

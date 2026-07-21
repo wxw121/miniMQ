@@ -1,14 +1,24 @@
 package com.minimq.broker.metadata;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.etcd.jetcd.ByteSequence;
+import io.etcd.jetcd.KeyValue;
+import io.etcd.jetcd.Watch;
+import io.etcd.jetcd.options.WatchOption;
+import io.etcd.jetcd.watch.WatchEvent;
+import io.etcd.jetcd.watch.WatchResponse;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.*;
 
 class MetadataWatchServiceTest {
     @Test
@@ -52,6 +62,119 @@ class MetadataWatchServiceTest {
             assertEquals(List.of(5L, 8L), installed);
             assertEquals(2, source.starts);
             assertEquals(9, source.revision);
+        }
+    }
+
+    @Test
+    void etcdSourceParsesEventsAndClosesWatcher() throws Exception {
+        FakeRepository repository = new FakeRepository(version(1));
+        Watch watch = mock(Watch.class);
+        Watch.Watcher watcher = mock(Watch.Watcher.class);
+        java.util.concurrent.atomic.AtomicReference<Consumer<WatchResponse>> events =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        CountDownLatch watching = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            events.set(invocation.getArgument(2));
+            watching.countDown();
+            return watcher;
+        }).when(watch).watch(any(ByteSequence.class), any(WatchOption.class),
+                any(Consumer.class), any(Consumer.class), any(Runnable.class));
+        CountDownLatch installed = new CountDownLatch(2);
+        try (MetadataWatchService service = new MetadataWatchService(
+                repository, watch, "demo", ignored -> installed.countDown())) {
+            service.start();
+            assertTrue(watching.await(3, TimeUnit.SECONDS));
+            ClusterMetadata metadata = new ClusterMetadata();
+            metadata.metadataVersion = 2;
+            KeyValue keyValue = mock(KeyValue.class);
+            when(keyValue.getValue()).thenReturn(ByteSequence.from(
+                    new ObjectMapper().writeValueAsBytes(metadata)));
+            when(keyValue.getModRevision()).thenReturn(2L);
+            WatchEvent event = mock(WatchEvent.class);
+            when(event.getKeyValue()).thenReturn(keyValue);
+            WatchResponse response = mock(WatchResponse.class);
+            when(response.getEvents()).thenReturn(List.of(event));
+
+            events.get().accept(response);
+
+            assertTrue(installed.await(3, TimeUnit.SECONDS));
+            assertEquals(2, service.installedRevision());
+        }
+        verify(watcher).close();
+    }
+
+    @Test
+    void etcdSourceReportsInvalidSnapshotOnlyOnce() throws Exception {
+        FakeRepository repository = new FakeRepository(version(1));
+        Watch watch = mock(Watch.class);
+        Watch.Watcher watcher = mock(Watch.Watcher.class);
+        java.util.concurrent.atomic.AtomicReference<Consumer<WatchResponse>> events =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<Consumer<Throwable>> errors =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<Runnable> completed =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        CountDownLatch watching = new CountDownLatch(2);
+        doAnswer(invocation -> {
+            events.set(invocation.getArgument(2));
+            errors.set(invocation.getArgument(3));
+            completed.set(invocation.getArgument(4));
+            watching.countDown();
+            return watcher;
+        }).when(watch).watch(any(ByteSequence.class), any(WatchOption.class),
+                any(Consumer.class), any(Consumer.class), any(Runnable.class));
+        try (MetadataWatchService service = new MetadataWatchService(
+                repository, watch, "demo", ignored -> { })) {
+            service.start();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (watching.getCount() == 2 && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertEquals(1, watching.getCount());
+            KeyValue keyValue = mock(KeyValue.class);
+            when(keyValue.getValue()).thenReturn(ByteSequence.from(new byte[] {1}));
+            WatchEvent event = mock(WatchEvent.class);
+            when(event.getKeyValue()).thenReturn(keyValue);
+            WatchResponse response = mock(WatchResponse.class);
+            when(response.getEvents()).thenReturn(List.of(event));
+
+            events.get().accept(response);
+            errors.get().accept(new RuntimeException("closed"));
+            completed.get().run();
+
+            assertTrue(watching.await(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void closeForcesExecutorShutdownAfterTimeoutAndIsIdempotent() throws Exception {
+        ExecutorService executor = mock(ExecutorService.class);
+        when(executor.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(false);
+        MetadataWatchService service = new MetadataWatchService(
+                new FakeRepository(version(1)), new FakeSource(), ignored -> { }, executor);
+
+        service.close();
+        service.close();
+
+        verify(executor).shutdown();
+        verify(executor).shutdownNow();
+        verify(executor, times(1)).execute(any(Runnable.class));
+    }
+
+    @Test
+    void closePreservesInterruptionAndForcesShutdown() throws Exception {
+        ExecutorService executor = mock(ExecutorService.class);
+        when(executor.awaitTermination(5, TimeUnit.SECONDS))
+                .thenThrow(new InterruptedException("stop"));
+        MetadataWatchService service = new MetadataWatchService(
+                new FakeRepository(version(1)), new FakeSource(), ignored -> { }, executor);
+
+        try {
+            service.close();
+            assertTrue(Thread.currentThread().isInterrupted());
+            verify(executor).shutdownNow();
+        } finally {
+            Thread.interrupted();
         }
     }
 

@@ -5,6 +5,7 @@ import com.minimq.broker.BrokerAvailabilityGuard;
 import com.minimq.broker.ControllerClient;
 import com.minimq.broker.ControllerRole;
 import com.minimq.broker.controller.ClusterController;
+import com.minimq.broker.resilience.CircuitBreaker;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.protocol.message.ProtocolMessages.UpdateReplicaLeoRequest;
 
@@ -16,6 +17,7 @@ public final class ReplicaLeoReporter implements AutoCloseable {
     private final ClusterController controller;
     private final BrokerAvailabilityGuard availabilityGuard;
     private final ControllerRole controllerRole;
+    private final CircuitBreaker controllerCircuitBreaker;
     private final Map<ReplicaKey, Long> confirmedLeos = new HashMap<>();
     private ControllerClient client;
 
@@ -35,10 +37,21 @@ public final class ReplicaLeoReporter implements AutoCloseable {
             ClusterController controller,
             BrokerAvailabilityGuard availabilityGuard,
             ControllerRole controllerRole) {
+        this(config, controller, availabilityGuard, controllerRole,
+                new CircuitBreaker(3, 1_000, System::currentTimeMillis));
+    }
+
+    public ReplicaLeoReporter(
+            BrokerConfig config,
+            ClusterController controller,
+            BrokerAvailabilityGuard availabilityGuard,
+            ControllerRole controllerRole,
+            CircuitBreaker controllerCircuitBreaker) {
         this.config = config;
         this.controller = controller;
         this.availabilityGuard = availabilityGuard;
         this.controllerRole = controllerRole;
+        this.controllerCircuitBreaker = controllerCircuitBreaker;
     }
 
     public synchronized ErrorCode report(
@@ -58,6 +71,9 @@ public final class ReplicaLeoReporter implements AutoCloseable {
             }
             return result;
         }
+        if (!controllerCircuitBreaker.allowRequest()) {
+            return ErrorCode.CONTROLLER_NOT_READY;
+        }
         try {
             var broker = controller.getBroker(brokerId);
             long brokerEpoch = broker == null || broker.brokerEpoch <= 0 ? 1L : broker.brokerEpoch;
@@ -65,13 +81,16 @@ public final class ReplicaLeoReporter implements AutoCloseable {
                     topicName, partitionId, brokerId, brokerEpoch,
                     controller.snapshot().controllerEpoch, logEndOffset));
             confirmedLeos.put(key, logEndOffset);
+            controllerCircuitBreaker.recordSuccess();
             return ErrorCode.NONE;
         } catch (InterruptedException failure) {
             resetClient();
+            controllerCircuitBreaker.recordFailure();
             Thread.currentThread().interrupt();
             return ErrorCode.INVALID_REQUEST;
         } catch (Exception failure) {
             resetClient();
+            controllerCircuitBreaker.recordFailure();
             return ErrorCode.INVALID_REQUEST;
         }
     }

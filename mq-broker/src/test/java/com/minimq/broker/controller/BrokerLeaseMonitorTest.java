@@ -52,12 +52,29 @@ class BrokerLeaseMonitorTest {
 
         assertEquals(1, controller.recoveryCalls);
         assertEquals(1, controller.expireCalls);
+        assertEquals(1, controller.activationCalls);
+        monitor.close();
+    }
+
+    @Test
+    void inactiveControllerDoesNotAttemptMetadataMutation() {
+        CountingController controller = new CountingController(new MetadataStore(tempDir));
+        BrokerLeaseMonitor monitor = new BrokerLeaseMonitor(
+                controller, 100L, 2_000L, () -> false,
+                new ScheduledThreadPoolExecutor(1));
+
+        monitor.runOnce();
+
+        assertEquals(0, controller.recoveryCalls);
+        assertEquals(0, controller.expireCalls);
+        assertEquals(0, controller.activationCalls);
         monitor.close();
     }
 
     private static final class CountingController extends ClusterController {
         private int expireCalls;
         private int recoveryCalls;
+        private int activationCalls;
         private boolean failNext;
 
         private CountingController(MetadataStore store) {
@@ -78,6 +95,12 @@ class BrokerLeaseMonitorTest {
         public synchronized boolean advanceRecoveryWindow() {
             recoveryCalls++;
             return false;
+        }
+
+        @Override
+        public synchronized int expireLeaderActivationTimeouts(long timeoutMs) {
+            activationCalls++;
+            return 0;
         }
     }
 }
