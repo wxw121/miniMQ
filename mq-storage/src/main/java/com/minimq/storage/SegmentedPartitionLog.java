@@ -153,6 +153,47 @@ public final class SegmentedPartitionLog implements PartitionLog, TransferablePa
     }
 
     @Override
+    public synchronized void truncateTo(long offset) {
+        ensureOpen();
+        if (offset < catalog.logStartOffset() || offset > nextOffset) {
+            throw new IllegalArgumentException("truncate offset outside retained log range: " + offset);
+        }
+        if (offset == nextOffset) {
+            return;
+        }
+        beginReaderQuiescence();
+        try {
+            int targetIndex = segmentIndexFor(offset);
+            SegmentFile target = segments.get(targetIndex);
+            target.truncateTo(offset);
+            target.flush();
+
+            List<SegmentDescriptor> retainedDescriptors =
+                    new ArrayList<>(catalog.segments().subList(0, targetIndex + 1));
+            SegmentCatalog nextCatalog = new SegmentCatalog(
+                    catalog.generation() + 1,
+                    target.baseOffset(),
+                    catalog.logStartOffset(),
+                    retainedDescriptors);
+            catalogStore.save(nextCatalog);
+
+            List<SegmentFile> discarded = new ArrayList<>(segments.subList(targetIndex + 1, segments.size()));
+            segments.subList(targetIndex + 1, segments.size()).clear();
+            catalog = nextCatalog;
+            nextOffset = offset;
+            for (SegmentFile segment : discarded) {
+                long baseOffset = segment.baseOffset();
+                segment.close();
+                deleteSegmentFiles(baseOffset);
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to truncate segmented log " + partitionDir, e);
+        } finally {
+            endReaderQuiescence();
+        }
+    }
+
+    @Override
     public synchronized void flush() {
         ensureOpen();
         segments.forEach(SegmentFile::flush);
@@ -167,7 +208,9 @@ public final class SegmentedPartitionLog implements PartitionLog, TransferablePa
             closed = true;
             beginReaderQuiescence();
             try {
-                flushSegments();
+                // A segment may already have been closed by a completed maintenance/truncation
+                // replacement. Its close path forced both files, so it must not make shutdown fail.
+                segments.stream().filter(segment -> !segment.isClosed()).forEach(SegmentFile::flush);
                 segments.forEach(SegmentFile::close);
             } finally {
                 endReaderQuiescence();

@@ -152,6 +152,38 @@ public class FilePartitionLog implements PartitionLog {
     }
 
     @Override
+    public synchronized void truncateTo(long offset) {
+        ensureOpenUnchecked();
+        if (offset < 0 || offset > nextOffset) {
+            throw new IllegalArgumentException("truncate offset outside log range: " + offset);
+        }
+        if (offset == nextOffset) {
+            return;
+        }
+        try {
+            channel.position(0);
+            long truncatePosition = 0;
+            while (channel.position() < channel.size()) {
+                long recordStart = channel.position();
+                long recordOffset = readLong();
+                readBytes();
+                readBytes();
+                if (recordOffset >= offset) {
+                    truncatePosition = recordStart;
+                    break;
+                }
+                truncatePosition = channel.position();
+            }
+            channel.truncate(truncatePosition);
+            channel.position(truncatePosition);
+            channel.force(false);
+            nextOffset = offset;
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to truncate partition log", e);
+        }
+    }
+
+    @Override
     public synchronized void flush() {
         try {
             ensureOpen();

@@ -68,12 +68,22 @@ final class LeaderReplicaClient implements AutoCloseable {
             int replicaBrokerId,
             long fetchOffset,
             int maxBytes) throws InterruptedException {
+        return replicaFetch(topicName, partitionId, replicaBrokerId, 0L, fetchOffset, maxBytes);
+    }
+
+    ReplicaFetchResponse replicaFetch(
+            String topicName,
+            int partitionId,
+            int replicaBrokerId,
+            long leaderEpoch,
+            long fetchOffset,
+            int maxBytes) throws InterruptedException {
         MqRequestHeader header = new MqRequestHeader(
                 ApiKeys.REPLICA_FETCH,
                 CORR.getAndIncrement(),
                 "replica-fetcher");
         ReplicaFetchRequest request = new ReplicaFetchRequest(
-                topicName, partitionId, replicaBrokerId, fetchOffset, maxBytes);
+                topicName, partitionId, replicaBrokerId, leaderEpoch, fetchOffset, maxBytes);
         channel.writeAndFlush(ProtocolSerdes.encodeRequest(header, request));
         ByteBuf payload = responses.poll(5, TimeUnit.SECONDS);
         if (payload == null) {

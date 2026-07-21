@@ -4,6 +4,7 @@ import com.minimq.broker.BrokerConfig;
 import com.minimq.broker.BrokerAvailabilityGuard;
 import com.minimq.broker.BrokerServer;
 import com.minimq.broker.FetchTransferMetricsSnapshot;
+import com.minimq.broker.metrics.BrokerRuntimeMetricsSnapshot;
 
 import java.io.IOException;
 import java.net.ServerSocket;
@@ -55,10 +56,10 @@ public final class BrokerTestHarness implements AutoCloseable {
                 "--host", "127.0.0.1",
                 "--port", Integer.toString(freePort()),
                 "--data-dir", dataDir.toString(),
-                "--controller",
                 "--admin-token", ADMIN_TOKEN));
         args.addAll(List.of(extraArgs));
-        return BrokerConfig.parse(args.toArray(String[]::new));
+        BrokerConfig parsed = BrokerConfig.parse(args.toArray(String[]::new));
+        return parsed.withLegacyController(true, parsed.host(), parsed.port());
     }
 
     public static BrokerTestHarness startFollower(
@@ -77,10 +78,10 @@ public final class BrokerTestHarness implements AutoCloseable {
                 "--host", "127.0.0.1",
                 "--port", Integer.toString(freePort()),
                 "--data-dir", dataDir.toString(),
-                "--controller-addr", controllerHost + ":" + controllerPort,
                 "--admin-token", ADMIN_TOKEN));
         args.addAll(List.of(extraArgs));
-        return start(BrokerConfig.parse(args.toArray(String[]::new)));
+        return start(BrokerConfig.parse(args.toArray(String[]::new))
+                .withLegacyController(false, controllerHost, controllerPort));
     }
 
     public String bootstrapServers() {
@@ -107,8 +108,16 @@ public final class BrokerTestHarness implements AutoCloseable {
         return server.fetchTransferMetrics();
     }
 
+    public BrokerRuntimeMetricsSnapshot runtimeMetrics() {
+        return server.runtimeMetrics();
+    }
+
     public long localHighWatermark(String topic, int partition) {
         return server.localHighWatermark(topic, partition);
+    }
+
+    public int localLeaderBrokerId(String topic, int partition) {
+        return server.localLeaderBrokerId(topic, partition);
     }
 
     @Override

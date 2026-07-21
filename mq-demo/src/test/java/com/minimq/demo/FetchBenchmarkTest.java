@@ -2,6 +2,7 @@ package com.minimq.demo;
 
 import com.minimq.broker.FetchTransferMetricsSnapshot;
 import com.minimq.broker.FetchTransferMode;
+import com.minimq.broker.netty.NetworkTransportMode;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
@@ -23,7 +24,8 @@ class FetchBenchmarkTest {
                 "--fetch-bytes", "65536",
                 "--warmup", "2",
                 "--iterations", "5",
-                "--segment-bytes", "32768"
+                "--segment-bytes", "32768",
+                "--network-transport", "nio"
         });
         assertEquals(64, config.records());
         assertEquals(4_096, config.valueBytes());
@@ -31,6 +33,7 @@ class FetchBenchmarkTest {
         assertEquals(2, config.warmup());
         assertEquals(5, config.iterations());
         assertEquals(32_768, config.segmentBytes());
+        assertEquals(NetworkTransportMode.NIO, config.networkTransportMode());
     }
 
     @Test
@@ -43,6 +46,9 @@ class FetchBenchmarkTest {
         }));
         assertThrows(IllegalArgumentException.class, () -> FetchBenchmark.Config.parse(new String[] {
                 "benchmark-fetch", "--fetch-bytes", String.valueOf(16 * 1024 * 1024)
+        }));
+        assertThrows(IllegalArgumentException.class, () -> FetchBenchmark.Config.parse(new String[] {
+                "benchmark-fetch", "--network-transport", "kqueue"
         }));
     }
 
@@ -60,7 +66,8 @@ class FetchBenchmarkTest {
 
     @Test
     void runsTinyHeapAndAutoBenchmarkModes() throws Exception {
-        FetchBenchmark.Config config = new FetchBenchmark.Config(2, 64, 4_096, 0, 1, 128);
+        FetchBenchmark.Config config = new FetchBenchmark.Config(
+                2, 64, 4_096, 0, 1, 128, NetworkTransportMode.NIO);
         FetchBenchmark.Result heap = FetchBenchmark.runMode(config, FetchTransferMode.HEAP);
         FetchBenchmark.Result auto = FetchBenchmark.runMode(config, FetchTransferMode.AUTO);
 
@@ -83,9 +90,11 @@ class FetchBenchmarkTest {
                 "--fetch-bytes", "4096",
                 "--warmup", "0",
                 "--iterations", "1",
-                "--segment-bytes", "128"
+                "--segment-bytes", "128",
+                "--network-transport", "nio"
         }, new PrintStream(buffer, true, StandardCharsets.UTF_8));
         String output = buffer.toString(StandardCharsets.UTF_8);
+        assertTrue(output.contains("networkTransport=nio"));
         assertTrue(output.contains("mode requests bytes"));
         assertTrue(output.contains("heap "));
         assertTrue(output.contains("auto "));

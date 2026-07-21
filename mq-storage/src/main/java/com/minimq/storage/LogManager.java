@@ -17,7 +17,7 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * 日志管理器，按 TopicPartition 创建和缓存 FilePartitionLog。
  */
-public class LogManager {
+public class LogManager implements AutoCloseable {
     private final Path dataDir;
     private final Map<String, PartitionLog> logs = new ConcurrentHashMap<>();
     private final WriteAheadLog writeAheadLog;
@@ -84,6 +84,21 @@ public class LogManager {
         ensureOpen();
         PartitionLog log = getOrCreate(topic, partitionId);
         log.appendAt(offset, key, value);
+    }
+
+    public synchronized void truncateTo(String topic, int partitionId, long offset) {
+        ensureOpen();
+        PartitionLog log = getOrCreate(topic, partitionId);
+        if (offset < 0 || offset > log.highWatermark()) {
+            throw new IllegalArgumentException("truncate offset outside log range: " + offset);
+        }
+        if (offset == log.highWatermark()) {
+            return;
+        }
+        writeAheadLog.append(WalRecord.truncateBegin(topic, partitionId, offset), true);
+        log.truncateTo(offset);
+        writeAheadLog.append(WalRecord.truncateCommit(topic, partitionId, offset), true);
+        saveCheckpoint();
     }
 
     public synchronized LogMaintenanceReport dryRunMaintenance() {
@@ -225,11 +240,13 @@ public class LogManager {
                 .orElse(0L);
         List<WalRecord> records = writeAheadLog.readFrom(position);
         for (WalRecord record : records) {
-            if (record.type() != WalRecordType.DATA_APPEND) {
-                throw new IllegalStateException("Unsupported WAL replay type " + record.type());
-            }
             PartitionLog log = getOrCreate(record.topic(), record.partitionId());
-            log.appendAt(record.offset(), record.key(), record.value());
+            switch (record.type()) {
+                case DATA_APPEND -> log.appendAt(record.offset(), record.key(), record.value());
+                case TRUNCATE_BEGIN -> log.truncateTo(record.offset());
+                case TRUNCATE_COMMIT -> { }
+                default -> throw new IllegalStateException("Unsupported WAL replay type " + record.type());
+            }
         }
     }
 

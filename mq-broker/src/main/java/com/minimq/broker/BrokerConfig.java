@@ -1,9 +1,12 @@
 package com.minimq.broker;
 
+import com.minimq.broker.netty.NetworkTransportMode;
 import com.minimq.storage.FlushPolicy;
 import com.minimq.storage.SegmentedLogConfig;
 
 import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.List;
 
 /**
  * Broker 启动配置，集中保存 brokerId、监听地址、数据目录和 Controller 模式。
@@ -31,18 +34,53 @@ public record BrokerConfig(
         int maintenanceEveryNAppends,
         FetchTransferMode fetchTransferMode,
         long fetchTransferTimeoutMs,
+        NetworkTransportMode networkTransportMode,
+        int maxInFlightRequests,
         long brokerHeartbeatIntervalMs,
         long brokerSelfFenceTimeoutMs,
         long controllerBrokerLeaseTimeoutMs,
+        String clusterId,
+        List<String> etcdEndpoints,
+        int controllerSessionTtlSeconds,
+        long controllerFailoverGraceMs,
+        long leaderActivationTimeoutMs,
+        boolean initializeEmptyCluster,
+        boolean initializeClusterFromLocal,
         String adminToken) {
+
+    public boolean usesLegacyControllerMode() {
+        return controller || !"localhost".equals(controllerHost) || controllerPort != 9092;
+    }
+
+    /** Internal compatibility hook for in-process tests while the public 3.0 CLI uses discovery. */
+    public BrokerConfig withLegacyController(boolean controller, String controllerHost, int controllerPort) {
+        return new BrokerConfig(
+                brokerId, host, port, dataDir, controller, controllerHost, controllerPort,
+                recoverCorruptMetadata, flushPolicy, checkpointEveryNAppends, segmentMaxBytes,
+                sparseIndexIntervalRecords, retentionMs, retentionBytes, compactionEnabled,
+                compactionMaxSegments, compactionMaxBytes, maintenanceWindowStartHour,
+                maintenanceWindowEndHour, maintenanceEveryNAppends, fetchTransferMode,
+                fetchTransferTimeoutMs, networkTransportMode, maxInFlightRequests,
+                brokerHeartbeatIntervalMs, brokerSelfFenceTimeoutMs,
+                controllerBrokerLeaseTimeoutMs, clusterId, etcdEndpoints,
+                controllerSessionTtlSeconds, controllerFailoverGraceMs, leaderActivationTimeoutMs,
+                initializeEmptyCluster, initializeClusterFromLocal, adminToken);
+    }
 
     public static final int DEFAULT_COMPACTION_MAX_SEGMENTS = 4;
     public static final int MAINTENANCE_WINDOW_DISABLED = -1;
     public static final FetchTransferMode DEFAULT_FETCH_TRANSFER_MODE = FetchTransferMode.AUTO;
     public static final long DEFAULT_FETCH_TRANSFER_TIMEOUT_MS = 30_000;
+    public static final NetworkTransportMode DEFAULT_NETWORK_TRANSPORT_MODE = NetworkTransportMode.NIO;
+    public static final int DEFAULT_MAX_IN_FLIGHT_REQUESTS = 0;
     public static final long DEFAULT_BROKER_HEARTBEAT_INTERVAL_MS = 1_000L;
     public static final long DEFAULT_BROKER_SELF_FENCE_TIMEOUT_MS = 3_000L;
     public static final long DEFAULT_CONTROLLER_BROKER_LEASE_TIMEOUT_MS = 5_000L;
+    public static final String DEFAULT_CLUSTER_ID = "minimq";
+    public static final List<String> DEFAULT_ETCD_ENDPOINTS = List.of("http://localhost:2379");
+    public static final int DEFAULT_CONTROLLER_SESSION_TTL_SECONDS = 15;
+    public static final long DEFAULT_CONTROLLER_FAILOVER_GRACE_MS = 10_000L;
+    public static final long DEFAULT_LEADER_ACTIVATION_TIMEOUT_MS = 5_000L;
 
     public BrokerConfig(
             int brokerId,
@@ -77,6 +115,8 @@ public record BrokerConfig(
                 0,
                 DEFAULT_FETCH_TRANSFER_MODE,
                 DEFAULT_FETCH_TRANSFER_TIMEOUT_MS,
+                DEFAULT_NETWORK_TRANSPORT_MODE,
+                DEFAULT_MAX_IN_FLIGHT_REQUESTS,
                 adminToken);
     }
 
@@ -103,6 +143,8 @@ public record BrokerConfig(
             int maintenanceEveryNAppends,
             FetchTransferMode fetchTransferMode,
             long fetchTransferTimeoutMs,
+            NetworkTransportMode networkTransportMode,
+            int maxInFlightRequests,
             String adminToken) {
         this(
                 brokerId,
@@ -127,9 +169,18 @@ public record BrokerConfig(
                 maintenanceEveryNAppends,
                 fetchTransferMode,
                 fetchTransferTimeoutMs,
+                networkTransportMode,
+                maxInFlightRequests,
                 DEFAULT_BROKER_HEARTBEAT_INTERVAL_MS,
                 DEFAULT_BROKER_SELF_FENCE_TIMEOUT_MS,
                 DEFAULT_CONTROLLER_BROKER_LEASE_TIMEOUT_MS,
+                DEFAULT_CLUSTER_ID,
+                DEFAULT_ETCD_ENDPOINTS,
+                DEFAULT_CONTROLLER_SESSION_TTL_SECONDS,
+                DEFAULT_CONTROLLER_FAILOVER_GRACE_MS,
+                DEFAULT_LEADER_ACTIVATION_TIMEOUT_MS,
+                false,
+                false,
                 adminToken);
     }
 
@@ -158,9 +209,18 @@ public record BrokerConfig(
         int maintenanceEveryNAppends = 0;
         FetchTransferMode fetchTransferMode = DEFAULT_FETCH_TRANSFER_MODE;
         long fetchTransferTimeoutMs = DEFAULT_FETCH_TRANSFER_TIMEOUT_MS;
+        NetworkTransportMode networkTransportMode = DEFAULT_NETWORK_TRANSPORT_MODE;
+        int maxInFlightRequests = DEFAULT_MAX_IN_FLIGHT_REQUESTS;
         long brokerHeartbeatIntervalMs = DEFAULT_BROKER_HEARTBEAT_INTERVAL_MS;
         long brokerSelfFenceTimeoutMs = DEFAULT_BROKER_SELF_FENCE_TIMEOUT_MS;
         long controllerBrokerLeaseTimeoutMs = DEFAULT_CONTROLLER_BROKER_LEASE_TIMEOUT_MS;
+        String clusterId = DEFAULT_CLUSTER_ID;
+        List<String> etcdEndpoints = DEFAULT_ETCD_ENDPOINTS;
+        int controllerSessionTtlSeconds = DEFAULT_CONTROLLER_SESSION_TTL_SECONDS;
+        long controllerFailoverGraceMs = DEFAULT_CONTROLLER_FAILOVER_GRACE_MS;
+        long leaderActivationTimeoutMs = DEFAULT_LEADER_ACTIVATION_TIMEOUT_MS;
+        boolean initializeEmptyCluster = false;
+        boolean initializeClusterFromLocal = false;
         String adminToken = null;
 
         for (int i = 0; i < args.length; i++) {
@@ -169,7 +229,23 @@ public record BrokerConfig(
                 case "--host" -> host = value(args, ++i, "--host");
                 case "--port" -> port = Integer.parseInt(value(args, ++i, "--port"));
                 case "--data-dir" -> dataDir = Path.of(value(args, ++i, "--data-dir"));
-                case "--controller" -> controller = true;
+                case "--cluster-id" -> clusterId = value(args, ++i, "--cluster-id");
+                case "--etcd-endpoints" -> etcdEndpoints =
+                        parseEtcdEndpoints(value(args, ++i, "--etcd-endpoints"));
+                case "--controller-session-ttl-seconds" -> controllerSessionTtlSeconds =
+                        parsePositiveInt(
+                                value(args, ++i, "--controller-session-ttl-seconds"),
+                                "--controller-session-ttl-seconds");
+                case "--controller-failover-grace-ms" -> controllerFailoverGraceMs =
+                        parsePositiveLong(
+                                value(args, ++i, "--controller-failover-grace-ms"),
+                                "--controller-failover-grace-ms");
+                case "--leader-activation-timeout-ms" -> leaderActivationTimeoutMs =
+                        parsePositiveLong(
+                                value(args, ++i, "--leader-activation-timeout-ms"),
+                                "--leader-activation-timeout-ms");
+                case "--initialize-empty-cluster" -> initializeEmptyCluster = true;
+                case "--initialize-cluster-from-local" -> initializeClusterFromLocal = true;
                 case "--recover-corrupt-metadata" -> recoverCorruptMetadata = true;
                 case "--flush-policy" -> flushPolicyName = value(args, ++i, "--flush-policy");
                 case "--flush-every-n-appends" -> flushEveryNAppends =
@@ -213,6 +289,12 @@ public record BrokerConfig(
                         parsePositiveLong(
                                 value(args, ++i, "--fetch-transfer-timeout-ms"),
                                 "--fetch-transfer-timeout-ms");
+                case "--network-transport" -> networkTransportMode =
+                        NetworkTransportMode.parse(value(args, ++i, "--network-transport"));
+                case "--max-in-flight-requests" -> maxInFlightRequests =
+                        parseNonNegativeInt(
+                                value(args, ++i, "--max-in-flight-requests"),
+                                "--max-in-flight-requests");
                 case "--broker-heartbeat-interval-ms" -> brokerHeartbeatIntervalMs =
                         parsePositiveLong(
                                 value(args, ++i, "--broker-heartbeat-interval-ms"),
@@ -226,22 +308,23 @@ public record BrokerConfig(
                                 value(args, ++i, "--controller-broker-lease-timeout-ms"),
                                 "--controller-broker-lease-timeout-ms");
                 case "--admin-token" -> adminToken = value(args, ++i, "--admin-token");
-                case "--controller-addr" -> {
-                    String[] parts = value(args, ++i, "--controller-addr").split(":", 2);
-                    if (parts.length != 2 || parts[0].isBlank() || parts[1].isBlank()) {
-                        throw new IllegalArgumentException("--controller-addr must be host:port");
-                    }
-                    controllerHost = parts[0];
-                    controllerPort = Integer.parseInt(parts[1]);
-                }
                 default -> throw new IllegalArgumentException("Unknown argument: " + args[i]);
             }
+        }
+        validateClusterId(clusterId);
+        if (initializeEmptyCluster && initializeClusterFromLocal) {
+            throw new IllegalArgumentException(
+                    "--initialize-empty-cluster and --initialize-cluster-from-local are mutually exclusive");
         }
         validateMaintenanceWindowPair(maintenanceWindowStartHour, maintenanceWindowEndHour);
         validateBrokerLeaseTiming(
                 brokerHeartbeatIntervalMs,
                 brokerSelfFenceTimeoutMs,
                 controllerBrokerLeaseTimeoutMs);
+        validateControlPlaneTiming(
+                controllerBrokerLeaseTimeoutMs,
+                controllerFailoverGraceMs,
+                controllerSessionTtlSeconds);
         if (adminToken == null || adminToken.isBlank()) {
             throw new IllegalArgumentException("--admin-token is required and must not be blank");
         }
@@ -268,10 +351,43 @@ public record BrokerConfig(
                 maintenanceEveryNAppends,
                 fetchTransferMode,
                 fetchTransferTimeoutMs,
+                networkTransportMode,
+                maxInFlightRequests,
                 brokerHeartbeatIntervalMs,
                 brokerSelfFenceTimeoutMs,
                 controllerBrokerLeaseTimeoutMs,
+                clusterId,
+                List.copyOf(etcdEndpoints),
+                controllerSessionTtlSeconds,
+                controllerFailoverGraceMs,
+                leaderActivationTimeoutMs,
+                initializeEmptyCluster,
+                initializeClusterFromLocal,
                 adminToken);
+    }
+
+    private static List<String> parseEtcdEndpoints(String value) {
+        List<String> endpoints = Arrays.stream(value.split(",", -1))
+                .map(String::trim)
+                .toList();
+        if (endpoints.isEmpty() || endpoints.stream().anyMatch(String::isBlank)) {
+            throw new IllegalArgumentException("--etcd-endpoints must contain non-blank endpoints");
+        }
+        return endpoints;
+    }
+
+    private static void validateClusterId(String clusterId) {
+        if (!clusterId.matches("[a-zA-Z0-9._-]+")) {
+            throw new IllegalArgumentException("--cluster-id must match [a-zA-Z0-9._-]+");
+        }
+    }
+
+    private static void validateControlPlaneTiming(long leaseMs, long graceMs, int sessionTtlSeconds) {
+        long sessionTtlMs = sessionTtlSeconds * 1_000L;
+        if (leaseMs > graceMs || graceMs >= sessionTtlMs) {
+            throw new IllegalArgumentException(
+                    "control-plane timing must satisfy controller lease <= failover grace < session TTL");
+        }
     }
 
     private static String value(String[] args, int index, String name) {

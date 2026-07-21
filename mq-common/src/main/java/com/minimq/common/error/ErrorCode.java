@@ -14,7 +14,13 @@ public enum ErrorCode {
     UNAUTHORIZED(7),
     MAINTENANCE_BUSY(8),
     BROKER_FENCED(9),
-    BROKER_ID_IN_USE(10);
+    BROKER_ID_IN_USE(10),
+    CONTROLLER_FENCED(11),
+    NOT_CONTROLLER(12),
+    STALE_LEADER_EPOCH(13),
+    LEADER_NOT_READY(14),
+    CONTROLLER_NOT_READY(15),
+    THROTTLED(16);
 
     public final short code;
 

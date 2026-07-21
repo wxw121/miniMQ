@@ -75,8 +75,8 @@ netstat -ano | findstr ":9093"
 netstat -ano | findstr ":9094"
 ```
 
-If needed, start brokers with different `--port` values and update `--controller-addr`.
-如有需要，可使用不同 `--port` 启动 Broker，并同步调整 `--controller-addr`。
+If needed, start brokers with different `--port` values while keeping the same `--cluster-id` and `--etcd-endpoints`. Clients should receive the complete comma-separated Broker bootstrap list.
+如有需要，可使用不同 `--port` 启动 Broker，但必须保持相同的 `--cluster-id` 与 `--etcd-endpoints`；客户端应配置完整的逗号分隔 Broker bootstrap 列表。
 
 ## 4. Windows PowerShell Notes / Windows PowerShell 注意事项
 

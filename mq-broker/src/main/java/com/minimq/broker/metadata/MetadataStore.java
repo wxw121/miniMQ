@@ -2,6 +2,8 @@ package com.minimq.broker.metadata;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.minimq.common.error.ErrorCode;
 
 import java.io.IOException;
 import java.nio.channels.FileChannel;
@@ -15,7 +17,7 @@ import java.time.format.DateTimeFormatter;
 /**
  * 元数据文件存储器，负责把 ClusterMetadata 序列化到本地 JSON 文件并在启动时加载。
  */
-public class MetadataStore {
+public class MetadataStore implements ClusterMetadataRepository {
     private final Path metadataFile;
     private final boolean recoverCorruptMetadata;
     private final Clock clock;
@@ -45,6 +47,7 @@ public class MetadataStore {
             }
             JsonNode root = mapper.readTree(metadataFile.toFile());
             validateDocument(root);
+            migrateOrValidateFormat((ObjectNode) root);
             ClusterMetadata metadata = mapper.treeToValue(root, ClusterMetadata.class);
             validate(metadata);
             return metadata;
@@ -62,6 +65,7 @@ public class MetadataStore {
 
     public synchronized void save(ClusterMetadata metadata) {
         try {
+            validate(metadata);
             Path parent = metadataFile.getParent();
             if (parent != null) {
                 Files.createDirectories(parent);
@@ -82,12 +86,52 @@ public class MetadataStore {
         }
     }
 
+    @Override
+    public synchronized VersionedClusterMetadata read() {
+        ClusterMetadata metadata = load();
+        return new VersionedClusterMetadata(metadata, metadata.metadataVersion);
+    }
+
+    @Override
+    public synchronized UpdateResult initialize(ClusterMetadata metadata) {
+        ClusterMetadata candidate = mapper.convertValue(metadata, ClusterMetadata.class);
+        candidate.metadataVersion = 0L;
+        if (!Files.exists(metadataFile)) {
+            save(candidate);
+            return new UpdateResult(ErrorCode.NONE, new VersionedClusterMetadata(candidate, 0L));
+        }
+        VersionedClusterMetadata current = read();
+        candidate.metadataVersion = current.metadata().metadataVersion;
+        if (mapper.valueToTree(candidate).equals(mapper.valueToTree(current.metadata()))) {
+            return new UpdateResult(ErrorCode.NONE, current);
+        }
+        return new UpdateResult(ErrorCode.INVALID_REQUEST, current);
+    }
+
+    @Override
+    public synchronized UpdateResult compareAndSet(long expectedRevision, ClusterMetadata metadata) {
+        VersionedClusterMetadata current = read();
+        if (current.revision() != expectedRevision) {
+            return new UpdateResult(ErrorCode.CONTROLLER_FENCED, current);
+        }
+        ClusterMetadata next = mapper.convertValue(metadata, ClusterMetadata.class);
+        next.metadataVersion = Math.addExact(expectedRevision, 1L);
+        save(next);
+        return new UpdateResult(ErrorCode.NONE, new VersionedClusterMetadata(next, next.metadataVersion));
+    }
+
     private void validate(ClusterMetadata metadata) throws IOException {
         if (metadata == null) {
             throw new IOException("Metadata document is null");
         }
         if (metadata.brokers == null || metadata.topics == null || metadata.consumerGroups == null) {
             throw new IOException("Metadata document has missing top-level maps");
+        }
+        if (metadata.metadataFormatVersion != 3) {
+            throw new IOException("Unsupported metadataFormatVersion " + metadata.metadataFormatVersion);
+        }
+        if (metadata.controllerEpoch < 0 || metadata.metadataVersion < 0) {
+            throw new IOException("Metadata epochs and version must be non-negative");
         }
         for (var entry : metadata.brokers.entrySet()) {
             Integer brokerId = entry.getKey();
@@ -151,6 +195,12 @@ public class MetadataStore {
                 }
                 if (partition.replicaLogEndOffsets == null) {
                     throw new IOException("Metadata topic " + topicName + " has null replica LEO map");
+                }
+                if (partition.leaderEpoch < 0 || partition.leaderEpochStartOffset < 0) {
+                    throw new IOException("Metadata topic " + topicName + " has invalid Leader epoch state");
+                }
+                if (partition.frozen && partition.leaderReady) {
+                    throw new IOException("Metadata topic " + topicName + " frozen partition cannot be ready");
                 }
                 for (var leoEntry : partition.replicaLogEndOffsets.entrySet()) {
                     Integer brokerId = leoEntry.getKey();
@@ -236,6 +286,34 @@ public class MetadataStore {
         requireObject(root, "brokers");
         requireObject(root, "topics");
         requireObject(root, "consumerGroups");
+    }
+
+    private void migrateOrValidateFormat(ObjectNode root) throws IOException {
+        JsonNode format = root.get("metadataFormatVersion");
+        if (format == null) {
+            root.put("metadataFormatVersion", 3);
+            root.put("controllerEpoch", 0L);
+            root.put("metadataVersion", 0L);
+            JsonNode topics = root.get("topics");
+            if (topics != null && topics.isObject()) {
+                topics.elements().forEachRemaining(topic -> {
+                    JsonNode partitions = topic.get("partitions");
+                    if (partitions != null && partitions.isArray()) {
+                        partitions.elements().forEachRemaining(partition -> {
+                            if (partition instanceof ObjectNode object) {
+                                object.put("leaderEpoch", 0L);
+                                object.put("leaderEpochStartOffset", 0L);
+                                object.put("leaderReady", !object.path("frozen").asBoolean(false));
+                            }
+                        });
+                    }
+                });
+            }
+            return;
+        }
+        if (!format.canConvertToInt() || format.intValue() != 3) {
+            throw new IOException("Unsupported metadataFormatVersion " + format);
+        }
     }
 
     private void requireObject(JsonNode root, String fieldName) throws IOException {

@@ -202,9 +202,9 @@ flowchart LR
 
 ## 7. Deployment Shape / 部署形态
 
-MiniMQ can be launched as a fat jar from `mq-demo`. The first broker is usually started with `--controller`; followers are started with `--controller-addr host:port`.
+MiniMQ 3.0 is launched with an etcd endpoint on every Broker. Brokers campaign for one lease-bound Controller role; only the first node of a new cluster uses `--initialize-empty-cluster` (or `--initialize-cluster-from-local` for an explicit 2.x import).
 
-MiniMQ 可以通过 `mq-demo` 打出的 fat jar 启动。第一个 Broker 通常加 `--controller`，其他 Broker 通过 `--controller-addr host:port` 指向 Controller。
+MiniMQ 3.0 的每个 Broker 都配置 etcd endpoint，并竞选唯一的 lease-bound Controller。全新集群只有首节点使用 `--initialize-empty-cluster`；显式导入 2.x 本地元数据时改用 `--initialize-cluster-from-local`。
 
 | Broker / 节点 | Example role / 示例角色 | Example port / 示例端口 | Data dir / 数据目录 |
 | --- | --- | ---: | --- |
@@ -220,11 +220,11 @@ The timing contract is `broker heartbeat interval < broker self-fence timeout < 
 
 ## 8. Architectural Constraints / 架构约束
 
-1. Replication and ISR failover exist, but MiniMQ does not perform unclean election or automatic log truncation. A single-replica partition freezes when its Broker lease expires and remains unavailable until the original Broker returns with the same data directory and a higher epoch. / 已有副本与 ISR 故障转移，但不会执行 unclean election 或自动日志截断。单副本分区在 Broker 租约过期后会冻结，直到原 Broker 使用相同数据目录和更高 epoch 返回。
-2. There is no controller election. If the controller exits, the cluster does not elect a replacement. / 目前没有 Controller 选举。如果 Controller 退出，集群不会自动选出替代节点。
-3. Metadata is persisted as one JSON document. This is easy to inspect but not a scalable metadata log; V1.3 adds corrupt-file validation, safe write, and quarantine behavior before V2 introduces a stronger metadata log. / 元数据以单个 JSON 文档持久化，易读但不是可扩展的元数据日志；V1.3 已增加损坏文件校验、安全写入和隔离行为，V2 再引入更强的元数据日志。
+1. Replication and clean ISR failover exist, including crash-safe truncation before Leader readiness. MiniMQ still does not perform unclean election; a partition with no online ISR remains frozen. / 已有副本、ISR 内 clean failover 和 Leader ready 前的崩溃安全截断，但仍不执行 unclean election；没有在线 ISR 的分区保持 frozen。
+2. Controller election uses etcd lease/election, a monotonically increasing Controller epoch, leader-identity comparison, and metadata revision CAS. / Controller 选举使用 etcd lease/election、单调 Controller epoch、Leader 身份比较和元数据 revision CAS。
+3. Shared metadata is persisted in etcd and installed by a monotonic watch. The local JSON document remains only as the explicit 2.x import source. / 共享元数据持久化在 etcd 中，并由单调 watch 安装；本地 JSON 仅保留为显式 2.x 导入源。
 4. Consumer group rebalancing is simplified. There is no full Kafka-style rebalance protocol, session management, or cooperative assignment. / 消费组再均衡经过简化，还没有完整 Kafka 风格的 rebalance 协议、会话管理或协作式分配。
-5. The client SDK supports fixed-backoff connection retry, configurable request timeout, typed exceptions, topic-level metadata cache invalidation, and one metadata refresh retry after `NOT_LEADER` or `BROKER_FENCED`. Automatic Broker failover is implemented; Controller HA remains future work. / 客户端 SDK 支持固定退避连接重试、可配置请求超时、类型化异常、Topic 级元数据缓存失效，以及遇到 `NOT_LEADER` 或 `BROKER_FENCED` 后刷新元数据重试一次。Broker 自动故障转移已实现，Controller 高可用仍是后续工作。
+5. The client SDK cycles the complete bootstrap list, discovers the current Controller through any Broker, rejects older metadata versions, carries the routed Leader epoch, and retries one stale route. The SDK has no etcd dependency. / 客户端 SDK 轮询完整 bootstrap 列表、通过任意 Broker 发现当前 Controller、拒绝较旧 metadata version、携带路由时的 Leader epoch，并对过期路由重试一次；SDK 不依赖 etcd。
 6. Maintenance report, execution, and metrics are exposed through token-protected admin APIs and single-target CLI commands. Destructive maintenance remains opt-in and Broker-local. / 维护报告、执行和指标已通过令牌保护的管理 API 与单目标 CLI 命令开放；破坏性维护仍需显式触发，并且只作用于本地 Broker。
 
 ## 9. Architecture Glossary / 架构名词表

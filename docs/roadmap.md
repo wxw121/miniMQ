@@ -1,19 +1,19 @@
-# MiniMQ TODO And Roadmap / MiniMQ 代办与后续版本功能文�?
+# MiniMQ Backlog And Roadmap / MiniMQ 代办与后续版本功能文�?
 
 > This roadmap explains known limitations, recommended next tasks, and the production-grade version sequence from V1.3 through V4.
 > 本路线图说明当前已知限制、推荐下一步任务，以及�?V1.3 �?V4 的生产级能力演进顺序�?
 
 ## 1. Current State / 当前状�?
 
-MiniMQ has released V2.0 storage recovery as `v2.0.0`, tagged V2.1.2 maintenance observability as `v2.1.2-maintenance-observability`, released V2.2 zero-copy FETCH sendfile as `v2.2.0-read-performance` on `2.2.0`, released V2.3 replication as `v2.3.0-replication` on `2.3.0`, released V2.3.1 replication hardening as `v2.3.1-replication-hardening` on `2.3.1`, released V2.3.2 replica-fetch connection pooling as `v2.3.2-replica-fetch-pooling` on `2.3.2`, implemented the V2.4.0 maintenance operator interface on `2.4.0`, and is closing out V2.5.0 Broker leases and automatic failover on `2.5.0`.
+MiniMQ has implemented V3.0.0 production hardening on top of the V3.0.0 Controller HA baseline. The current working tree includes V3.0.1 failover-read stabilization, V3.1 runtime metrics/resilience/degradation, V3.2 optional native transport selection, V3.3 authenticated runtime metrics export, V3.4 deterministic resilience verification, and V3.5 transport-aware fetch benchmarking.
 
 MiniMQ 已完成 V2.0 至 V2.4.0 的存储、读取、副本与维护能力，并正在 `2.5.0` 上收口 Broker 租约与自动故障转移。
 
-V2.5.0 adds automatic Broker failure detection, self-fencing, ISR shrink, LEO-aware clean election, frozen no-ISR partitions, and higher-epoch Broker recovery. The most important remaining limitations are Controller HA, data-plane Leader epochs, and unclean election.
+The most important remaining gate is environment-dependent real-etcd Failsafe verification for Controller HA. Docker API access is currently recorded as an environment blocker; do not mark that gate complete until the `-Petcd-it` profile runs successfully.
 
 V2.5.0 已增加 Broker 自动故障检测、自我 fencing、ISR 收缩、LEO 感知 clean election、无 ISR 分区冻结和更高 epoch 恢复。当前最重要的剩余限制是 Controller 高可用、数据面 Leader epoch 和 unclean election。
 
-## 2. Immediate TODOs / 近期代办
+## 2. Immediate Backlog / 近期代办
 
 | Priority / 优先�?| Task / 任务 | Why it matters / 重要�?| Suggested tests / 建议测试 |
 | --- | --- | --- | --- |
@@ -41,6 +41,9 @@ V2.5.0 已增加 Broker 自动故障检测、自我 fencing、ISR 收缩、LEO �
 | P1 | Completed: V2.3.2 replica-fetch connection pooling. | `ReplicaFetcher` now reuses `LeaderReplicaClient` connections and a shared Netty event loop per leader broker instead of creating one TCP connection and `NioEventLoopGroup` per partition per loop. | Covered by `ReplicaConnectionPoolTest`, `LeaderReplicaClientTest`, `ReplicaFetcherTest`, focused `ReplicationIntegrationTest` regression coverage, and `docs/test-report-2026-07-18-v2.3.2-replica-fetch-pooling.md`. |
 | P1 | Implemented: V2.4.0 maintenance operator interface. | Broker admin APIs 13-15 expose maintenance preview, execution, and metrics; the Demo CLI renders reports and per-segment actions. | Covered by `ProtocolSerdesTest`, `EmbeddedBrokerChannelTest`, `DemoCliTest`, and `docs/test-report-2026-07-19-v2.4.0-maintenance-ops.md`. |
 | P0 | Implemented: V2.5.0 Broker leases and automatic failover. | Brokers self-fence before Controller lease expiry; the Controller performs clean LEO-aware ISR election, freezes partitions without an online ISR, and accepts higher-epoch recovery. | Covered by lease service/monitor/guard tests, controller and metadata tests, client retry tests, and real TCP `ReplicationIntegrationTest` isolation scenarios. |
+| P0 | Completed: V3.0.1 failover verification stabilization. | The promoted Broker must be locally leader-ready and Controller metadata must expose `leaderReady=true` before the focused client FETCH assertion runs. | Covered by `ReplicationIntegrationTest#clientFetchAfterFailoverWithoutWaitingForFollowerFetch` and the V3.0.1-V3.2 productionization report. |
+| P1 | Implemented: V3.1 operational resilience. | Broker runtime metrics, in-flight throttling, Controller update circuit breaking, and `STORAGE_DEGRADED` guard behavior are in the working tree. | Covered by metrics, resilience, availability guard, reporter, config, and embedded-channel focused tests. |
+| P1 | Implemented: V3.2 transport selection. | `--network-transport nio|auto|epoll` keeps NIO as the safe default, AUTO falls back to NIO, and explicit EPOLL fails clearly when unavailable. | Covered by `NettyTransportFactoryTest`, `BrokerConfigTest`, and `BrokerShutdownTest`. |
 
 ## 3. Version Roadmap / 版本路线�?
 
@@ -321,7 +324,7 @@ V2.5.0 removes the normal-path dependency on manual `MARK_BROKER_OFFLINE` operat
 Remaining limitations: Controller HA, data-plane Leader epoch validation, unclean election, and automatic failover log truncation.
 ### 3.7 V3.0 Control Plane HA And Service Discovery / V3.0 控制面高可用与服务发�?
 
-The current controller is static. V3.0 should introduce a production-style discovery and election layer after replicas and leader failover exist. Prefer one backend first, such as etcd or Zookeeper, instead of implementing both at the same time.
+V3.0 is implemented with etcd as the single discovery and election backend. Every Broker can campaign for Controller leadership; the winning identity is protected by a lease and monotonically increasing Controller epoch. Shared metadata writes require both the exact leader identity and the observed snapshot revision. Brokers and clients watch or discover the active Controller without connecting to etcd from the SDK.
 
 当前 Controller 是静态的。V3.0 应在副本�?Leader 故障转移完成后，引入更接近生产系统的发现与选举层。建议先选择 etcd �?Zookeeper 其中一个，不要两个同时实现�?
 
@@ -337,7 +340,7 @@ Suggested scope / 建议范围�?
 
 ### 3.8 V3.1 Operational Resilience / V3.1 运行时韧�?
 
-V3.1 should add production protection mechanisms around the existing protocol and runtime: metrics, circuit breaker, degradation, throttling, and fault-injection tests.
+V3.1 now adds production protection mechanisms around the existing protocol and runtime: in-process metrics, Controller request circuit breaking, storage-degraded behavior, request throttling, and focused tests.
 
 V3.1 应围绕现有协议与运行时补充生产保护机制：指标、熔断、降级、限流和故障注入测试�?
 
@@ -358,7 +361,7 @@ xychart-beta
 
 ### 3.9 V3.2 Network Performance / V3.2 网络性能
 
-V3.2 should add Netty native transport only after correctness and operational resilience are in place. Epoll should be optional and Linux-only; the default NIO path must remain supported for Windows and macOS development.
+V3.2 now adds optional Netty native transport selection after correctness and operational resilience are in place. Epoll remains optional and Linux-only; the default NIO path remains supported for Windows and macOS development.
 
 V3.2 应在正确性与运行时韧性完成后再加�?Netty native transport。Epoll 应作�?Linux-only 可选能力；默认 NIO 路径仍需支持 Windows �?macOS 开发�?
 
@@ -369,7 +372,14 @@ Suggested scope / 建议范围�?
 3. Preserve the existing NIO implementation as the fallback. / 保留现有 NIO 实现作为回退�?
 4. Add smoke tests that prove both NIO and fallback selection work. / 增加冒烟测试证明 NIO 与回退选择可用�?
 
-### 3.10 V4 Experimental LSM State Store / V4 实验�?LSM 状态存�?
+### 3.10 V3.3-V3.5 Production Hardening / V3.3-V3.5 Production Hardening
+
+V3.3 promotes the in-process `BrokerRuntimeMetrics` snapshot into an authenticated admin protocol API and CLI command. API 19 `RUNTIME_METRICS` returns bounded lists for request counts, response counts, latency summaries, and throttled counts.
+
+V3.4 keeps fault injection deterministic and local. Embedded broker tests cover `STORAGE_DEGRADED` read/write behavior and throttling counters without Docker, sleeps, or heavy concurrency.
+
+V3.5 extends `benchmark-fetch` with `--network-transport nio|auto|epoll`, passing the selected transport into `BrokerConfig` and printing the selected mode in benchmark output.
+### 3.11 V4 Experimental LSM State Store / V4 实验�?LSM 状态存�?
 
 LSM-Tree should not replace the main message log. MiniMQ's core storage is closer to Kafka-style append-only segmented logs. If LSM-Tree is needed for learning or interview coverage, add it as an optional state-store module for compacted-topic lookup or secondary index experiments.
 
@@ -411,7 +421,7 @@ MiniMQ 应该暴露运行时指标，建议包括�?
 | consumer lag | High watermark minus committed offset. / 高水位减去已提交 offset�?|
 | metadata save failures | Controller metadata persistence failures. / Controller 元数据持久化失败次数�?|
 
-## 4. Documentation TODOs / 文档代办
+## 4. Documentation Backlog / 文档代办
 
 1. Keep API table in `design.md` synchronized with `ApiKeys`. / 保持 `design.md` 中的 API 表与 `ApiKeys` 同步�?
 2. Keep coverage table in `testing.md` synchronized after major test changes. / 大规模测试变更后同步 `testing.md` 覆盖率表�?
@@ -425,9 +435,9 @@ For a new agent session, the most productive next tasks are:
 
 对新 agent 会话，最建议继续做：
 
-1. Design V3.0 Controller HA and Controller epoch fencing around one discovery backend, reusing the V2.5.0 Broker lease semantics.
-2. Add data-plane Leader epochs before considering unclean election or automatic failover log truncation.
-3. Keep circuit breaker, Epoll, and mmap in later productionization versions.
+1. Run the real-etcd Failsafe gate when Docker API access is available, then update the V3.0.0 and V3.0.1-V3.2 test reports.
+2. Add an external metrics endpoint or exporter on top of the V3.1 `BrokerRuntimeMetrics` snapshot model.
+3. Start V4 experimental LSM state-store work only from the design and implementation documents, and only after benchmark gates prove it should remain outside the default broker message-log write path.
 
 ## 6. Risk Register / 风险登记�?
 

@@ -16,6 +16,11 @@ public interface PartitionLog extends AutoCloseable {
 
     long highWatermark();
 
+    /** Removes all records whose offset is greater than or equal to {@code offset}. */
+    default void truncateTo(long offset) {
+        throw new UnsupportedOperationException("log truncation is not supported");
+    }
+
     void flush();
 
     @Override

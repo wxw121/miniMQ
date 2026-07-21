@@ -4,6 +4,7 @@ import com.minimq.broker.BrokerConfig;
 import com.minimq.broker.BrokerServer;
 import com.minimq.broker.FetchTransferMetricsSnapshot;
 import com.minimq.broker.FetchTransferMode;
+import com.minimq.broker.netty.NetworkTransportMode;
 import com.minimq.client.NetworkClient;
 import com.minimq.protocol.ApiKeys;
 import com.minimq.protocol.MqFrame;
@@ -33,6 +34,7 @@ final class FetchBenchmark {
         Config config = Config.parse(args);
         Result heap = runMode(config, FetchTransferMode.HEAP);
         Result auto = runMode(config, FetchTransferMode.AUTO);
+        out.println("networkTransport=" + config.networkTransportMode().name().toLowerCase(Locale.ROOT));
         out.println("mode requests bytes MiB/s mean-ms p50-ms p95-ms sendfile-responses sendfile-bytes heap-responses");
         printRow(out, heap, config.iterations());
         printRow(out, auto, config.iterations());
@@ -61,14 +63,14 @@ final class FetchBenchmark {
                 "--host", "127.0.0.1",
                 "--port", Integer.toString(port),
                 "--data-dir", dataDir.toString(),
-                "--controller",
                 "--flush-policy", "manual-on-close",
                 "--sparse-index-interval-records", "1",
                 "--segment-max-bytes", Long.toString(config.segmentBytes()),
+                "--network-transport", config.networkTransportMode().name().toLowerCase(Locale.ROOT),
                 "--fetch-transfer-mode", mode == FetchTransferMode.AUTO ? "auto" : "heap",
                 "--fetch-transfer-timeout-ms", "30000",
                 "--admin-token", "benchmark-admin"
-        });
+        }).withLegacyController(true, "127.0.0.1", port);
         BrokerServer server = new BrokerServer(brokerConfig);
         server.start();
         try (NetworkClient client = new NetworkClient("fetch-benchmark")) {
@@ -144,9 +146,17 @@ final class FetchBenchmark {
     }
 
     record Config(int records, int valueBytes, int fetchBytes,
-                  int warmup, int iterations, long segmentBytes) {
+                  int warmup, int iterations, long segmentBytes,
+                  NetworkTransportMode networkTransportMode) {
         static Config defaults() {
-            return new Config(256, 32 * 1024, 8 * 1024 * 1024, 10, 50, 1024 * 1024);
+            return new Config(
+                    256,
+                    32 * 1024,
+                    8 * 1024 * 1024,
+                    10,
+                    50,
+                    1024 * 1024,
+                    NetworkTransportMode.NIO);
         }
 
         static Config parse(String[] args) {
@@ -162,10 +172,15 @@ final class FetchBenchmark {
                     DemoCli.arg(args, "--iterations", Integer.toString(defaults.iterations())), "--iterations");
             long segmentBytes = parsePositiveLong(
                     DemoCli.arg(args, "--segment-bytes", Long.toString(defaults.segmentBytes())), "--segment-bytes");
+            NetworkTransportMode networkTransportMode = NetworkTransportMode.parse(
+                    DemoCli.arg(
+                            args,
+                            "--network-transport",
+                            defaults.networkTransportMode().name().toLowerCase(Locale.ROOT)));
             if (fetchBytes >= MqFrame.MAX_FRAME_BYTES) {
                 throw new IllegalArgumentException("--fetch-bytes must be below frame max");
             }
-            return new Config(records, valueBytes, fetchBytes, warmup, iterations, segmentBytes);
+            return new Config(records, valueBytes, fetchBytes, warmup, iterations, segmentBytes, networkTransportMode);
         }
 
         private static int parsePositive(String value, String name) {

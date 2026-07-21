@@ -164,6 +164,50 @@ final class SegmentFile implements AutoCloseable {
         recordCount++;
     }
 
+    synchronized void truncateTo(long offset) throws IOException {
+        ensureOpen();
+        if (offset < descriptor.baseOffset() || offset > nextOffset()) {
+            throw new IllegalArgumentException("truncate offset outside segment range: " + offset);
+        }
+        if (offset == nextOffset()) {
+            return;
+        }
+        List<SparseOffsetIndex.IndexEntry> replacementIndex = new ArrayList<>();
+        long fileSize = logChannel.size();
+        long truncatePosition = 0;
+        long retainedCount = 0;
+        long retainedFirst = -1;
+        long retainedLast = -1;
+        logChannel.position(0);
+        while (logChannel.position() < fileSize) {
+            long recordStart = logChannel.position();
+            PartitionLogRecordCodec.DecodedRecord decoded =
+                    PartitionLogRecordCodec.read(logChannel, recordStart, fileSize);
+            long recordOffset = decoded.record().offset();
+            if (recordOffset >= offset) {
+                truncatePosition = recordStart;
+                break;
+            }
+            if (retainedCount == 0) {
+                retainedFirst = recordOffset;
+            }
+            if (retainedCount % config.sparseIndexIntervalRecords() == 0) {
+                replacementIndex.add(new SparseOffsetIndex.IndexEntry(recordOffset, recordStart));
+            }
+            retainedLast = recordOffset;
+            retainedCount++;
+            truncatePosition = logChannel.position();
+        }
+        logChannel.truncate(truncatePosition);
+        logChannel.position(truncatePosition);
+        logChannel.force(false);
+        index.replace(replacementIndex);
+        index.flush();
+        recordCount = retainedCount;
+        firstOffset = retainedFirst;
+        lastOffset = retainedLast;
+    }
+
     synchronized List<Record> read(long fromOffset, int maxBytes) throws IOException {
         ensureOpen();
         if (maxBytes <= 0) {
@@ -266,6 +310,10 @@ final class SegmentFile implements AutoCloseable {
         } catch (IOException e) {
             throw new IllegalStateException("Failed to close segment " + logPath, e);
         }
+    }
+
+    synchronized boolean isClosed() {
+        return closed;
     }
 
     static Path logPath(Path partitionDir, long baseOffset) {

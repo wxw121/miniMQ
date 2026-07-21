@@ -10,6 +10,12 @@ public final class ProtocolMessages {
     private ProtocolMessages() {
     }
 
+    private static void requireNonNegative(long value, String fieldName) {
+        if (value < 0) {
+            throw new IllegalArgumentException(fieldName + " must be non-negative");
+        }
+    }
+
     public record CreateTopicRequest(String topicName, int numPartitions, int replicationFactor) {
         public CreateTopicRequest(String topicName, int numPartitions) {
             this(topicName, numPartitions, 1);
@@ -25,15 +31,29 @@ public final class ProtocolMessages {
     public record BrokerMetadata(int brokerId, String host, int port) {
     }
 
+    public record ControllerMetadata(int brokerId, String host, int port, long controllerEpoch) {
+        public ControllerMetadata {
+            requireNonNegative(controllerEpoch, "controllerEpoch");
+        }
+    }
+
     public record PartitionMetadata(
             int partitionId,
             int leaderBrokerId,
             List<Integer> replicaBrokerIds,
             List<Integer> isrBrokerIds,
             Map<Integer, Long> replicaLogEndOffsets,
-            boolean frozen) {
+            boolean frozen,
+            long leaderEpoch,
+            long leaderEpochStartOffset,
+            boolean leaderReady) {
+        public PartitionMetadata {
+            requireNonNegative(leaderEpoch, "leaderEpoch");
+            requireNonNegative(leaderEpochStartOffset, "leaderEpochStartOffset");
+        }
         public PartitionMetadata(int partitionId, int leaderBrokerId) {
-            this(partitionId, leaderBrokerId, List.of(leaderBrokerId), List.of(leaderBrokerId), Map.of(), false);
+            this(partitionId, leaderBrokerId, List.of(leaderBrokerId), List.of(leaderBrokerId), Map.of(),
+                    false, 0L, 0L, true);
         }
 
         public PartitionMetadata(
@@ -41,7 +61,7 @@ public final class ProtocolMessages {
                 int leaderBrokerId,
                 List<Integer> replicaBrokerIds,
                 List<Integer> isrBrokerIds) {
-            this(partitionId, leaderBrokerId, replicaBrokerIds, isrBrokerIds, Map.of(), false);
+            this(partitionId, leaderBrokerId, replicaBrokerIds, isrBrokerIds, Map.of(), false, 0L, 0L, true);
         }
 
         public PartitionMetadata(
@@ -50,26 +70,60 @@ public final class ProtocolMessages {
                 List<Integer> replicaBrokerIds,
                 List<Integer> isrBrokerIds,
                 Map<Integer, Long> replicaLogEndOffsets) {
-            this(partitionId, leaderBrokerId, replicaBrokerIds, isrBrokerIds, replicaLogEndOffsets, false);
+            this(partitionId, leaderBrokerId, replicaBrokerIds, isrBrokerIds, replicaLogEndOffsets,
+                    false, 0L, 0L, true);
+        }
+
+        public PartitionMetadata(
+                int partitionId,
+                int leaderBrokerId,
+                List<Integer> replicaBrokerIds,
+                List<Integer> isrBrokerIds,
+                Map<Integer, Long> replicaLogEndOffsets,
+                boolean frozen) {
+            this(partitionId, leaderBrokerId, replicaBrokerIds, isrBrokerIds, replicaLogEndOffsets,
+                    frozen, 0L, 0L, !frozen);
         }
     }
 
     public record TopicMetadata(String topicName, List<PartitionMetadata> partitions) {
     }
 
-    public record MetadataResponse(List<BrokerMetadata> brokers, List<TopicMetadata> topics) {
+    public record MetadataResponse(
+            List<BrokerMetadata> brokers,
+            List<TopicMetadata> topics,
+            ControllerMetadata controller,
+            long metadataVersion) {
+        public MetadataResponse {
+            requireNonNegative(metadataVersion, "metadataVersion");
+        }
+        public MetadataResponse(List<BrokerMetadata> brokers, List<TopicMetadata> topics) {
+            this(brokers, topics, null, 0L);
+        }
     }
 
     public record ProduceRecord(byte[] key, byte[] value) {
     }
 
-    public record ProduceRequest(String topicName, int partitionId, List<ProduceRecord> records) {
+    public record ProduceRequest(String topicName, int partitionId, long leaderEpoch, List<ProduceRecord> records) {
+        public ProduceRequest {
+            requireNonNegative(leaderEpoch, "leaderEpoch");
+        }
+        public ProduceRequest(String topicName, int partitionId, List<ProduceRecord> records) {
+            this(topicName, partitionId, 0L, records);
+        }
     }
 
     public record ProduceResponse(String topicName, int partitionId, long baseOffset) {
     }
 
-    public record FetchRequest(String topicName, int partitionId, long fetchOffset, int maxBytes) {
+    public record FetchRequest(String topicName, int partitionId, long leaderEpoch, long fetchOffset, int maxBytes) {
+        public FetchRequest {
+            requireNonNegative(leaderEpoch, "leaderEpoch");
+        }
+        public FetchRequest(String topicName, int partitionId, long fetchOffset, int maxBytes) {
+            this(topicName, partitionId, 0L, fetchOffset, maxBytes);
+        }
     }
 
     public record FetchedRecord(long offset, byte[] key, byte[] value) {
@@ -116,7 +170,13 @@ public final class ProtocolMessages {
     public record OffsetFetchResponse(long offset) {
     }
 
-    public record RegisterBrokerRequest(int brokerId, String host, int port) {
+    public record RegisterBrokerRequest(int brokerId, String host, int port, long controllerEpoch) {
+        public RegisterBrokerRequest {
+            requireNonNegative(controllerEpoch, "controllerEpoch");
+        }
+        public RegisterBrokerRequest(int brokerId, String host, int port) {
+            this(brokerId, host, port, 0L);
+        }
     }
 
     public record RegisterBrokerResponse(long brokerEpoch, long leaseTimeoutMs) {
@@ -125,7 +185,14 @@ public final class ProtocolMessages {
         }
     }
 
-    public record BrokerHeartbeatRequest(int brokerId, long brokerEpoch) {
+    public record BrokerHeartbeatRequest(int brokerId, long brokerEpoch, long controllerEpoch) {
+        public BrokerHeartbeatRequest {
+            requireNonNegative(brokerEpoch, "brokerEpoch");
+            requireNonNegative(controllerEpoch, "controllerEpoch");
+        }
+        public BrokerHeartbeatRequest(int brokerId, long brokerEpoch) {
+            this(brokerId, brokerEpoch, 0L);
+        }
     }
 
     public record BrokerHeartbeatResponse() {
@@ -135,15 +202,32 @@ public final class ProtocolMessages {
             String topicName,
             int partitionId,
             int replicaBrokerId,
+            long leaderEpoch,
             long fetchOffset,
             int maxBytes) {
+        public ReplicaFetchRequest {
+            requireNonNegative(leaderEpoch, "leaderEpoch");
+        }
+        public ReplicaFetchRequest(
+                String topicName, int partitionId, int replicaBrokerId, long fetchOffset, int maxBytes) {
+            this(topicName, partitionId, replicaBrokerId, 0L, fetchOffset, maxBytes);
+        }
     }
 
     public record ReplicaFetchResponse(
             String topicName,
             int partitionId,
             long highWatermark,
+            long leaderEpoch,
+            long leaderLogEndOffset,
             List<FetchedRecord> records) {
+        public ReplicaFetchResponse {
+            requireNonNegative(leaderEpoch, "leaderEpoch");
+        }
+        public ReplicaFetchResponse(
+                String topicName, int partitionId, long highWatermark, List<FetchedRecord> records) {
+            this(topicName, partitionId, highWatermark, 0L, highWatermark, records);
+        }
     }
 
     public record MarkBrokerOfflineRequest(int brokerId) {
@@ -156,10 +240,47 @@ public final class ProtocolMessages {
             String topicName,
             int partitionId,
             int replicaBrokerId,
+            long brokerEpoch,
+            long controllerEpoch,
             long logEndOffset) {
+        public UpdateReplicaLeoRequest {
+            requireNonNegative(brokerEpoch, "brokerEpoch");
+            requireNonNegative(controllerEpoch, "controllerEpoch");
+        }
+        public UpdateReplicaLeoRequest(
+                String topicName, int partitionId, int replicaBrokerId, long logEndOffset) {
+            this(topicName, partitionId, replicaBrokerId, 0L, 0L, logEndOffset);
+        }
     }
 
     public record UpdateReplicaLeoResponse() {
+    }
+
+    public record DiscoverControllerRequest() {
+    }
+
+    public record DiscoverControllerResponse(ControllerMetadata controller, long metadataVersion) {
+        public DiscoverControllerResponse {
+            requireNonNegative(metadataVersion, "metadataVersion");
+        }
+    }
+
+    public record LeaderReadyRequest(
+            String topicName,
+            int partitionId,
+            int brokerId,
+            long brokerEpoch,
+            long controllerEpoch,
+            long leaderEpoch,
+            long logEndOffset) {
+        public LeaderReadyRequest {
+            requireNonNegative(brokerEpoch, "brokerEpoch");
+            requireNonNegative(controllerEpoch, "controllerEpoch");
+            requireNonNegative(leaderEpoch, "leaderEpoch");
+        }
+    }
+
+    public record LeaderReadyResponse() {
     }
 
     public record MaintenanceReportRequest(String adminToken) {
@@ -176,6 +297,12 @@ public final class ProtocolMessages {
 
     public record MaintenanceMetricsRequest(String adminToken) {
         public MaintenanceMetricsRequest() {
+            this("");
+        }
+    }
+
+    public record RuntimeMetricsRequest(String adminToken) {
+        public RuntimeMetricsRequest() {
             this("");
         }
     }
@@ -211,5 +338,34 @@ public final class ProtocolMessages {
             long skippedDueToReaders,
             long cleanupFailures,
             String lastRunStatus) {
+    }
+
+    public record RuntimeMetricCount(short apiKey, long count) {
+        public RuntimeMetricCount {
+            requireNonNegative(count, "count");
+        }
+    }
+
+    public record RuntimeErrorCount(short errorCode, long count) {
+        public RuntimeErrorCount {
+            requireNonNegative(count, "count");
+        }
+    }
+
+    public record RuntimeLatencySummary(short apiKey, long count, long totalLatencyMs, double averageLatencyMs) {
+        public RuntimeLatencySummary {
+            requireNonNegative(count, "count");
+            requireNonNegative(totalLatencyMs, "totalLatencyMs");
+            if (averageLatencyMs < 0.0) {
+                throw new IllegalArgumentException("averageLatencyMs must be non-negative");
+            }
+        }
+    }
+
+    public record RuntimeMetricsResponse(
+            List<RuntimeMetricCount> requestsByApiKey,
+            List<RuntimeErrorCount> responsesByErrorCode,
+            List<RuntimeLatencySummary> latencyByApiKey,
+            List<RuntimeMetricCount> throttledByApiKey) {
     }
 }

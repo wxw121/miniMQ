@@ -21,6 +21,9 @@ public final class ApiKeys {
     public static final short MAINTENANCE_RUN = 14;
     public static final short MAINTENANCE_METRICS = 15;
     public static final short BROKER_HEARTBEAT = 16;
+    public static final short DISCOVER_CONTROLLER = 17;
+    public static final short LEADER_READY = 18;
+    public static final short RUNTIME_METRICS = 19;
 
     private ApiKeys() {
     }

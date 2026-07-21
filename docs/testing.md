@@ -172,8 +172,8 @@ The numeric baseline above and the closeout report are the source of truth for t
 | `mq-client` | `NetworkClientRetryTest` | Unit / 单元测试 | Connect retry attempt budget and fixed backoff validation. / 连接重试次数预算与固定退避参数校验。 |
 | `mq-client` | `ProducerIntegrationTest` | Integration / 集成测试 | Producer offsets increase across sends. / Producer 多次发送后 offset 递增。 |
 | `mq-client` | `ConsumerIntegrationTest` | Integration / 集成测试 | Consumer poll and commit behavior. / Consumer poll 与提交行为。 |
-| `mq-demo` | `DemoCliTest` | Component/Integration / 组件/集成测试 | Single-broker/token validation, unauthorized responses, and real TCP enabled retention/compaction output alongside create/produce/consume. / 单 Broker/令牌校验、未授权响应，以及真实 TCP 下启用 retention/compaction 的输出和创建/生产/消费链路。 |
-| `mq-demo` | `FetchBenchmarkTest` | Unit / 单元测试 | Benchmark argument parsing and latency percentile summarization. / 基准参数解析与延迟百分位汇总。 |
+| `mq-demo` | `DemoCliTest` | Component/Integration / 组件/集成测试 | Single-broker/token validation, unauthorized responses, maintenance/runtime metrics CLI output, and real TCP enabled retention/compaction output alongside create/produce/consume. / 单 Broker/令牌校验、未授权响应、维护/运行时指标 CLI 输出，以及真实 TCP 下启用 retention/compaction 的输出和创建/生产/消费链路。 |
+| `mq-demo` | `FetchBenchmarkTest` | Unit / 单元测试 | Benchmark argument parsing, network transport selector parsing, output rendering, and latency percentile summarization. / 基准参数解析、网络传输选择解析、输出渲染与延迟百分位汇总。 |
 | `mq-demo` | `MiniMqE2ETest` | E2E / 端到端测试 | Three-broker cluster with two consumers. / 三节点 Broker 集群与两个 Consumer。 |
 | `mq-demo` | `MiniMqWebAppTest` | Web integration / Web 集成测试 | Static assets, real Web flow, mock fallback, HTTP errors, runtime reuse, concurrent request isolation, stale runtime rebuild, and LRU runtime eviction. / 静态资源、真实 Web 主流程、mock fallback、HTTP 错误、runtime 复用、并发请求隔离、旧 runtime 重建和 LRU runtime 淘汰。 |
 
@@ -200,7 +200,7 @@ V2.2 零拷贝 FETCH 收口记录见 `docs/test-report-2026-07-17-v2.2-read-perf
 Benchmark command / 基准命令：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-2.5.0.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
+java -jar mq-demo/target/mq-demo-3.0.0.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576 --network-transport nio
 ```
 
 ### 7.5 V2.3 Replication Closeout / V2.3 副本机制收口
@@ -343,7 +343,56 @@ The slowest tests are integration and E2E tests that start brokers, open Netty c
 | `ConsumerIntegrationTest` | Includes subscribe, heartbeat scheduling, poll, and commit. / 包含订阅、心跳调度、poll 和提交。 |
 | `DemoCliTest` | Runs CLI create/produce/consume and maintenance admin commands against a real test broker. / 通过真实测试 Broker 运行 CLI 创建、生产、消费和维护管理命令。 |
 
-## 11. Terms / 测试名词解释
+## 11. V3.0.0 Controller HA Verification / Controller 高可用验证
+
+V3.0 adds focused unit suites for Controller election, revision-CAS metadata, monotonic watches, Leader activation state, crash-safe truncation, exact data-plane epochs, complete bootstrap discovery, and bounded retries. Real etcd tests run under the `etcd-it` profile:
+
+```powershell
+mvn -q -gs .mvn/settings.xml -pl mq-broker -am -Petcd-it -Dtest=NoSuchUnitTest -Dsurefire.failIfNoSpecifiedTests=false -Dit.test=ControllerFailoverIT,LeaderEpochFailoverIT -Djacoco.skip=true verify
+```
+
+The targeted command skips unrelated unit coverage aggregation; the final `mvn clean verify` remains responsible for the JaCoCo gate. `ControllerFailoverIT` starts real etcd and real Brokers, verifies unique election, epoch increments, bootstrap discovery, and takeover. `LeaderEpochFailoverIT` verifies that an old Controller identity cannot commit after takeover. Unclean election is intentionally absent and no-ISR partitions must remain frozen.
+
+V3.0 增加 Controller 选举、revision CAS、单调 watch、Leader 激活状态、崩溃安全截断、数据面精确 epoch、完整 bootstrap 发现与有界重试测试。定向 etcd 命令只跳过无关模块的覆盖率聚合；最终 `mvn clean verify` 仍负责 JaCoCo 门禁。真实测试会启动 etcd 与 Broker，并验证唯一选举、epoch 递增、发现、接管和旧 Controller 写 fencing。unclean election 明确不在范围内，无 ISR 分区必须保持 frozen。
+
+Evidence / 验证证据：`docs/test-report-2026-07-20-v3.0.0-control-plane-ha.md`。
+
+## 12. V3.0.1-V3.2 Productionization Verification / 生产化验证
+
+V3.0.1 stabilizes the failover-read test by waiting for the promoted Broker's local leader view and Controller metadata with `leaderReady=true` before client `FETCH`. V3.1 adds runtime metrics, in-flight throttling, Controller request circuit breaking, and `STORAGE_DEGRADED` behavior. V3.2 adds `--network-transport nio|auto|epoll` with NIO as the default and safe AUTO fallback.
+
+V3.0.1-V3.2 verification is intentionally resource-controlled: focused Surefire suites cover the new behavior, a local broker-module test run covers non-Docker regressions, and real-etcd Failsafe verification remains pending until Docker API access is available.
+
+Focused commands / 定向命令：
+
+```powershell
+mvn -q -gs .mvn/settings.xml -s .mvn/settings.xml -pl mq-broker -am '-Dtest=ReplicationIntegrationTest#clientFetchAfterFailoverWithoutWaitingForFollowerFetch' '-Dsurefire.failIfNoSpecifiedTests=false' '-Djacoco.skip=true' test
+mvn -q -gs .mvn/settings.xml -s .mvn/settings.xml -pl mq-broker -am '-Dtest=BrokerRuntimeMetricsTest,BrokerRuntimeMetricsIntegrationTest,CircuitBreakerTest,RequestThrottlerTest,BrokerAvailabilityGuardTest,ReplicaLeoReporterTest,NettyTransportFactoryTest,BrokerConfigTest,BrokerShutdownTest' '-Dsurefire.failIfNoSpecifiedTests=false' '-Djacoco.skip=true' test
+mvn -q -gs .mvn/settings.xml -s .mvn/settings.xml -pl mq-broker -am '-Djacoco.skip=true' test
+```
+
+Real-etcd command to run only when Docker API access is available / 仅在 Docker API 可用时运行：
+
+```powershell
+mvn -q -gs .mvn/settings.xml -s .mvn/settings.xml -pl mq-broker -am -Petcd-it verify
+```
+
+Evidence / 验证证据：`docs/test-report-2026-07-21-v3.0.1-v3.2-productionization.md` and `docs/known-issues-2026-07-20-v3.0.1-v3.2.md`。
+
+## 13. V3.3-V3.5 Production Hardening Verification / 生产化增强验证
+
+V3.3-V3.5 adds authenticated runtime metrics export, a deterministic resilience matrix, and a transport-aware fetch benchmark. Verification is intentionally bounded: protocol, embedded broker, demo CLI, and benchmark tests run as focused Surefire commands with `-Djacoco.skip=true`.
+
+Focused commands / 定向命令：
+
+```powershell
+mvn -q -pl mq-protocol -am '-Djacoco.skip=true' '-Dtest=ProtocolSerdesTest' '-Dsurefire.failIfNoSpecifiedTests=false' test
+mvn -q -pl mq-broker -am '-Djacoco.skip=true' '-Dtest=EmbeddedBrokerChannelTest,RequestThrottlerTest,BrokerRuntimeMetricsIntegrationTest' '-Dsurefire.failIfNoSpecifiedTests=false' test
+mvn -q -pl mq-demo -am '-Djacoco.skip=true' '-Dtest=DemoCliTest,FetchBenchmarkTest' '-Dsurefire.failIfNoSpecifiedTests=false' test
+```
+
+Evidence / 验证证据：`docs/test-report-2026-07-21-v3.3-v3.5-production-hardening.md`。
+## 14. Terms / 测试名词解释
 
 | Term / 术语 | 中文解释 | English explanation / 英文解释 |
 | --- | --- | --- |

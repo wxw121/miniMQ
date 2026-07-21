@@ -73,6 +73,10 @@ public final class MaintenanceAdminService implements AutoCloseable {
         return Result.success(partitionManager.maintenanceMetrics());
     }
 
+    public ErrorCode authorize(String suppliedToken) {
+        return authorized(suppliedToken) ? ErrorCode.NONE : ErrorCode.UNAUTHORIZED;
+    }
+
     private <T> CompletionStage<Result<T>> submit(Supplier<T> operation, Runnable releaseAdmission) {
         CompletableFuture<Result<T>> future = new CompletableFuture<>();
         try {

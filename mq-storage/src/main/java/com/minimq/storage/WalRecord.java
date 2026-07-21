@@ -34,6 +34,14 @@ public record WalRecord(
         return new WalRecord(WalRecordType.DATA_APPEND, topic, partitionId, offset, key, value);
     }
 
+    public static WalRecord truncateBegin(String topic, int partitionId, long offset) {
+        return new WalRecord(WalRecordType.TRUNCATE_BEGIN, topic, partitionId, offset, null, null);
+    }
+
+    public static WalRecord truncateCommit(String topic, int partitionId, long offset) {
+        return new WalRecord(WalRecordType.TRUNCATE_COMMIT, topic, partitionId, offset, null, null);
+    }
+
     @Override
     public byte[] key() {
         return copy(key);

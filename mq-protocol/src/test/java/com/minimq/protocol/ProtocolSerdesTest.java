@@ -97,23 +97,27 @@ class ProtocolSerdesTest {
         List<RequestCase> cases = List.of(
                 new RequestCase(ApiKeys.CREATE_TOPIC, new CreateTopicRequest("orders", 3)),
                 new RequestCase(ApiKeys.METADATA, new MetadataRequest("orders")),
-                new RequestCase(ApiKeys.PRODUCE, new ProduceRequest("orders", 1,
+                new RequestCase(ApiKeys.PRODUCE, new ProduceRequest("orders", 1, 4L,
                         List.of(new ProduceRecord(bytes("k"), bytes("v"))))),
-                new RequestCase(ApiKeys.FETCH, new FetchRequest("orders", 2, 10L, 4096)),
+                new RequestCase(ApiKeys.FETCH, new FetchRequest("orders", 2, 4L, 10L, 4096)),
                 new RequestCase(ApiKeys.JOIN_GROUP, new JoinGroupRequest("g1", "m1", "orders")),
                 new RequestCase(ApiKeys.SYNC_GROUP, new SyncGroupRequest("g1", 2, "m1", bytes("assignment"))),
                 new RequestCase(ApiKeys.HEARTBEAT, new HeartbeatRequest("g1", "m1")),
                 new RequestCase(ApiKeys.OFFSET_COMMIT, new OffsetCommitRequest("g1", "orders", 1, 42L)),
                 new RequestCase(ApiKeys.OFFSET_FETCH, new OffsetFetchRequest("g1", "orders", 1)),
-                new RequestCase(ApiKeys.REPLICA_FETCH, new ReplicaFetchRequest("orders", 0, 1, 5L, 4096)),
+                new RequestCase(ApiKeys.REPLICA_FETCH, new ReplicaFetchRequest("orders", 0, 1, 4L, 5L, 4096)),
                 new RequestCase(ApiKeys.MARK_BROKER_OFFLINE, new MarkBrokerOfflineRequest(2)),
                 new RequestCase(ApiKeys.UPDATE_REPLICA_LEO,
-                        new UpdateReplicaLeoRequest("orders", 0, 1, 9L)),
+                        new UpdateReplicaLeoRequest("orders", 0, 1, 7L, 3L, 9L)),
                 new RequestCase(ApiKeys.MAINTENANCE_REPORT, new MaintenanceReportRequest("report-token")),
                 new RequestCase(ApiKeys.MAINTENANCE_RUN, new MaintenanceRunRequest("run-token")),
                 new RequestCase(ApiKeys.MAINTENANCE_METRICS, new MaintenanceMetricsRequest("metrics-token")),
-                new RequestCase(ApiKeys.BROKER_HEARTBEAT, new BrokerHeartbeatRequest(1, 7L)),
-                new RequestCase(ApiKeys.REGISTER_BROKER, new RegisterBrokerRequest(1, "localhost", 9093)));
+                new RequestCase(ApiKeys.RUNTIME_METRICS, new RuntimeMetricsRequest("runtime-token")),
+                new RequestCase(ApiKeys.BROKER_HEARTBEAT, new BrokerHeartbeatRequest(1, 7L, 3L)),
+                new RequestCase(ApiKeys.REGISTER_BROKER, new RegisterBrokerRequest(1, "localhost", 9093, 3L)),
+                new RequestCase(ApiKeys.DISCOVER_CONTROLLER, new DiscoverControllerRequest()),
+                new RequestCase(ApiKeys.LEADER_READY,
+                        new LeaderReadyRequest("orders", 0, 1, 7L, 3L, 4L, 12L)));
 
         for (RequestCase requestCase : cases) {
             var frame = ProtocolSerdes.encodeRequest(
@@ -140,8 +144,11 @@ class ProtocolSerdesTest {
                         List.of(new TopicMetadata("orders",
                                 List.of(
                                         new PartitionMetadata(
-                                                0, 1, List.of(1, 2), List.of(), Map.of(1, 12L, 2, 9L), true),
-                                        new PartitionMetadata(1, 1)))))),
+                                                0, 1, List.of(1, 2), List.of(), Map.of(1, 12L, 2, 9L),
+                                                true, 4L, 9L, false),
+                                        new PartitionMetadata(1, 1)))),
+                        new ControllerMetadata(1, "localhost", 9093, 3L),
+                        8L)),
                 new ResponseCase(ApiKeys.PRODUCE, new ProduceResponse("orders", 0, 11L)),
                 new ResponseCase(ApiKeys.FETCH, new FetchResponse("orders", 0, 12L,
                         List.of(new FetchedRecord(11L, bytes("k"), bytes("v"))))),
@@ -152,7 +159,7 @@ class ProtocolSerdesTest {
                 new ResponseCase(ApiKeys.OFFSET_FETCH, new OffsetFetchResponse(42L)),
                 new ResponseCase(ApiKeys.REGISTER_BROKER, new RegisterBrokerResponse(7L, 5_000L)),
                 new ResponseCase(ApiKeys.BROKER_HEARTBEAT, new BrokerHeartbeatResponse()),
-                new ResponseCase(ApiKeys.REPLICA_FETCH, new ReplicaFetchResponse("orders", 0, 12L,
+                new ResponseCase(ApiKeys.REPLICA_FETCH, new ReplicaFetchResponse("orders", 0, 12L, 4L, 13L,
                         List.of(new FetchedRecord(11L, bytes("k"), bytes("v"))))),
                 new ResponseCase(ApiKeys.MARK_BROKER_OFFLINE, new MarkBrokerOfflineResponse()),
                 new ResponseCase(ApiKeys.UPDATE_REPLICA_LEO, new UpdateReplicaLeoResponse()),
@@ -186,7 +193,15 @@ class ProtocolSerdesTest {
                         2L,
                         3L,
                         4L,
-                        "SUCCESS")));
+                        "SUCCESS")),
+                new ResponseCase(ApiKeys.RUNTIME_METRICS, new RuntimeMetricsResponse(
+                        List.of(new RuntimeMetricCount(ApiKeys.PRODUCE, 2L)),
+                        List.of(new RuntimeErrorCount(ErrorCode.NONE.code, 2L)),
+                        List.of(new RuntimeLatencySummary(ApiKeys.PRODUCE, 2L, 20L, 10.0)),
+                        List.of(new RuntimeMetricCount(ApiKeys.FETCH, 1L)))),
+                new ResponseCase(ApiKeys.DISCOVER_CONTROLLER, new DiscoverControllerResponse(
+                        new ControllerMetadata(1, "localhost", 9093, 3L), 8L)),
+                new ResponseCase(ApiKeys.LEADER_READY, new LeaderReadyResponse()));
 
         for (ResponseCase responseCase : cases) {
             var frame = ProtocolSerdes.encodeResponse(new MqResponseHeader(9, ErrorCode.NONE), responseCase.body());
@@ -251,6 +266,41 @@ class ProtocolSerdesTest {
                 frame.release();
             }
         }
+    }
+
+    @Test
+    void controlPlaneAndLeaderEpochErrorsRoundTripWithoutBodies() {
+        for (ErrorCode errorCode : List.of(
+                ErrorCode.CONTROLLER_FENCED,
+                ErrorCode.NOT_CONTROLLER,
+                ErrorCode.STALE_LEADER_EPOCH,
+                ErrorCode.LEADER_NOT_READY,
+                ErrorCode.CONTROLLER_NOT_READY)) {
+            var frame = ProtocolSerdes.encodeResponse(new MqResponseHeader(22, errorCode), null);
+            var payload = unwrapRetainedPayload(frame);
+            try {
+                var decoded = MqDecoder.decodeResponse(payload, ApiKeys.DISCOVER_CONTROLLER);
+                assertEquals(errorCode, decoded.header().errorCode());
+                assertNull(decoded.body());
+            } finally {
+                payload.release();
+                frame.release();
+            }
+        }
+    }
+
+    @Test
+    void rejectsNegativeEpochsOnEncode() {
+        assertThrows(IllegalArgumentException.class, () -> ProtocolSerdes.encodeRequest(
+                new MqRequestHeader(ApiKeys.PRODUCE, 1, "client"),
+                new ProduceRequest("orders", 0, -1L, List.of())));
+        assertThrows(IllegalArgumentException.class, () -> ProtocolSerdes.encodeRequest(
+                new MqRequestHeader(ApiKeys.BROKER_HEARTBEAT, 1, "client"),
+                new BrokerHeartbeatRequest(1, 2L, -1L)));
+        assertThrows(IllegalArgumentException.class, () -> ProtocolSerdes.encodeResponse(
+                new MqResponseHeader(1, ErrorCode.NONE),
+                new DiscoverControllerResponse(
+                        new ControllerMetadata(1, "localhost", 9092, -1L), 0L)));
     }
 
     @Test

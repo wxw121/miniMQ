@@ -8,7 +8,9 @@ import java.io.IOException;
 public enum WalRecordType {
     DATA_APPEND((byte) 1),
     CHECKPOINT_MARKER((byte) 2),
-    CONTROL_MARKER((byte) 3);
+    CONTROL_MARKER((byte) 3),
+    TRUNCATE_BEGIN((byte) 4),
+    TRUNCATE_COMMIT((byte) 5);
 
     private final byte id;
 

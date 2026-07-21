@@ -156,9 +156,6 @@ public class WriteAheadLog implements AutoCloseable {
         }
 
         WalRecordType type = WalRecordType.fromId(typeId, recordStart);
-        if (type != WalRecordType.DATA_APPEND && recovering) {
-            throw new IOException("Corrupt WAL at byte " + recordStart + ": unsupported replay type " + type);
-        }
         return decodeBody(type, body.array(), recordStart);
     }
 

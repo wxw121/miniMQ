@@ -35,4 +35,24 @@ class BrokerAvailabilityGuardTest {
         guard.activate();
         assertTrue(guard.allowsDataPlane());
     }
+
+    @Test
+    void storageDegradedModeRejectsProduceAndMaintenanceRunButAllowsReads() {
+        BrokerAvailabilityGuard guard = new BrokerAvailabilityGuard();
+        guard.activate();
+
+        guard.degradeStorage();
+
+        assertEquals(BrokerAvailabilityGuard.State.STORAGE_DEGRADED, guard.state());
+        assertFalse(guard.allowsProduce());
+        assertTrue(guard.allowsFetch());
+        assertTrue(guard.allowsMaintenanceRead());
+        assertFalse(guard.allowsMaintenanceRun());
+        assertEquals(ErrorCode.MAINTENANCE_BUSY, guard.rejectionError());
+
+        guard.activate();
+
+        assertTrue(guard.allowsProduce());
+        assertTrue(guard.allowsFetch());
+    }
 }

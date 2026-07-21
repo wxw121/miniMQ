@@ -23,7 +23,7 @@ import java.util.concurrent.TimeUnit;
  * 同步消费者客户端，负责加入消费组、拉取分配分区、维护本地 offset 并提交消费进度。
  */
 public class Consumer implements AutoCloseable {
-    private final NetworkClient controllerClient;
+    private final ControllerAwareNetworkClient controllerClient;
     private final String groupId;
     private final Map<Integer, NetworkClient> brokerClients = new HashMap<>();
     private final Map<String, MetadataResponse> metadataCache = new HashMap<>();
@@ -36,11 +36,10 @@ public class Consumer implements AutoCloseable {
     private ScheduledExecutorService heartbeatExecutor;
 
     public Consumer(String bootstrapServers, String groupId, String clientId) {
-        String[] parts = parseBootstrapServer(bootstrapServers);
         this.groupId = groupId;
-        this.controllerClient = new NetworkClient(clientId);
+        this.controllerClient = new ControllerAwareNetworkClient(bootstrapServers, clientId);
         try {
-            this.controllerClient.connect(parts[0], Integer.parseInt(parts[1]));
+            this.controllerClient.connect();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(e);
@@ -115,8 +114,12 @@ public class Consumer implements AutoCloseable {
 
     private MetadataResponse refreshMetadata(String topicName) throws InterruptedException {
         MetadataResponse metadata = fetchMetadata(topicName);
-        metadataCache.put(topicName, metadata);
-        return metadata;
+        MetadataResponse current = metadataCache.get(topicName);
+        if (current == null || metadata.metadataVersion() >= current.metadataVersion()) {
+            metadataCache.put(topicName, metadata);
+            return metadata;
+        }
+        return current;
     }
 
     private void invalidateMetadata(String topicName) {
@@ -140,7 +143,7 @@ public class Consumer implements AutoCloseable {
             long offset = offsets.getOrDefault(partition, 0L);
             MqDecoder.DecodedResponse fetchResponse = sendFetch(
                     route.leader(),
-                    new FetchRequest(topic, partition, offset, 1024 * 1024));
+                    new FetchRequest(topic, partition, route.leaderEpoch(), offset, 1024 * 1024));
             MqResponseHeader header = fetchResponse.header();
             if (isStaleLeaderError(header.errorCode()) && attempt == 0) {
                 invalidateMetadata(topic);
@@ -163,7 +166,10 @@ public class Consumer implements AutoCloseable {
     }
 
     private static boolean isStaleLeaderError(ErrorCode errorCode) {
-        return errorCode == ErrorCode.NOT_LEADER || errorCode == ErrorCode.BROKER_FENCED;
+        return errorCode == ErrorCode.NOT_LEADER
+                || errorCode == ErrorCode.BROKER_FENCED
+                || errorCode == ErrorCode.STALE_LEADER_EPOCH
+                || errorCode == ErrorCode.LEADER_NOT_READY;
     }
 
     private PartitionRoute routeWithRefresh(
@@ -196,7 +202,7 @@ public class Consumer implements AutoCloseable {
                 .findFirst()
                 .orElseThrow(() -> new MiniMqMetadataException(
                         "Leader broker " + partitionMetadata.leaderBrokerId() + " not found"));
-        return new PartitionRoute(leader);
+        return new PartitionRoute(partitionMetadata.leaderEpoch(), leader);
     }
 
     public void commitSync(String topic, int partition, long offset) throws InterruptedException {
@@ -256,14 +262,6 @@ public class Consumer implements AutoCloseable {
         }
     }
 
-    private static String[] parseBootstrapServer(String bootstrapServers) {
-        String[] parts = bootstrapServers.split(",", 2)[0].split(":", 2);
-        if (parts.length != 2 || parts[0].isBlank() || parts[1].isBlank()) {
-            throw new IllegalArgumentException("bootstrapServers must contain host:port");
-        }
-        return parts;
-    }
-
-    private record PartitionRoute(BrokerMetadata leader) {
+    private record PartitionRoute(long leaderEpoch, BrokerMetadata leader) {
     }
 }

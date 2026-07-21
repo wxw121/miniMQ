@@ -1,6 +1,7 @@
 package com.minimq.demo;
 
 import com.minimq.client.Consumer;
+import com.minimq.client.ControllerAwareNetworkClient;
 import com.minimq.client.NetworkClient;
 import com.minimq.client.Producer;
 import com.minimq.client.model.ConsumerRecord;
@@ -14,6 +15,8 @@ import com.minimq.protocol.message.ProtocolMessages.MaintenanceMetricsResponse;
 import com.minimq.protocol.message.ProtocolMessages.MaintenanceReportRequest;
 import com.minimq.protocol.message.ProtocolMessages.MaintenanceReportResponse;
 import com.minimq.protocol.message.ProtocolMessages.MaintenanceRunRequest;
+import com.minimq.protocol.message.ProtocolMessages.RuntimeMetricsRequest;
+import com.minimq.protocol.message.ProtocolMessages.RuntimeMetricsResponse;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -37,6 +40,7 @@ public final class DemoCli {
             case "maintenance-report" -> maintenanceReport(args);
             case "maintenance-run" -> maintenanceRun(args);
             case "maintenance-metrics" -> maintenanceMetrics(args);
+            case "runtime-metrics" -> runtimeMetrics(args);
             case "benchmark-fetch" -> FetchBenchmark.run(args, System.out);
             default -> printUsage();
         }
@@ -46,9 +50,9 @@ public final class DemoCli {
         String brokers = arg(args, "--brokers", "localhost:9092");
         String name = arg(args, "--name", "orders");
         int partitions = Integer.parseInt(arg(args, "--partitions", "3"));
-        String[] hp = parseFirstHostPort(brokers);
-        try (NetworkClient client = new NetworkClient("demo-admin")) {
-            client.connect(hp[0], Integer.parseInt(hp[1]));
+        try (ControllerAwareNetworkClient client =
+                     new ControllerAwareNetworkClient(brokers, "demo-admin")) {
+            client.connect();
             MqDecoder.DecodedResponse response = client.send(
                     ApiKeys.CREATE_TOPIC, new CreateTopicRequest(name, partitions));
             client.ensureSuccess(response);
@@ -134,6 +138,20 @@ public final class DemoCli {
                 metrics.skippedDueToReaders(),
                 metrics.cleanupFailures(),
                 metrics.lastRunStatus());
+    }
+
+    private static void runtimeMetrics(String[] args) throws Exception {
+        String adminToken = arg(args, "--admin-token", null);
+        RuntimeMetricsResponse metrics = (RuntimeMetricsResponse) sendAdmin(
+                args,
+                ApiKeys.RUNTIME_METRICS,
+                new RuntimeMetricsRequest(adminToken),
+                "runtime metrics").body();
+        System.out.println("Runtime metrics");
+        System.out.println("requestsByApiKey=" + metrics.requestsByApiKey());
+        System.out.println("responsesByErrorCode=" + metrics.responsesByErrorCode());
+        System.out.println("latencyByApiKey=" + metrics.latencyByApiKey());
+        System.out.println("throttledByApiKey=" + metrics.throttledByApiKey());
     }
 
     private static MqDecoder.DecodedResponse sendAdmin(
@@ -228,14 +246,15 @@ public final class DemoCli {
     private static void printUsage() {
         System.out.println("""
                 Usage:
-                  java -jar mq-demo.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --controller --admin-token <secret>
+                  java -jar mq-demo.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --etcd-endpoints http://localhost:2379 --initialize-empty-cluster --admin-token <secret>
                   java -jar mq-demo.jar create-topic --brokers localhost:9092 --name orders --partitions 3
                   java -jar mq-demo.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
                   java -jar mq-demo.jar consume --brokers localhost:9092 --topic orders --group demo-group
                   java -jar mq-demo.jar maintenance-report --broker localhost:9092 --admin-token <secret>
                   java -jar mq-demo.jar maintenance-run --broker localhost:9092 --admin-token <secret>
                   java -jar mq-demo.jar maintenance-metrics --broker localhost:9092 --admin-token <secret>
-                  java -jar mq-demo.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576
+                  java -jar mq-demo.jar runtime-metrics --broker localhost:9092 --admin-token <secret>
+                  java -jar mq-demo.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576 --network-transport nio
                 """);
     }
 }

@@ -4,6 +4,7 @@ import com.minimq.broker.BrokerConfig;
 import com.minimq.broker.BrokerAvailabilityGuard;
 import com.minimq.broker.MetadataSync;
 import com.minimq.broker.PartitionManager;
+import com.minimq.broker.ControllerRole;
 import com.minimq.broker.controller.ClusterController;
 import com.minimq.broker.metadata.ClusterMetadata.BrokerEntry;
 import com.minimq.broker.metadata.ClusterMetadata.PartitionEntry;
@@ -28,7 +29,9 @@ public final class ReplicaFetcher implements AutoCloseable {
     private final ClusterController clusterController;
     private final PartitionManager partitionManager;
     private final BrokerAvailabilityGuard availabilityGuard;
+    private final ControllerRole controllerRole;
     private final ReplicaConnectionPool connectionPool = new ReplicaConnectionPool();
+    private final LeaderEpochStateStore epochStateStore;
     private final Thread thread;
     private volatile boolean running = true;
 
@@ -36,7 +39,7 @@ public final class ReplicaFetcher implements AutoCloseable {
             BrokerConfig config,
             ClusterController clusterController,
             PartitionManager partitionManager) {
-        this(config, clusterController, partitionManager, activeGuard());
+        this(config, clusterController, partitionManager, activeGuard(), ControllerRole.legacy(config));
     }
 
     public ReplicaFetcher(
@@ -44,10 +47,22 @@ public final class ReplicaFetcher implements AutoCloseable {
             ClusterController clusterController,
             PartitionManager partitionManager,
             BrokerAvailabilityGuard availabilityGuard) {
+        this(config, clusterController, partitionManager, availabilityGuard,
+                ControllerRole.legacy(config));
+    }
+
+    public ReplicaFetcher(
+            BrokerConfig config,
+            ClusterController clusterController,
+            PartitionManager partitionManager,
+            BrokerAvailabilityGuard availabilityGuard,
+            ControllerRole controllerRole) {
         this.config = config;
         this.clusterController = clusterController;
         this.partitionManager = partitionManager;
         this.availabilityGuard = availabilityGuard;
+        this.controllerRole = controllerRole;
+        this.epochStateStore = new LeaderEpochStateStore(config.dataDir().resolve("leader-epochs"));
         this.thread = new Thread(this::runLoop, "replica-fetcher-" + config.brokerId());
         this.thread.setDaemon(true);
     }
@@ -75,8 +90,8 @@ public final class ReplicaFetcher implements AutoCloseable {
                     Thread.sleep(SLEEP_MS);
                     continue;
                 }
-                if (!config.controller() && metadataRefreshCounter++ % 20 == 0) {
-                    MetadataSync.refresh(config, clusterController);
+                if (!controllerRole.isActive() && metadataRefreshCounter++ % 20 == 0) {
+                    MetadataSync.refresh(config, clusterController, controllerRole);
                 }
                 fetchAssignedReplicas();
                 Thread.sleep(SLEEP_MS);
@@ -109,12 +124,24 @@ public final class ReplicaFetcher implements AutoCloseable {
             return;
         }
         long fetchOffset = partitionManager.highWatermark(topicName, partition.partitionId);
+        long appliedEpoch = epochStateStore.load(topicName, partition.partitionId)
+                .map(LeaderEpochState::leaderEpoch)
+                .orElse(-1L);
+        if (partition.leaderEpoch > appliedEpoch) {
+            if (fetchOffset > partition.leaderEpochStartOffset) {
+                partitionManager.truncateTo(topicName, partition.partitionId, partition.leaderEpochStartOffset);
+                fetchOffset = partition.leaderEpochStartOffset;
+            }
+            epochStateStore.save(topicName, partition.partitionId,
+                    new LeaderEpochState(partition.leaderEpoch, partition.leaderEpochStartOffset, true));
+        }
         try {
             LeaderReplicaClient client = connectionPool.client(leader.host, leader.port);
             ReplicaFetchResponse response = client.replicaFetch(
                     topicName,
                     partition.partitionId,
                     config.brokerId(),
+                    partition.leaderEpoch,
                     fetchOffset,
                     FETCH_MAX_BYTES);
             for (FetchedRecord record : response.records()) {
@@ -129,11 +156,15 @@ public final class ReplicaFetcher implements AutoCloseable {
             connectionPool.invalidate(leader.host, leader.port);
             if ((failure.errorCode() == ErrorCode.NOT_LEADER
                     || failure.errorCode() == ErrorCode.BROKER_FENCED)
-                    && !config.controller()) {
-                MetadataSync.refresh(config, clusterController);
+                    && !controllerRole.isActive()) {
+                MetadataSync.refresh(config, clusterController, controllerRole);
             }
         } catch (RuntimeException failure) {
             connectionPool.invalidate(leader.host, leader.port);
+            if (!controllerRole.isActive()) {
+                MetadataSync.refresh(config, clusterController, controllerRole);
+                return;
+            }
             throw failure;
         }
     }
