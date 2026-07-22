@@ -1,14 +1,14 @@
 # MiniMQ Project Context Index / 项目上下文索引
 
 > Last updated / 最后更新：2026-07-21
-> Audience / 适用对象（英文）：new agents, new contributors, reviewers, interview readers
-> 适用对象：新 agent 会话、新贡献者、代码审查者、面试/作品集读者
+> Audience / 适用对象（英文）：new contributors, reviewers, and operators
+> 适用对象：新贡献者、代码审查者与运维/排障读者
 
 ## 1. What This Project Is / 项目是什么
 
-MiniMQ is a compact Java 17 message queue inspired by Kafka-style concepts. It is not a production Kafka replacement. It is a learning-oriented and interview-oriented implementation that demonstrates binary protocol design, append-only storage, broker/controller coordination, producer and consumer SDKs, consumer group assignment, offset commit/fetch, and a small CLI demo.
+MiniMQ is a compact Java 17 message queue inspired by Kafka-style concepts. It is not a production Kafka replacement. It is a learning-oriented implementation that demonstrates binary protocol design, append-only storage, broker/controller coordination, producer and consumer SDKs, consumer group assignment, offset commit/fetch, and a small CLI demo.
 
-MiniMQ 是一个 Java 17 实现的轻量消息队列项目，概念上参考 Kafka：二进制协议、追加写日志、Broker/Controller、Producer/Consumer SDK、Consumer Group、Offset 提交与拉取。它不是生产级 Kafka 替代品，而是一个便于理解分布式消息系统核心机制的作品级/学习级项目。
+MiniMQ 是一个 Java 17 实现的轻量消息队列项目，概念上参考 Kafka：二进制协议、追加写日志、Broker/Controller、Producer/Consumer SDK、Consumer Group、Offset 提交与拉取。它不是生产级 Kafka 替代品，而是一个便于理解分布式消息系统核心机制的学习级项目。
 
 The current implementation uses etcd-backed Controller election and a single-leader partition model. Any Broker can become Controller; clients discover it through the bootstrap list and route produce/fetch with an exact Leader epoch.
 
@@ -32,11 +32,10 @@ The current implementation uses etcd-backed Controller election and a single-lea
 | 7e | [V3.0.0 Control Plane HA Test Report](test-report-2026-07-20-v3.0.0-control-plane-ha.md) | See etcd election, Controller fencing, Leader epoch, truncation, and client discovery evidence. |
 | 7f | [V3.0.1-V3.2 Productionization Test Report](test-report-2026-07-21-v3.0.1-v3.2-productionization.md) | See failover stabilization, runtime resilience, optional native transport, and bounded verification evidence. |
 | 7g | [V3.0.1-V3.2 Known Issues](known-issues-2026-07-20-v3.0.1-v3.2.md) | Track the real-etcd environment gate and bounded-attempt policy. |
-| 7h | [V4 Experimental LSM Design](superpowers/specs/2026-07-20-v4-experimental-lsm-state-store-design.md) | Understand the optional LSM state-store design before any V4 code work. |
-| 7i | [V4 Experimental LSM Implementation Plan](superpowers/plans/2026-07-20-v4-experimental-lsm-state-store-implementation.md) | Follow the documentation-only V4 implementation sequence when the project is ready. |
+| 7h | [V4 Operator Readiness Design](designs/v4-operator-readiness-design.md) | Understand the next consolidated operations-focused major version. |
+| 7i | [V4 Operator Readiness Implementation Plan](plans/v4-operator-readiness-implementation.md) | Follow the V4 implementation sequence before starting feature work. |
 | 7j | [V3.3-V3.5 Production Hardening Test Report](test-report-2026-07-21-v3.3-v3.5-production-hardening.md) | See runtime metrics export, resilience matrix, benchmark transport selector, and bounded verification evidence. |
-| 7k | [V5 Multi-Node Operations Design](superpowers/specs/2026-07-21-v5-multi-node-operations-design.md) | Understand the next operations-focused version direction after V3.0.0. |
-| 7l | [V5 Multi-Node Operations Implementation Plan](superpowers/plans/2026-07-21-v5-multi-node-operations-implementation.md) | Follow the future implementation sequence after current gates are complete. |
+| 7k | [Future Storage Notes](roadmap.md#future-version-notes) | Review deferred experimental storage work after V4 is complete. |
 | 8 | [Troubleshooting Guide](troubleshooting.md) / [故障排查指南](troubleshooting.md) | Resolve common Maven, port, Windows, test report, and GitHub/SSH issues. / 排查 Maven、端口、Windows、测试报告、GitHub/SSH 常见问题。 |
 
 ## 3. Current Snapshot / 当前快照
@@ -153,7 +152,7 @@ java -jar mq-demo/target/mq-demo-3.0.0.jar benchmark-fetch --records 256 --value
 | Append-only Log | 只追加、不原地修改的日志文件。 | A log file that only appends new records. |
 | Frame | 网络协议中的完整消息包，包含 magic、version、length、payload。 | A complete network packet with magic, version, length, and payload. |
 
-## 7. New Agent Checklist / 新 Agent 接手清单
+## 7. Contributor Checklist / 贡献者接手清单
 
 1. Read this index first. / 先阅读本索引。
 2. Read `architecture.md` for module boundaries and runtime topology. / 阅读 `architecture.md`，理解模块边界和运行时拓扑。

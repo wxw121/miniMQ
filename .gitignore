@@ -20,10 +20,7 @@ replay_pid*
 .DS_Store
 Thumbs.db
 
-# Local agent workspace
-.agents/
 .run/
-.codex-skill-install-*/
 .worktrees/
 .npm-cache/
 .playwright-cli/

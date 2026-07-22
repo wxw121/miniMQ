@@ -37,12 +37,12 @@ The broker now parses `--network-transport nio|auto|epoll` and constructs event-
 
 ### V4 Documentation Only
 
-V4 code was not implemented. The design and implementation documents were created here:
+V4 code was not implemented in this verification pass. The active V4 operator-readiness design and implementation plan now live here:
 
-- `docs/superpowers/specs/2026-07-20-v4-experimental-lsm-state-store-design.md`
-- `docs/superpowers/plans/2026-07-20-v4-experimental-lsm-state-store-implementation.md`
+- `docs/designs/v4-operator-readiness-design.md`
+- `docs/plans/v4-operator-readiness-implementation.md`
 
-Both documents keep the experimental LSM state store outside the default broker message-log write path.
+These documents consolidate the next operational features into one larger release before later backlog items continue.
 
 ## Environment-Gated Item
 
