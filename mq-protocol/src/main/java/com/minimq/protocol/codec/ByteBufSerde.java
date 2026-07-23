@@ -26,6 +26,7 @@ public final class ByteBufSerde {
     }
 
     public static String readString(ByteBuf buf) {
+        requireReadable(buf, Short.BYTES, "string length");
         int len = buf.readUnsignedShort();
         requireReadable(buf, len, "string");
         byte[] bytes = new byte[len];
@@ -48,9 +49,13 @@ public final class ByteBufSerde {
     }
 
     public static byte[] readBytes(ByteBuf buf) {
+        requireReadable(buf, Integer.BYTES, "byte array length");
         int len = buf.readInt();
-        if (len < 0) {
+        if (len == -1) {
             return null;
+        }
+        if (len < -1) {
+            throw new IllegalArgumentException("Invalid byte array length: " + len);
         }
         if (len == 0) {
             return new byte[0];

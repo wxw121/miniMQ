@@ -55,6 +55,10 @@ public class MqDecoder extends ByteToMessageDecoder {
         Object body = header.errorCode() == com.minimq.common.error.ErrorCode.NONE
                 ? ProtocolSerdes.decodeResponseBody(apiKey, payload)
                 : null;
+        if (payload.isReadable()) {
+            throw new IllegalArgumentException(
+                    "Trailing bytes after response body: " + payload.readableBytes());
+        }
         return new DecodedResponse(header, body);
     }
 
