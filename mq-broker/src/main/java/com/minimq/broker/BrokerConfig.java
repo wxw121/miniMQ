@@ -452,6 +452,9 @@ public record BrokerConfig(
             if (normalized.isEmpty()) {
                 throw new IllegalArgumentException("--operator-credential scopes must not contain blanks");
             }
+            if (!rawScope.equals(normalized)) {
+                throw new IllegalArgumentException("--operator-credential scopes must not contain surrounding whitespace");
+            }
             OperatorScope scope = OperatorScope.parse(normalized);
             if (!scopes.add(scope)) {
                 throw new IllegalArgumentException("Duplicate operator scope: " + normalized);
