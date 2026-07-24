@@ -3,6 +3,7 @@ package com.minimq.broker;
 import com.minimq.broker.controller.ClusterController;
 import com.minimq.broker.controller.BrokerLeaseMonitor;
 import com.minimq.broker.controller.GroupCoordinator;
+import com.minimq.broker.auth.OperatorAuthorizer;
 import com.minimq.broker.handler.MqRequestHandler;
 import com.minimq.broker.replication.ReplicaFetcher;
 import com.minimq.broker.replication.ReplicaStateManager;
@@ -49,6 +50,7 @@ public class BrokerServer {
     private ReplicaFetcher replicaFetcher;
     private ReplicaLeoReporter replicaLeoReporter;
     private MaintenanceAdminService maintenanceAdminService;
+    private OperatorAuthorizer operatorAuthorizer;
     private final BrokerAvailabilityGuard availabilityGuard = new BrokerAvailabilityGuard();
     private BrokerLeaseService brokerLeaseService;
     private BrokerLeaseMonitor brokerLeaseMonitor;
@@ -120,7 +122,8 @@ public class BrokerServer {
                                 config.maintenanceWindowStartHour(),
                                 config.maintenanceWindowEndHour())));
         partitionManager = new PartitionManager(logManager);
-        maintenanceAdminService = new MaintenanceAdminService(config.adminToken(), partitionManager);
+        operatorAuthorizer = OperatorAuthorizer.fromConfig(config);
+        maintenanceAdminService = new MaintenanceAdminService(operatorAuthorizer, partitionManager);
         replicaFetcher = new ReplicaFetcher(
                 config, clusterController, partitionManager, availabilityGuard, controllerRole);
         replicaLeoReporter = new ReplicaLeoReporter(
@@ -157,6 +160,7 @@ public class BrokerServer {
                                         availabilityGuard,
                                         maintenanceAdminService,
                                         controllerRole,
+                                        operatorAuthorizer,
                                         runtimeMetrics,
                                         requestThrottler))
                                 .addLast(new MqEncoder());

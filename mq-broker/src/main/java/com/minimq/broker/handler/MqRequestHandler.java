@@ -19,6 +19,8 @@ import com.minimq.broker.replication.LeaderActivationService;
 import com.minimq.broker.replication.LeaderEpochStateStore;
 import com.minimq.broker.ControllerClient;
 import com.minimq.broker.ControllerRole;
+import com.minimq.broker.auth.OperatorAuthorizer;
+import com.minimq.broker.auth.OperatorScope;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.common.model.Record;
 import com.minimq.protocol.ApiKeys;
@@ -37,9 +39,12 @@ import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
 
@@ -61,6 +66,7 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     private final ControllerRole controllerRole;
     private final BrokerRuntimeMetrics runtimeMetrics;
     private final RequestThrottler requestThrottler;
+    private final OperatorAuthorizer operatorAuthorizer;
 
     public MqRequestHandler(
             BrokerConfig config,
@@ -162,6 +168,26 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             ControllerRole controllerRole,
             BrokerRuntimeMetrics runtimeMetrics,
             RequestThrottler requestThrottler) {
+        this(config, clusterController, groupCoordinator, partitionManager, replicaStateManager,
+                fetchTransferMetrics, replicaLeoReporter, availabilityGuard,
+                maintenanceAdminService, controllerRole,
+                OperatorAuthorizer.fromConfig(config), runtimeMetrics, requestThrottler);
+    }
+
+    public MqRequestHandler(
+            BrokerConfig config,
+            ClusterController clusterController,
+            GroupCoordinator groupCoordinator,
+            PartitionManager partitionManager,
+            ReplicaStateManager replicaStateManager,
+            FetchTransferMetrics fetchTransferMetrics,
+            ReplicaLeoReporter replicaLeoReporter,
+            BrokerAvailabilityGuard availabilityGuard,
+            MaintenanceAdminService maintenanceAdminService,
+            ControllerRole controllerRole,
+            OperatorAuthorizer operatorAuthorizer,
+            BrokerRuntimeMetrics runtimeMetrics,
+            RequestThrottler requestThrottler) {
         this.config = config;
         this.replicaLeoReporter = replicaLeoReporter;
         this.clusterController = clusterController;
@@ -174,6 +200,7 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         this.controllerRole = controllerRole;
         this.runtimeMetrics = runtimeMetrics;
         this.requestThrottler = requestThrottler;
+        this.operatorAuthorizer = operatorAuthorizer;
         this.leaderActivationService = new LeaderActivationService(
                 partitionManager,
                 new LeaderEpochStateStore(config.dataDir().resolve("leader-epochs")));
@@ -197,6 +224,13 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 runtimeMetrics.recordThrottled(header.apiKey());
                 writeResponse(ctx, header.correlationId(), errorCode, null);
                 recordCompletion(header, errorCode, startedNanos);
+                return;
+            }
+            errorCode = authorizeBeforeDecode(header.apiKey(), payload);
+            if (errorCode != ErrorCode.NONE) {
+                writeResponse(ctx, header.correlationId(), errorCode, null);
+                recordCompletion(header, errorCode, startedNanos);
+                throttle.release();
                 return;
             }
             Object requestBody = ProtocolSerdes.decodeRequestBody(header.apiKey(), payload);
@@ -363,6 +397,18 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                         responseBody = toRuntimeMetricsResponse(runtimeMetrics.snapshot());
                     }
                 }
+                case ApiKeys.AUTH_STATUS -> {
+                    AuthStatusRequest request = (AuthStatusRequest) requestBody;
+                    OperatorAuthorizer.Decision decision =
+                            operatorAuthorizer.authenticateForAuthStatus(request.credential());
+                    errorCode = authorizationErrorCode(decision);
+                    if (errorCode == ErrorCode.NONE) {
+                        List<String> scopes = scopeNames(decision.scopes());
+                        responseBody = new AuthStatusResponse(
+                                config.brokerId(),
+                                new V4BoundedList<>(scopes.size(), false, scopes));
+                    }
+                }
                 default -> errorCode = ErrorCode.INVALID_REQUEST;
             }
         } catch (NotControllerException ex) {
@@ -380,6 +426,86 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         if (throttle != null) {
             throttle.release();
         }
+    }
+
+    private ErrorCode authorizeBeforeDecode(short apiKey, ByteBuf payload) {
+        if (apiKey == ApiKeys.CREATE_TOPIC && !config.allowLegacyUnauthenticatedCreate()) {
+            return ErrorCode.UNAUTHORIZED;
+        }
+        if (isLegacyInternalApi(apiKey) && !config.allowLegacyInternalApi()) {
+            return ErrorCode.UNAUTHORIZED;
+        }
+        if (apiKey == ApiKeys.AUTH_STATUS) {
+            return authorizationErrorCode(
+                    operatorAuthorizer.authenticateForAuthStatus(
+                            ProtocolSerdes.peekRequestCredential(apiKey, payload)));
+        }
+        OperatorScope requiredScope = requiredOperatorScope(apiKey);
+        if (requiredScope != null) {
+            return authorizationErrorCode(
+                    operatorAuthorizer.authorize(
+                            ProtocolSerdes.peekRequestCredential(apiKey, payload),
+                            requiredScope));
+        }
+        if (isClusterCredentialApi(apiKey)) {
+            return authorizeClusterCredential(ProtocolSerdes.peekRequestCredential(apiKey, payload));
+        }
+        return ErrorCode.NONE;
+    }
+
+    private ErrorCode authorizeClusterCredential(String suppliedCredential) {
+        if (suppliedCredential == null) {
+            return ErrorCode.UNAUTHORIZED;
+        }
+        byte[] expected = config.clusterToken().getBytes(StandardCharsets.UTF_8);
+        byte[] supplied = suppliedCredential.getBytes(StandardCharsets.UTF_8);
+        return MessageDigest.isEqual(expected, supplied) ? ErrorCode.NONE : ErrorCode.UNAUTHORIZED;
+    }
+
+    private static boolean isLegacyInternalApi(short apiKey) {
+        return apiKey == ApiKeys.REPLICA_FETCH
+                || apiKey == ApiKeys.MARK_BROKER_OFFLINE
+                || apiKey == ApiKeys.UPDATE_REPLICA_LEO;
+    }
+
+    private static boolean isClusterCredentialApi(short apiKey) {
+        return apiKey == ApiKeys.REPLICA_FETCH_V2
+                || apiKey == ApiKeys.TOPIC_DELETE_ACK
+                || apiKey == ApiKeys.UPDATE_REPLICA_STATE_V2;
+    }
+
+    private static OperatorScope requiredOperatorScope(short apiKey) {
+        return switch (apiKey) {
+            case ApiKeys.OPS_STATUS,
+                    ApiKeys.GROUP_STATUS,
+                    ApiKeys.FAILOVER_AUDIT,
+                    ApiKeys.RUNTIME_METRICS_V2 -> OperatorScope.STATUS;
+            case ApiKeys.LIST_TOPICS,
+                    ApiKeys.DESCRIBE_TOPIC,
+                    ApiKeys.DELETE_TOPIC,
+                    ApiKeys.INCREASE_PARTITIONS,
+                    ApiKeys.CONFIGURE_TOPIC_RELIABILITY,
+                    ApiKeys.CREATE_TOPIC_ADMIN -> OperatorScope.TOPIC_ADMIN;
+            case ApiKeys.MARK_BROKER_OFFLINE_ADMIN -> OperatorScope.BROKER_OFFLINE;
+            default -> null;
+        };
+    }
+
+    private static ErrorCode authorizationErrorCode(OperatorAuthorizer.Decision decision) {
+        if (!decision.authenticated()) {
+            return ErrorCode.UNAUTHORIZED;
+        }
+        return decision.authorized() ? ErrorCode.NONE : ErrorCode.FORBIDDEN;
+    }
+
+    private static List<String> scopeNames(Set<OperatorScope> scopes) {
+        List<String> names = new ArrayList<>();
+        for (OperatorScope scope : OperatorScope.values()) {
+            if (scopes.contains(scope)) {
+                names.add(scope.name());
+            }
+        }
+        return names;
     }
 
     private void writeAsyncMaintenanceReport(

@@ -1,12 +1,17 @@
 package com.minimq.broker;
 
+import com.minimq.broker.auth.OperatorScope;
 import com.minimq.broker.netty.NetworkTransportMode;
 import com.minimq.storage.FlushPolicy;
 import com.minimq.storage.SegmentedLogConfig;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Broker 启动配置，集中保存 brokerId、监听地址、数据目录和 Controller 模式。
@@ -46,7 +51,30 @@ public record BrokerConfig(
         long leaderActivationTimeoutMs,
         boolean initializeEmptyCluster,
         boolean initializeClusterFromLocal,
+        List<OperatorCredential> operatorCredentials,
+        String clusterToken,
+        boolean allowLegacyUnauthenticatedCreate,
+        boolean allowLegacyInternalApi,
         String adminToken) {
+
+    public record OperatorCredential(String token, Set<OperatorScope> scopes) {
+        public OperatorCredential {
+            if (token == null || token.isBlank()) {
+                throw new IllegalArgumentException("operator credential token must not be blank");
+            }
+            if (scopes == null || scopes.isEmpty()) {
+                throw new IllegalArgumentException("operator credential scopes must not be empty");
+            }
+            scopes = Set.copyOf(scopes);
+        }
+    }
+
+    public BrokerConfig {
+        operatorCredentials = operatorCredentials == null ? List.of() : List.copyOf(operatorCredentials);
+        if (clusterToken == null || clusterToken.isBlank()) {
+            clusterToken = adminToken;
+        }
+    }
 
     public boolean usesLegacyControllerMode() {
         return controller || !"localhost".equals(controllerHost) || controllerPort != 9092;
@@ -64,7 +92,9 @@ public record BrokerConfig(
                 brokerHeartbeatIntervalMs, brokerSelfFenceTimeoutMs,
                 controllerBrokerLeaseTimeoutMs, clusterId, etcdEndpoints,
                 controllerSessionTtlSeconds, controllerFailoverGraceMs, leaderActivationTimeoutMs,
-                initializeEmptyCluster, initializeClusterFromLocal, adminToken);
+                initializeEmptyCluster, initializeClusterFromLocal,
+                operatorCredentials, clusterToken,
+                allowLegacyUnauthenticatedCreate, allowLegacyInternalApi, adminToken);
     }
 
     public static final int DEFAULT_COMPACTION_MAX_SEGMENTS = 4;
@@ -81,6 +111,8 @@ public record BrokerConfig(
     public static final int DEFAULT_CONTROLLER_SESSION_TTL_SECONDS = 15;
     public static final long DEFAULT_CONTROLLER_FAILOVER_GRACE_MS = 10_000L;
     public static final long DEFAULT_LEADER_ACTIVATION_TIMEOUT_MS = 5_000L;
+    public static final int MAX_OPERATOR_CREDENTIALS = 1_000;
+    public static final int MAX_OPERATOR_CREDENTIAL_BYTES = 256;
 
     public BrokerConfig(
             int brokerId,
@@ -117,6 +149,20 @@ public record BrokerConfig(
                 DEFAULT_FETCH_TRANSFER_TIMEOUT_MS,
                 DEFAULT_NETWORK_TRANSPORT_MODE,
                 DEFAULT_MAX_IN_FLIGHT_REQUESTS,
+                DEFAULT_BROKER_HEARTBEAT_INTERVAL_MS,
+                DEFAULT_BROKER_SELF_FENCE_TIMEOUT_MS,
+                DEFAULT_CONTROLLER_BROKER_LEASE_TIMEOUT_MS,
+                DEFAULT_CLUSTER_ID,
+                DEFAULT_ETCD_ENDPOINTS,
+                DEFAULT_CONTROLLER_SESSION_TTL_SECONDS,
+                DEFAULT_CONTROLLER_FAILOVER_GRACE_MS,
+                DEFAULT_LEADER_ACTIVATION_TIMEOUT_MS,
+                false,
+                false,
+                List.of(),
+                adminToken,
+                false,
+                false,
                 adminToken);
     }
 
@@ -181,6 +227,10 @@ public record BrokerConfig(
                 DEFAULT_LEADER_ACTIVATION_TIMEOUT_MS,
                 false,
                 false,
+                List.of(),
+                adminToken,
+                false,
+                false,
                 adminToken);
     }
 
@@ -221,6 +271,10 @@ public record BrokerConfig(
         long leaderActivationTimeoutMs = DEFAULT_LEADER_ACTIVATION_TIMEOUT_MS;
         boolean initializeEmptyCluster = false;
         boolean initializeClusterFromLocal = false;
+        List<OperatorCredential> operatorCredentials = new ArrayList<>();
+        String clusterToken = null;
+        boolean allowLegacyUnauthenticatedCreate = false;
+        boolean allowLegacyInternalApi = false;
         String adminToken = null;
 
         for (int i = 0; i < args.length; i++) {
@@ -307,7 +361,14 @@ public record BrokerConfig(
                         parsePositiveLong(
                                 value(args, ++i, "--controller-broker-lease-timeout-ms"),
                                 "--controller-broker-lease-timeout-ms");
-                case "--admin-token" -> adminToken = value(args, ++i, "--admin-token");
+                case "--operator-credential" -> operatorCredentials.add(
+                        parseOperatorCredential(value(args, ++i, "--operator-credential")));
+                case "--cluster-token" -> clusterToken = parseToken(
+                        value(args, ++i, "--cluster-token"), "--cluster-token");
+                case "--allow-legacy-unauthenticated-create" -> allowLegacyUnauthenticatedCreate = true;
+                case "--allow-legacy-internal-api" -> allowLegacyInternalApi = true;
+                case "--admin-token" -> adminToken = parseToken(
+                        value(args, ++i, "--admin-token"), "--admin-token");
                 default -> throw new IllegalArgumentException("Unknown argument: " + args[i]);
             }
         }
@@ -327,6 +388,10 @@ public record BrokerConfig(
                 controllerSessionTtlSeconds);
         if (adminToken == null || adminToken.isBlank()) {
             throw new IllegalArgumentException("--admin-token is required and must not be blank");
+        }
+        validateOperatorCredentials(operatorCredentials, adminToken);
+        if (clusterToken == null) {
+            clusterToken = adminToken;
         }
         return new BrokerConfig(
                 brokerId,
@@ -363,7 +428,71 @@ public record BrokerConfig(
                 leaderActivationTimeoutMs,
                 initializeEmptyCluster,
                 initializeClusterFromLocal,
+                List.copyOf(operatorCredentials),
+                clusterToken,
+                allowLegacyUnauthenticatedCreate,
+                allowLegacyInternalApi,
                 adminToken);
+    }
+
+    private static OperatorCredential parseOperatorCredential(String value) {
+        int firstEquals = value.indexOf('=');
+        if (firstEquals <= 0 || firstEquals != value.lastIndexOf('=')) {
+            throw new IllegalArgumentException(
+                    "--operator-credential must use token=scope,scope");
+        }
+        String token = parseToken(value.substring(0, firstEquals), "--operator-credential token");
+        String scopesText = value.substring(firstEquals + 1);
+        if (scopesText.isBlank()) {
+            throw new IllegalArgumentException("--operator-credential scopes must not be blank");
+        }
+        Set<OperatorScope> scopes = EnumSet.noneOf(OperatorScope.class);
+        for (String rawScope : scopesText.split(",", -1)) {
+            String normalized = rawScope.trim();
+            if (normalized.isEmpty()) {
+                throw new IllegalArgumentException("--operator-credential scopes must not contain blanks");
+            }
+            OperatorScope scope = OperatorScope.parse(normalized);
+            if (!scopes.add(scope)) {
+                throw new IllegalArgumentException("Duplicate operator scope: " + normalized);
+            }
+        }
+        return new OperatorCredential(token, scopes);
+    }
+
+    private static String parseToken(String value, String name) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(name + " must not be blank");
+        }
+        if (value.indexOf('=') >= 0 || value.indexOf('\n') >= 0
+                || value.indexOf('\r') >= 0 || value.indexOf('\0') >= 0) {
+            throw new IllegalArgumentException(name + " contains an invalid delimiter");
+        }
+        int bytes = value.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        if (bytes < 1 || bytes > MAX_OPERATOR_CREDENTIAL_BYTES) {
+            throw new IllegalArgumentException(
+                    name + " must encode to 1.." + MAX_OPERATOR_CREDENTIAL_BYTES + " bytes");
+        }
+        return value;
+    }
+
+    private static void validateOperatorCredentials(
+            List<OperatorCredential> operatorCredentials,
+            String adminToken) {
+        if (operatorCredentials.size() > MAX_OPERATOR_CREDENTIALS) {
+            throw new IllegalArgumentException(
+                    "operator credentials must not exceed " + MAX_OPERATOR_CREDENTIALS);
+        }
+        Set<String> tokens = new HashSet<>();
+        for (OperatorCredential credential : operatorCredentials) {
+            if (!tokens.add(credential.token())) {
+                throw new IllegalArgumentException("Duplicate operator credential");
+            }
+            if (credential.token().equals(adminToken)) {
+                throw new IllegalArgumentException(
+                        "operator credential must not duplicate --admin-token");
+            }
+        }
     }
 
     private static List<String> parseEtcdEndpoints(String value) {
