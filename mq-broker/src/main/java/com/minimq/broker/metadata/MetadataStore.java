@@ -65,6 +65,7 @@ public class MetadataStore implements ClusterMetadataRepository {
 
     public synchronized void save(ClusterMetadata metadata) {
         try {
+            normalizeMetadata(metadata);
             validate(metadata);
             Path parent = metadataFile.getParent();
             if (parent != null) {
@@ -124,10 +125,14 @@ public class MetadataStore implements ClusterMetadataRepository {
         if (metadata == null) {
             throw new IOException("Metadata document is null");
         }
-        if (metadata.brokers == null || metadata.topics == null || metadata.consumerGroups == null) {
+        if (metadata.brokers == null || metadata.topics == null
+                || metadata.topicTombstones == null
+                || metadata.retryTopicBySource == null
+                || metadata.deadLetterTopicBySource == null
+                || metadata.consumerGroups == null) {
             throw new IOException("Metadata document has missing top-level maps");
         }
-        if (metadata.metadataFormatVersion != 3) {
+        if (metadata.metadataFormatVersion != ClusterMetadata.CURRENT_FORMAT_VERSION) {
             throw new IOException("Unsupported metadataFormatVersion " + metadata.metadataFormatVersion);
         }
         if (metadata.controllerEpoch < 0 || metadata.metadataVersion < 0) {
@@ -196,6 +201,12 @@ public class MetadataStore implements ClusterMetadataRepository {
                 if (partition.replicaLogEndOffsets == null) {
                     throw new IOException("Metadata topic " + topicName + " has null replica LEO map");
                 }
+                if (partition.replicaProgress == null) {
+                    throw new IOException("Metadata topic " + topicName + " has null replica progress map");
+                }
+                if (partition.lastCompleteWatermark == null) {
+                    throw new IOException("Metadata topic " + topicName + " has null watermark snapshot");
+                }
                 if (partition.leaderEpoch < 0 || partition.leaderEpochStartOffset < 0) {
                     throw new IOException("Metadata topic " + topicName + " has invalid Leader epoch state");
                 }
@@ -212,8 +223,64 @@ public class MetadataStore implements ClusterMetadataRepository {
                                 + " has invalid replica LEO for broker " + brokerId);
                     }
                 }
+                for (var progressEntry : partition.replicaProgress.entrySet()) {
+                    Integer brokerId = progressEntry.getKey();
+                    ClusterMetadata.ReplicaProgressEntry progress = progressEntry.getValue();
+                    if (brokerId == null || progress == null
+                            || progress.brokerId != brokerId
+                            || partition.replicaBrokerIds == null
+                            || !partition.replicaBrokerIds.contains(brokerId)) {
+                        throw new IOException("Metadata topic " + topicName
+                                + " has invalid replica progress for broker " + brokerId);
+                    }
+                    validateReplicaProgress(topicName, brokerId, progress);
+                }
+                validateWatermarkSnapshot(topicName, partition.lastCompleteWatermark);
             }
         }
+        for (var entry : metadata.topicTombstones.entrySet()) {
+            String topicName = entry.getKey();
+            ClusterMetadata.TopicTombstone tombstone = entry.getValue();
+            if (topicName == null || topicName.isBlank()) {
+                throw new IOException("Metadata tombstone key is blank");
+            }
+            if (tombstone == null) {
+                throw new IOException("Metadata tombstone " + topicName + " is null");
+            }
+            if (!topicName.equals(tombstone.topicName)) {
+                throw new IOException("Metadata tombstone key " + topicName
+                        + " does not match topicName " + tombstone.topicName);
+            }
+            if (!"DELETING".equals(tombstone.state) && !"DELETED".equals(tombstone.state)) {
+                throw new IOException("Metadata tombstone " + topicName + " has invalid state");
+            }
+            if (tombstone.tombstoneVersion <= 0 || tombstone.deletedAtEpochMs < 0) {
+                throw new IOException("Metadata tombstone " + topicName + " has invalid version or timestamp");
+            }
+            if (tombstone.requiredBrokerIds == null || tombstone.acknowledgedBrokerIds == null) {
+                throw new IOException("Metadata tombstone " + topicName + " has null broker sets");
+            }
+            for (Integer brokerId : tombstone.requiredBrokerIds) {
+                if (brokerId == null || brokerId < 0) {
+                    throw new IOException("Metadata tombstone " + topicName + " has invalid required broker");
+                }
+            }
+            for (Integer brokerId : tombstone.acknowledgedBrokerIds) {
+                if (brokerId == null || brokerId < 0) {
+                    throw new IOException("Metadata tombstone " + topicName + " has invalid acknowledged broker");
+                }
+            }
+            if (metadata.topics.containsKey(topicName)) {
+                throw new IOException("Metadata topic " + topicName + " is active and tombstoned");
+            }
+            if ("DELETED".equals(tombstone.state)
+                    && !tombstone.acknowledgedBrokerIds.containsAll(tombstone.requiredBrokerIds)) {
+                throw new IOException("Metadata deleted tombstone " + topicName
+                        + " is missing required cleanup acknowledgements");
+            }
+        }
+        validateReliabilityLinks(metadata, metadata.retryTopicBySource, "retry");
+        validateReliabilityLinks(metadata, metadata.deadLetterTopicBySource, "dead-letter");
         for (var entry : metadata.consumerGroups.entrySet()) {
             String groupId = entry.getKey();
             ClusterMetadata.ConsumerGroupEntry group = entry.getValue();
@@ -291,28 +358,243 @@ public class MetadataStore implements ClusterMetadataRepository {
     private void migrateOrValidateFormat(ObjectNode root) throws IOException {
         JsonNode format = root.get("metadataFormatVersion");
         if (format == null) {
-            root.put("metadataFormatVersion", 3);
+            root.put("metadataFormatVersion", ClusterMetadata.CURRENT_FORMAT_VERSION);
             root.put("controllerEpoch", 0L);
             root.put("metadataVersion", 0L);
-            JsonNode topics = root.get("topics");
-            if (topics != null && topics.isObject()) {
-                topics.elements().forEachRemaining(topic -> {
-                    JsonNode partitions = topic.get("partitions");
-                    if (partitions != null && partitions.isArray()) {
-                        partitions.elements().forEachRemaining(partition -> {
-                            if (partition instanceof ObjectNode object) {
-                                object.put("leaderEpoch", 0L);
-                                object.put("leaderEpochStartOffset", 0L);
-                                object.put("leaderReady", !object.path("frozen").asBoolean(false));
-                            }
-                        });
-                    }
-                });
-            }
+            migratePartitionDefaults(root);
             return;
         }
-        if (!format.canConvertToInt() || format.intValue() != 3) {
+        if (!format.canConvertToInt()) {
             throw new IOException("Unsupported metadataFormatVersion " + format);
+        }
+        int version = format.intValue();
+        if (version == 3) {
+            root.put("metadataFormatVersion", ClusterMetadata.CURRENT_FORMAT_VERSION);
+            migratePartitionDefaults(root);
+            return;
+        }
+        if (version == ClusterMetadata.CURRENT_FORMAT_VERSION) {
+            migratePartitionDefaults(root);
+            return;
+        }
+        throw new IOException("Unsupported metadataFormatVersion " + format);
+    }
+
+    private void migratePartitionDefaults(ObjectNode root) {
+        putIfMissing(root, "controllerEpoch", 0L);
+        putIfMissing(root, "metadataVersion", 0L);
+        if (!root.has("topicTombstones")) {
+            root.putObject("topicTombstones");
+        }
+        if (!root.has("retryTopicBySource")) {
+            root.putObject("retryTopicBySource");
+        }
+        if (!root.has("deadLetterTopicBySource")) {
+            root.putObject("deadLetterTopicBySource");
+        }
+        JsonNode topics = root.get("topics");
+        if (topics == null || !topics.isObject()) {
+            return;
+        }
+        topics.elements().forEachRemaining(topic -> {
+            JsonNode partitions = topic.get("partitions");
+            if (partitions == null || !partitions.isArray()) {
+                return;
+            }
+            partitions.elements().forEachRemaining(partition -> {
+                if (partition instanceof ObjectNode object) {
+                    putIfMissing(object, "leaderEpoch", 0L);
+                    putIfMissing(object, "leaderEpochStartOffset", 0L);
+                    if (!object.has("leaderReady")) {
+                        object.put("leaderReady", !object.path("frozen").asBoolean(false));
+                    }
+                    if (!object.has("replicaLogEndOffsets")) {
+                        object.putObject("replicaLogEndOffsets");
+                    }
+                    JsonNode progressNode = object.get("replicaProgress");
+                    ObjectNode progress = null;
+                    if (progressNode == null) {
+                        progress = object.putObject("replicaProgress");
+                    } else if (progressNode.isObject()) {
+                        progress = (ObjectNode) progressNode;
+                    }
+                    JsonNode replicaLeos = object.get("replicaLogEndOffsets");
+                    if (progress != null && replicaLeos != null && replicaLeos.isObject()) {
+                        ObjectNode progressMap = progress;
+                        replicaLeos.fields().forEachRemaining(entry -> {
+                            String brokerId = entry.getKey();
+                            JsonNode brokerProgressNode = progressMap.get(brokerId);
+                            ObjectNode progressObject = brokerProgressNode != null && brokerProgressNode.isObject()
+                                    ? (ObjectNode) brokerProgressNode
+                                    : progressMap.putObject(brokerId);
+                            if (!progressObject.has("brokerId")) {
+                                try {
+                                    progressObject.put("brokerId", Integer.parseInt(brokerId));
+                                } catch (NumberFormatException ignored) {
+                                    progressObject.put("brokerId", -1);
+                                }
+                            }
+                            if (!progressObject.has("physicalLogEndOffset")) {
+                                progressObject.put("physicalLogEndOffset", entry.getValue().asLong(0L));
+                            }
+                            putIfMissing(progressObject, "visibleLogEndOffset", -1L);
+                            putIfMissing(progressObject, "nextVisibleAtEpochMs", -1L);
+                            putIfMissing(progressObject, "brokerEpoch", 0L);
+                            putIfMissing(progressObject, "controllerEpoch", 0L);
+                            putIfMissing(progressObject, "leaderEpoch", 0L);
+                        });
+                    }
+                    JsonNode watermarkNode = object.get("lastCompleteWatermark");
+                    ObjectNode watermark = null;
+                    if (watermarkNode == null) {
+                        watermark = object.putObject("lastCompleteWatermark");
+                    } else if (watermarkNode.isObject()) {
+                        watermark = (ObjectNode) watermarkNode;
+                    }
+                    if (watermark != null) {
+                        putIfMissing(watermark, "physicalHighWatermark", -1L);
+                        putIfMissing(watermark, "visibleHighWatermark", -1L);
+                        putIfMissing(watermark, "nextVisibleAtEpochMs", -1L);
+                        putIfMissing(watermark, "controllerEpoch", -1L);
+                        putIfMissing(watermark, "leaderEpoch", -1L);
+                    }
+                }
+            });
+        });
+    }
+
+    private void normalizeMetadata(ClusterMetadata metadata) throws IOException {
+        if (metadata == null) {
+            return;
+        }
+        if (metadata.metadataFormatVersion == 3) {
+            metadata.metadataFormatVersion = ClusterMetadata.CURRENT_FORMAT_VERSION;
+        }
+        if (metadata.metadataFormatVersion != ClusterMetadata.CURRENT_FORMAT_VERSION) {
+            return;
+        }
+        if (metadata.topics == null) {
+            return;
+        }
+        for (ClusterMetadata.TopicEntry topic : metadata.topics.values()) {
+            if (topic == null || topic.partitions == null) {
+                continue;
+            }
+            for (ClusterMetadata.PartitionEntry partition : topic.partitions) {
+                if (partition == null) {
+                    continue;
+                }
+                if (partition.replicaLogEndOffsets == null) {
+                    continue;
+                }
+                if (partition.replicaProgress == null) {
+                    continue;
+                }
+                for (var leoEntry : partition.replicaLogEndOffsets.entrySet()) {
+                    Integer brokerId = leoEntry.getKey();
+                    Long physicalLeo = leoEntry.getValue();
+                    if (brokerId == null || physicalLeo == null || physicalLeo < 0) {
+                        continue;
+                    }
+                    partition.replicaProgress.computeIfAbsent(brokerId, id -> {
+                        ClusterMetadata.ReplicaProgressEntry progress =
+                                new ClusterMetadata.ReplicaProgressEntry();
+                        progress.brokerId = id;
+                        progress.physicalLogEndOffset = physicalLeo;
+                        progress.visibleLogEndOffset = -1L;
+                        progress.nextVisibleAtEpochMs = -1L;
+                        progress.brokerEpoch = 0L;
+                        progress.controllerEpoch = 0L;
+                        progress.leaderEpoch = 0L;
+                        return progress;
+                    });
+                }
+                if (partition.lastCompleteWatermark == null) {
+                    partition.lastCompleteWatermark = new ClusterMetadata.WatermarkSnapshot();
+                }
+            }
+        }
+    }
+
+    private static void putIfMissing(ObjectNode object, String fieldName, long value) {
+        if (!object.has(fieldName)) {
+            object.put(fieldName, value);
+        }
+    }
+
+    private void validateReliabilityLinks(
+            ClusterMetadata metadata, java.util.Map<String, String> links, String linkType)
+            throws IOException {
+        for (var entry : links.entrySet()) {
+            String source = entry.getKey();
+            String target = entry.getValue();
+            if (source == null || source.isBlank() || target == null || target.isBlank()) {
+                throw new IOException("Metadata " + linkType + " link has blank source or target");
+            }
+            if (!metadata.topics.containsKey(source) || !metadata.topics.containsKey(target)) {
+                throw new IOException("Metadata " + linkType + " link references inactive topic");
+            }
+        }
+    }
+
+    private void validateReplicaProgress(
+            String topicName, Integer brokerId, ClusterMetadata.ReplicaProgressEntry progress) throws IOException {
+        if (progress.physicalLogEndOffset < 0
+                || progress.visibleLogEndOffset < -1
+                || progress.nextVisibleAtEpochMs < -1
+                || progress.brokerEpoch < 0
+                || progress.controllerEpoch < 0
+                || progress.leaderEpoch < 0) {
+            throw new IOException("Metadata topic " + topicName
+                    + " has invalid replica progress for broker " + brokerId);
+        }
+        if (progress.visibleLogEndOffset > progress.physicalLogEndOffset) {
+            throw new IOException("Metadata topic " + topicName
+                    + " has replica visible LEO beyond physical LEO for broker " + brokerId);
+        }
+        if (progress.visibleLogEndOffset == -1L && progress.nextVisibleAtEpochMs != -1L) {
+            throw new IOException("Metadata topic " + topicName
+                    + " has visible-unknown replica progress with a next-visible timestamp for broker " + brokerId);
+        }
+        if (progress.visibleLogEndOffset == progress.physicalLogEndOffset
+                && progress.nextVisibleAtEpochMs != -1L) {
+            throw new IOException("Metadata topic " + topicName
+                    + " has fully visible replica progress with a next-visible timestamp for broker " + brokerId);
+        }
+        if (progress.visibleLogEndOffset >= 0
+                && progress.visibleLogEndOffset < progress.physicalLogEndOffset
+                && progress.nextVisibleAtEpochMs < 0) {
+            throw new IOException("Metadata topic " + topicName
+                    + " has partially visible replica progress without a next-visible timestamp for broker "
+                    + brokerId);
+        }
+    }
+
+    private void validateWatermarkSnapshot(
+            String topicName, ClusterMetadata.WatermarkSnapshot watermark) throws IOException {
+        if (watermark.physicalHighWatermark < -1
+                || watermark.visibleHighWatermark < -1
+                || watermark.nextVisibleAtEpochMs < -1
+                || watermark.controllerEpoch < -1
+                || watermark.leaderEpoch < -1) {
+            throw new IOException("Metadata topic " + topicName + " has invalid watermark snapshot");
+        }
+        if (watermark.physicalHighWatermark == -1L && watermark.visibleHighWatermark != -1L) {
+            throw new IOException("Metadata topic " + topicName
+                    + " has visible watermark without physical watermark");
+        }
+        if (watermark.visibleHighWatermark > watermark.physicalHighWatermark) {
+            throw new IOException("Metadata topic " + topicName
+                    + " has visible watermark beyond physical watermark");
+        }
+        if (watermark.visibleHighWatermark == -1L && watermark.nextVisibleAtEpochMs != -1L) {
+            throw new IOException("Metadata topic " + topicName
+                    + " has visible-unknown watermark with a next-visible timestamp");
+        }
+        if (watermark.visibleHighWatermark == watermark.physicalHighWatermark
+                && watermark.nextVisibleAtEpochMs != -1L) {
+            throw new IOException("Metadata topic " + topicName
+                    + " has fully visible watermark with a next-visible timestamp");
         }
     }
 

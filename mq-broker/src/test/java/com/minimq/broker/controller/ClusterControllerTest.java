@@ -138,8 +138,171 @@ class ClusterControllerTest {
                 controller.updateReplicaLogEndOffset("orders", 0, 1, -1L));
         assertEquals(ErrorCode.INVALID_REQUEST,
                 controller.updateReplicaLogEndOffset("missing", 0, 1, 1L));
-        assertEquals(ErrorCode.INVALID_REQUEST,
+        assertEquals(ErrorCode.UNKNOWN_BROKER,
                 controller.updateReplicaLogEndOffset("orders", 0, 9, 1L));
+    }
+
+    @Test
+    void replicaStateV2WaitsForAWithinToleranceIsrMemberBeforePublishingWatermark() {
+        ClusterController controller = controllerWithReplicatedTopic();
+
+        assertEquals(
+                ErrorCode.NONE,
+                controller.updateReplicaStateV2(
+                        "orders", 0, 0, 1L, 0L, 0L,
+                        5L, 5L, -1L));
+
+        ClusterMetadata.PartitionEntry incomplete =
+                controller.snapshot().topics.get("orders").partitions.get(0);
+        assertEquals(5L, incomplete.replicaProgress.get(0).physicalLogEndOffset);
+        assertEquals(5L, incomplete.replicaProgress.get(0).visibleLogEndOffset);
+        assertEquals(-1L, incomplete.lastCompleteWatermark.physicalHighWatermark);
+
+        assertEquals(
+                ErrorCode.NONE,
+                controller.updateReplicaStateV2(
+                        "orders", 0, 1, 1L, 0L, 0L,
+                        5L, 5L, -1L));
+
+        ClusterMetadata.PartitionEntry complete =
+                controller.snapshot().topics.get("orders").partitions.get(0);
+        assertEquals(5L, complete.lastCompleteWatermark.physicalHighWatermark);
+        assertEquals(5L, complete.lastCompleteWatermark.visibleHighWatermark);
+        assertEquals(-1L, complete.lastCompleteWatermark.nextVisibleAtEpochMs);
+        assertEquals(0L, complete.lastCompleteWatermark.controllerEpoch);
+        assertEquals(0L, complete.lastCompleteWatermark.leaderEpoch);
+    }
+
+    @Test
+    void replicaStateV2ReconcilesIsrFromPhysicalProgress() {
+        ClusterController controller = controllerWithReplicatedTopic();
+
+        assertEquals(
+                ErrorCode.NONE,
+                controller.updateReplicaStateV2(
+                        "orders", 0, 0, 1L, 0L, 0L,
+                        20L, 20L, -1L));
+        ClusterMetadata.PartitionEntry shrunk =
+                controller.snapshot().topics.get("orders").partitions.get(0);
+        assertEquals(List.of(0), shrunk.isrBrokerIds);
+        assertEquals(20L, shrunk.lastCompleteWatermark.physicalHighWatermark);
+
+        assertEquals(
+                ErrorCode.NONE,
+                controller.updateReplicaStateV2(
+                        "orders", 0, 1, 1L, 0L, 0L,
+                        20L, 20L, -1L));
+        ClusterMetadata.PartitionEntry expanded =
+                controller.snapshot().topics.get("orders").partitions.get(0);
+        assertEquals(List.of(0, 1), expanded.isrBrokerIds);
+        assertEquals(20L, expanded.lastCompleteWatermark.physicalHighWatermark);
+        assertEquals(20L, expanded.lastCompleteWatermark.visibleHighWatermark);
+    }
+
+    @Test
+    void replicaStateV2FencesUnknownBrokerAndStaleEpochsWithoutMutation() {
+        ClusterController controller = controllerWithReplicatedTopic();
+
+        assertEquals(
+                ErrorCode.CONTROLLER_FENCED,
+                controller.updateReplicaStateV2(
+                        "orders", 0, 0, 1L, 1L, 0L,
+                        5L, 5L, -1L));
+        assertEquals(
+                ErrorCode.UNKNOWN_BROKER,
+                controller.updateReplicaStateV2(
+                        "orders", 0, 99, 1L, 0L, 0L,
+                        5L, 5L, -1L));
+        assertEquals(
+                ErrorCode.BROKER_FENCED,
+                controller.updateReplicaStateV2(
+                        "orders", 0, 0, 0L, 0L, 0L,
+                        5L, 5L, -1L));
+        assertEquals(
+                ErrorCode.STALE_LEADER_EPOCH,
+                controller.updateReplicaStateV2(
+                        "orders", 0, 0, 1L, 0L, 1L,
+                        5L, 5L, -1L));
+
+        ClusterMetadata.PartitionEntry partition =
+                controller.snapshot().topics.get("orders").partitions.get(0);
+        assertEquals(-1L, partition.replicaProgress.get(0).visibleLogEndOffset);
+        assertEquals(-1L, partition.lastCompleteWatermark.physicalHighWatermark);
+    }
+
+    @Test
+    void replicaStateV2ValidationChecksIdentityBeforeControllerEpoch() {
+        ClusterController controller = controllerWithReplicatedTopic();
+
+        assertEquals(
+                ErrorCode.UNKNOWN_BROKER,
+                controller.updateReplicaStateV2(
+                        "orders", 0, 99, 1L, 99L, 0L,
+                        5L, 5L, -1L));
+        assertEquals(
+                ErrorCode.UNKNOWN_TOPIC,
+                controller.updateReplicaStateV2(
+                        "missing", 0, 0, 1L, 99L, 0L,
+                        5L, 5L, -1L));
+        assertEquals(
+                ErrorCode.UNKNOWN_PARTITION,
+                controller.updateReplicaStateV2(
+                        "orders", 99, 0, 1L, 99L, 0L,
+                        5L, 5L, -1L));
+        assertEquals(
+                ErrorCode.BROKER_FENCED,
+                controller.updateReplicaStateV2(
+                        "orders", 0, 0, 0L, 99L, 0L,
+                        5L, 5L, -1L));
+    }
+
+    @Test
+    void replicaStateV2ClearsWatermarkWhenCurrentIsrReportSetBecomesIncomplete() {
+        ClusterController controller = controllerWithReplicatedTopic();
+        assertEquals(
+                ErrorCode.NONE,
+                controller.updateReplicaStateV2(
+                        "orders", 0, 1, 1L, 0L, 0L,
+                        10L, 10L, -1L));
+        assertEquals(
+                ErrorCode.NONE,
+                controller.updateReplicaStateV2(
+                        "orders", 0, 0, 1L, 0L, 0L,
+                        12L, 12L, -1L));
+        assertEquals(10L, watermark(controller).physicalHighWatermark);
+
+        controller.updateMetadata(metadata -> {
+            metadata.brokers.get(1).brokerEpoch = 2L;
+            return null;
+        });
+
+        assertEquals(
+                ErrorCode.NONE,
+                controller.updateReplicaStateV2(
+                        "orders", 0, 0, 1L, 0L, 0L,
+                        13L, 13L, -1L));
+
+        assertInvalidatedWatermark(controller, 10L, 10L, -1L);
+    }
+
+    @Test
+    void leaderElectionInvalidatesCompleteWatermarkUntilNewLeaderReports() {
+        ClusterController controller = controllerWithReplicatedTopic();
+        assertEquals(
+                ErrorCode.NONE,
+                controller.updateReplicaStateV2(
+                        "orders", 0, 1, 1L, 0L, 0L,
+                        10L, 10L, -1L));
+        assertEquals(
+                ErrorCode.NONE,
+                controller.updateReplicaStateV2(
+                        "orders", 0, 0, 1L, 0L, 0L,
+                        12L, 12L, -1L));
+        assertEquals(10L, watermark(controller).physicalHighWatermark);
+
+        assertEquals(ErrorCode.NONE, controller.markBrokerOffline(0));
+
+        assertInvalidatedWatermark(controller, 10L, 10L, -1L);
     }
 
     @Test
@@ -231,6 +394,36 @@ class ClusterControllerTest {
         assertFalse(partition.leaderReady());
         assertThrows(IllegalArgumentException.class,
                 () -> controller.expireLeaderActivationTimeouts(0));
+    }
+
+    @Test
+    void failedLeaderActivationFreezesWithLastCompleteWatermark() {
+        AtomicLong now = new AtomicLong();
+        ClusterController controller = new ClusterController(
+                new MetadataStore(tempDir), 5_000L, now::get);
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
+        controller.createTopic(new CreateTopicRequest("orders", 1, 2));
+        assertEquals(ErrorCode.NONE,
+                controller.updateReplicaStateV2(
+                        "orders", 0, 1, 1L, 0L, 0L, 12L, 12L, -1L));
+        assertEquals(ErrorCode.NONE,
+                controller.updateReplicaStateV2(
+                        "orders", 0, 0, 1L, 0L, 0L, 12L, 12L, -1L));
+        assertEquals(12L, watermark(controller).physicalHighWatermark);
+        assertEquals(12L, watermark(controller).visibleHighWatermark);
+
+        assertEquals(ErrorCode.NONE, controller.markBrokerOffline(0));
+        assertEquals(0, controller.expireLeaderActivationTimeouts(2_000));
+        now.set(TimeUnit.MILLISECONDS.toNanos(2_001));
+        assertEquals(1, controller.expireLeaderActivationTimeouts(2_000));
+
+        ClusterMetadata.PartitionEntry partition =
+                controller.snapshot().topics.get("orders").partitions.get(0);
+        assertTrue(partition.frozen);
+        assertEquals(12L, partition.lastCompleteWatermark.physicalHighWatermark);
+        assertEquals(12L, partition.lastCompleteWatermark.visibleHighWatermark);
+        assertEquals(-1L, partition.lastCompleteWatermark.nextVisibleAtEpochMs);
     }
 
     @Test
@@ -508,6 +701,23 @@ class ClusterControllerTest {
         controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
         controller.createTopic(new CreateTopicRequest("orders", 1, 2));
         return controller;
+    }
+
+    private ClusterMetadata.WatermarkSnapshot watermark(ClusterController controller) {
+        return controller.snapshot().topics.get("orders").partitions.get(0).lastCompleteWatermark;
+    }
+
+    private void assertInvalidatedWatermark(
+            ClusterController controller,
+            long expectedPhysical,
+            long expectedVisible,
+            long expectedNextVisibleAt) {
+        ClusterMetadata.WatermarkSnapshot watermark = watermark(controller);
+        assertEquals(expectedPhysical, watermark.physicalHighWatermark);
+        assertEquals(expectedVisible, watermark.visibleHighWatermark);
+        assertEquals(expectedNextVisibleAt, watermark.nextVisibleAtEpochMs);
+        assertEquals(-1L, watermark.controllerEpoch);
+        assertEquals(-1L, watermark.leaderEpoch);
     }
 
     private static final class RejectingMetadataRepository implements ClusterMetadataRepository {

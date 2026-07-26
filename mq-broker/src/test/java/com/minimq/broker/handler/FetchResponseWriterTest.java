@@ -56,7 +56,7 @@ class FetchResponseWriterTest {
             FetchRequest request = new FetchRequest("orders", 0, 0, 1_024);
 
             try {
-                assertTrue(writer.write(ctx, header, request, log, log.highWatermark()));
+                assertTrue(writer.write(ctx, header, request, log, log.highWatermark(), log.highWatermark()));
                 channel.runPendingTasks();
                 Object first = channel.readOutbound();
                 Object second = channel.readOutbound();
@@ -90,6 +90,7 @@ class FetchResponseWriterTest {
                         new MqResponseHeader(1, ErrorCode.NONE),
                         new FetchRequest("orders", 0, 0, 1_024),
                         log,
+                        0L,
                         0L));
                 channel.runPendingTasks();
                 Object outbound = channel.readOutbound();
@@ -100,6 +101,41 @@ class FetchResponseWriterTest {
                             MqDecoder.decodeResponse(payload, ApiKeys.FETCH);
                     FetchResponse response = (FetchResponse) decoded.body();
                     assertEquals(0L, response.highWatermark());
+                    assertEquals(0, response.records().size());
+                } finally {
+                    ReferenceCountUtil.release(outbound);
+                }
+            } finally {
+                channel.finishAndReleaseAll();
+            }
+        }
+    }
+
+    @Test
+    void heapModeCanRestrictReadPrefixWhileReportingPhysicalHighWatermark(@TempDir Path dir) throws Exception {
+        try (SegmentedPartitionLog log = new SegmentedPartitionLog(dir, new SegmentedLogConfig(1_024, 1))) {
+            log.append("k".getBytes(), "value".getBytes());
+            FetchResponseWriter writer = new FetchResponseWriter(
+                    FetchTransferMode.HEAP, 30_000, new FetchTransferMetrics(), channel -> true);
+            ChannelHandlerContext ctx = captureContext(new EmbeddedChannel());
+            EmbeddedChannel channel = (EmbeddedChannel) ctx.channel();
+            try {
+                assertTrue(writer.write(
+                        ctx,
+                        new MqResponseHeader(1, ErrorCode.NONE),
+                        new FetchRequest("orders", 0, 0, 1_024),
+                        log,
+                        0L,
+                        1L));
+                channel.runPendingTasks();
+                Object outbound = channel.readOutbound();
+                try {
+                    assertInstanceOf(ByteBuf.class, outbound);
+                    ByteBuf payload = unwrapResponsePayload((ByteBuf) outbound);
+                    MqDecoder.DecodedResponse decoded =
+                            MqDecoder.decodeResponse(payload, ApiKeys.FETCH);
+                    FetchResponse response = (FetchResponse) decoded.body();
+                    assertEquals(1L, response.highWatermark());
                     assertEquals(0, response.records().size());
                 } finally {
                     ReferenceCountUtil.release(outbound);
@@ -124,6 +160,7 @@ class FetchResponseWriterTest {
                         new MqResponseHeader(1, ErrorCode.NONE),
                         new FetchRequest("orders", 0, 0, 1_024),
                         log,
+                        0L,
                         0L));
                 channel.runPendingTasks();
                 Object outbound = channel.readOutbound();
@@ -163,7 +200,7 @@ class FetchResponseWriterTest {
             EmbeddedChannel channel = (EmbeddedChannel) ctx.channel();
             try {
                 assertTrue(writer.write(ctx, new MqResponseHeader(1, ErrorCode.NONE),
-                        new FetchRequest("orders", 0, 0, 1_024), log, log.highWatermark()));
+                        new FetchRequest("orders", 0, 0, 1_024), log, log.highWatermark(), log.highWatermark()));
                 channel.runPendingTasks();
                 Object outbound = channel.readOutbound();
                 try {
@@ -218,7 +255,7 @@ class FetchResponseWriterTest {
         EmbeddedChannel channel = (EmbeddedChannel) ctx.channel();
         try {
             assertTrue(writer.write(ctx, new MqResponseHeader(1, ErrorCode.NONE),
-                    new FetchRequest("orders", 0, 0, 1_024), stub, stub.highWatermark()));
+                    new FetchRequest("orders", 0, 0, 1_024), stub, stub.highWatermark(), stub.highWatermark()));
             channel.runPendingTasks();
             Object outbound = channel.readOutbound();
             try {
@@ -244,7 +281,7 @@ class FetchResponseWriterTest {
             EmbeddedChannel channel = (EmbeddedChannel) ctx.channel();
             try {
                 assertTrue(writer.write(ctx, new MqResponseHeader(1, ErrorCode.NONE),
-                        new FetchRequest("orders", 0, 0, 1_024), log, log.highWatermark()));
+                        new FetchRequest("orders", 0, 0, 1_024), log, log.highWatermark(), log.highWatermark()));
                 channel.runPendingTasks();
                 Object outbound = channel.readOutbound();
                 try {
@@ -306,6 +343,7 @@ class FetchResponseWriterTest {
                         new MqResponseHeader(1, ErrorCode.NONE),
                         new FetchRequest("orders", 0, 0, 1_024),
                         log,
+                        log.highWatermark(),
                         log.highWatermark()));
                 assertTrue(prefixQueued.get());
                 assertTrue(closeCalled.get());

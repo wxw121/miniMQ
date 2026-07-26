@@ -17,6 +17,9 @@ import java.util.concurrent.locks.LockSupport;
 
 public final class BrokerTestHarness implements AutoCloseable {
     public static final String ADMIN_TOKEN = "test-admin-token";
+    private static final List<String> LEGACY_COMPATIBILITY_ARGS = List.of(
+            "--allow-legacy-unauthenticated-create",
+            "--allow-legacy-internal-api");
 
     private final BrokerServer server;
     private final BrokerConfig config;
@@ -46,6 +49,10 @@ public final class BrokerTestHarness implements AutoCloseable {
         return start(controllerConfig(0, dataDir));
     }
 
+    public static BrokerTestHarness startController(Path dataDir, String... extraArgs) throws Exception {
+        return start(controllerConfig(0, dataDir, extraArgs));
+    }
+
     public static BrokerConfig controllerConfig(int brokerId, Path dataDir) throws IOException {
         return controllerConfig(brokerId, dataDir, new String[0]);
     }
@@ -57,6 +64,7 @@ public final class BrokerTestHarness implements AutoCloseable {
                 "--port", Integer.toString(freePort()),
                 "--data-dir", dataDir.toString(),
                 "--admin-token", ADMIN_TOKEN));
+        args.addAll(LEGACY_COMPATIBILITY_ARGS);
         args.addAll(List.of(extraArgs));
         BrokerConfig parsed = BrokerConfig.parse(args.toArray(String[]::new));
         return parsed.withLegacyController(true, parsed.host(), parsed.port());
@@ -79,6 +87,7 @@ public final class BrokerTestHarness implements AutoCloseable {
                 "--port", Integer.toString(freePort()),
                 "--data-dir", dataDir.toString(),
                 "--admin-token", ADMIN_TOKEN));
+        args.addAll(LEGACY_COMPATIBILITY_ARGS);
         args.addAll(List.of(extraArgs));
         return start(BrokerConfig.parse(args.toArray(String[]::new))
                 .withLegacyController(false, controllerHost, controllerPort));

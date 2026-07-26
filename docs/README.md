@@ -1,16 +1,18 @@
 # MiniMQ Project Context Index / 项目上下文索引
 
-> Last updated / 最后更新：2026-07-21
+> Last updated / 最后更新：2026-07-26
 > Audience / 适用对象（英文）：new contributors, reviewers, and operators
 > 适用对象：新贡献者、代码审查者与运维/排障读者
 
 ## 1. What This Project Is / 项目是什么
 
-MiniMQ is a compact Java 17 message queue inspired by Kafka-style concepts. It is not a production Kafka replacement. It is a learning-oriented implementation that demonstrates binary protocol design, append-only storage, broker/controller coordination, producer and consumer SDKs, consumer group assignment, offset commit/fetch, and a small CLI demo.
+MiniMQ is a compact Java 17 message queue inspired by Kafka-style concepts. It is not a production Kafka replacement. It is a learning-oriented implementation that demonstrates binary protocol design, append-only storage, broker/controller coordination, producer and consumer SDKs, consumer group assignment, offset commit/fetch, V4 operator readiness, retry/DLQ links, delayed delivery, and a small CLI/Web demo.
 
 MiniMQ 是一个 Java 17 实现的轻量消息队列项目，概念上参考 Kafka：二进制协议、追加写日志、Broker/Controller、Producer/Consumer SDK、Consumer Group、Offset 提交与拉取。它不是生产级 Kafka 替代品，而是一个便于理解分布式消息系统核心机制的学习级项目。
 
 The current implementation uses etcd-backed Controller election and a single-leader partition model. Any Broker can become Controller; clients discover it through the bootstrap list and route produce/fetch with an exact Leader epoch.
+
+The current V4 layer is implemented in source: operator APIs expose status, group lag, topic administration, failover audit, auth status, reliability links, metadata V2, metrics V2, and replica-state V2 reporting. Delayed messages use PRODUCE_V2, WAL type 8, visible-prefix fetches, and bounded Consumer waits.
 
 当前实现采用 etcd 支持的 Controller 自动选举与单 Leader 分区模型。任意 Broker 都可接管 Controller；客户端通过 bootstrap 列表发现 Controller，并携带精确 Leader epoch 路由生产和拉取请求。
 
@@ -32,8 +34,8 @@ The current implementation uses etcd-backed Controller election and a single-lea
 | 7e | [V3.0.0 Control Plane HA Test Report](test-report-2026-07-20-v3.0.0-control-plane-ha.md) | See etcd election, Controller fencing, Leader epoch, truncation, and client discovery evidence. |
 | 7f | [V3.0.1-V3.2 Productionization Test Report](test-report-2026-07-21-v3.0.1-v3.2-productionization.md) | See failover stabilization, runtime resilience, optional native transport, and bounded verification evidence. |
 | 7g | [V3.0.1-V3.2 Known Issues](known-issues-2026-07-20-v3.0.1-v3.2.md) | Track the real-etcd environment gate and bounded-attempt policy. |
-| 7h | [V4 Operator Readiness Design](designs/v4-operator-readiness-design.md) | Understand the next consolidated operations-focused major version. |
-| 7i | [V4 Operator Readiness Implementation Plan](plans/v4-operator-readiness-implementation.md) | Follow the V4 implementation sequence before starting feature work. |
+| 7h | [V4 Operator Readiness Design](designs/v4-operator-readiness-design.md) | Understand the implemented operations-focused major version and its compatibility rules. |
+| 7i | [V4 Operator Readiness Implementation Plan](plans/v4-operator-readiness-implementation.md) | Historical implementation checklist; use source and focused tests as current truth. |
 | 7j | [V3.3-V3.5 Production Hardening Test Report](test-report-2026-07-21-v3.3-v3.5-production-hardening.md) | See runtime metrics export, resilience matrix, benchmark transport selector, and bounded verification evidence. |
 | 7k | [Future Storage Notes](roadmap.md#future-version-notes) | Review deferred experimental storage work after V4 is complete. |
 | 8 | [Troubleshooting Guide](troubleshooting.md) / [故障排查指南](troubleshooting.md) | Resolve common Maven, port, Windows, test report, and GitHub/SSH issues. / 排查 Maven、端口、Windows、测试报告、GitHub/SSH 常见问题。 |
@@ -48,12 +50,12 @@ The current implementation uses etcd-backed Controller election and a single-lea
 | Network framework / 网络框架 | Netty 4.1 |
 | Serialization / 序列化 | Custom binary protocol over Netty `ByteBuf` / 基于 Netty `ByteBuf` 的自定义二进制协议 |
 | Metadata persistence / 元数据持久化 | etcd revision CAS + monotonic watch; local JSON only for explicit 2.x import / etcd revision CAS 与单调 watch；本地 JSON 仅用于显式 2.x 导入 |
-| Storage / 存储 | WAL-backed segmented log with retention, compaction, dry-run reports, maintenance metrics, zero-copy FETCH sendfile, and ISR-aware replication / 基于 WAL 的分段日志，支持保留策略、压缩、dry-run 报告、维护指标、零拷贝 FETCH sendfile 与 ISR 感知副本 |
+| Storage / 存储 | WAL-backed segmented log with retention, compaction, dry-run reports, maintenance metrics, zero-copy FETCH sendfile, ISR-aware replication, delayed scheduling, and visible-prefix reads / 基于 WAL 的分段日志，支持保留策略、压缩、dry-run 报告、维护指标、零拷贝 FETCH sendfile、ISR 感知副本、延迟调度与可见前缀读取 |
 | Tests / 测试 | JUnit 5 + Surefire |
 | Coverage / 覆盖率 | JaCoCo |
-| Latest milestone tag | Not cut for the current working tree; latest snapshot is `3.0.0` |
-| Latest release | V3.0.0 production hardening: V3.3 runtime metrics API/CLI, V3.4 resilience matrix, and V3.5 benchmark transport selector |
-| Latest evidence | [V3.3-V3.5 production hardening test report](test-report-2026-07-21-v3.3-v3.5-production-hardening.md) |
+| Latest milestone tag | Not cut for the current working tree; project version remains 3.0.0 while the source contains the V4 operator-readiness snapshot |
+| Latest release | V4 operator readiness in the working tree: operator APIs, bounded metrics V2, topic admin, failover audit, reliability links, delayed delivery, and FETCH_V2 visibility |
+| Latest evidence | Source and focused V4 tests; older V3.3-V3.5 evidence remains in [production hardening test report](test-report-2026-07-21-v3.3-v3.5-production-hardening.md) |
 
 ## 4. Module Map / 模块地图
 
@@ -112,10 +114,21 @@ java -jar mq-demo/target/mq-demo-3.0.0.jar broker --broker-id 1 --port 9093 --da
 java -jar mq-demo/target/mq-demo-3.0.0.jar broker --broker-id 2 --port 9094 --data-dir ./data/broker-2 --etcd-endpoints http://localhost:2379 --admin-token <secret>
 ```
 
+On Windows, `scripts/start-brokers.ps1` reads the current project version from the root POM and
+uses etcd discovery plus the required admin token; it does not use the removed `--controller`
+or `--controller-addr` flags. / Windows 下可使用 `scripts/start-brokers.ps1`，脚本会从根 POM
+读取当前版本，并使用 etcd 发现和必需的 admin token，不再使用已移除的旧参数。
+
+```powershell
+.\scripts\start-brokers.ps1 -AdminToken <secret>
+```
+
+Delayed-message admission is bounded by --max-scheduled-records with default 100000. Use --max-scheduled-records 0 only when you want to disable admission of new future delayed records.
+
 Create, produce, and consume / 创建 Topic、生产消息、消费消息：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-3.0.0.jar create-topic --brokers localhost:9092,localhost:9093,localhost:9094 --name orders --partitions 3
+java -jar mq-demo/target/mq-demo-3.0.0.jar create-topic --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --name orders --partitions 3
 java -jar mq-demo/target/mq-demo-3.0.0.jar produce --brokers localhost:9092,localhost:9093,localhost:9094 --topic orders --key user-1 --message hello
 java -jar mq-demo/target/mq-demo-3.0.0.jar consume --brokers localhost:9092,localhost:9093,localhost:9094 --topic orders --group order-processors
 ```
@@ -137,7 +150,15 @@ Benchmark FETCH heap versus sendfile / 对比 HEAP 与 sendfile 的 FETCH 基准
 java -jar mq-demo/target/mq-demo-3.0.0.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576 --network-transport nio
 ```
 
-## 6. Glossary / 专业名词解释
+## 6. V4 Operator Readiness Notes
+
+- API keys 20-37 are reserved and implemented for operator status, group lag, topic administration, failover audit, authorization status, reliability links, create-topic admin, PRODUCE_V2, REPLICA_FETCH_V2, FETCH_V2, METADATA_V2, RUNTIME_METRICS_V2, and replica-state V2.
+- Retry and DLQ targets are ordinary operator-selected topics linked explicitly in metadata; MiniMQ does not infer naming conventions.
+- WAL type 8 is SCHEDULED_DATA_APPEND. It keeps the existing data append body and adds deliverAtEpochMs for future visibility.
+- Legacy FETCH and FETCH_V2 both hide future delayed records behind the contiguous visible prefix.
+- Consumer uses FETCH_V2 and bounded client-side waiting: nextVisibleAtEpochMs caps the sleep by the remaining poll timeout, and the Broker request is not held open.
+
+## 7. Glossary / 专业名词解释
 
 | Term / 术语 | 中文解释 | English explanation / 英文解释 |
 | --- | --- | --- |
@@ -152,7 +173,7 @@ java -jar mq-demo/target/mq-demo-3.0.0.jar benchmark-fetch --records 256 --value
 | Append-only Log | 只追加、不原地修改的日志文件。 | A log file that only appends new records. |
 | Frame | 网络协议中的完整消息包，包含 magic、version、length、payload。 | A complete network packet with magic, version, length, and payload. |
 
-## 7. Contributor Checklist / 贡献者接手清单
+## 8. Contributor Checklist / 贡献者接手清单
 
 1. Read this index first. / 先阅读本索引。
 2. Read `architecture.md` for module boundaries and runtime topology. / 阅读 `architecture.md`，理解模块边界和运行时拓扑。

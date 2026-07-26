@@ -8,8 +8,8 @@ import com.minimq.client.model.ConsumerRecord;
 import com.minimq.client.model.ProducerRecord;
 import com.minimq.protocol.ApiKeys;
 import com.minimq.protocol.codec.MqDecoder;
-import com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest;
-import com.minimq.protocol.message.ProtocolMessages.CreateTopicResponse;
+import com.minimq.protocol.message.ProtocolMessages.CreateTopicAdminRequest;
+import com.minimq.protocol.message.ProtocolMessages.CreateTopicAdminResponse;
 import com.minimq.protocol.message.ProtocolMessages.MaintenanceMetricsRequest;
 import com.minimq.protocol.message.ProtocolMessages.MaintenanceMetricsResponse;
 import com.minimq.protocol.message.ProtocolMessages.MaintenanceReportRequest;
@@ -48,15 +48,18 @@ public final class DemoCli {
 
     private static void createTopic(String[] args) throws InterruptedException {
         String brokers = arg(args, "--brokers", "localhost:9092");
+        String adminToken = arg(args, "--admin-token", null);
         String name = arg(args, "--name", "orders");
         int partitions = Integer.parseInt(arg(args, "--partitions", "3"));
+        int replicationFactor = Integer.parseInt(arg(args, "--replication-factor", "1"));
         try (ControllerAwareNetworkClient client =
                      new ControllerAwareNetworkClient(brokers, "demo-admin")) {
             client.connect();
             MqDecoder.DecodedResponse response = client.send(
-                    ApiKeys.CREATE_TOPIC, new CreateTopicRequest(name, partitions));
+                    ApiKeys.CREATE_TOPIC_ADMIN,
+                    new CreateTopicAdminRequest(adminToken, name, partitions, replicationFactor));
             client.ensureSuccess(response);
-            CreateTopicResponse body = (CreateTopicResponse) response.body();
+            CreateTopicAdminResponse body = (CreateTopicAdminResponse) response.body();
             System.out.println("Created topic: " + body.topicName() + " partitions=" + partitions);
         }
     }
@@ -247,7 +250,7 @@ public final class DemoCli {
         System.out.println("""
                 Usage:
                   java -jar mq-demo.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --etcd-endpoints http://localhost:2379 --initialize-empty-cluster --admin-token <secret>
-                  java -jar mq-demo.jar create-topic --brokers localhost:9092 --name orders --partitions 3
+                  java -jar mq-demo.jar create-topic --brokers localhost:9092 --admin-token <secret> --name orders --partitions 3
                   java -jar mq-demo.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
                   java -jar mq-demo.jar consume --brokers localhost:9092 --topic orders --group demo-group
                   java -jar mq-demo.jar maintenance-report --broker localhost:9092 --admin-token <secret>

@@ -67,6 +67,28 @@ public final class LeaderEpochStateStore {
         }
     }
 
+    /** Removes every persisted epoch proof belonging to one logical topic. */
+    public synchronized void deleteTopic(String topic) {
+        if (topic == null || topic.isBlank()) {
+            throw new IllegalArgumentException("topic must not be blank");
+        }
+        String prefix = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(topic.getBytes(java.nio.charset.StandardCharsets.UTF_8)) + "-";
+        if (!Files.exists(root)) {
+            return;
+        }
+        try (var children = Files.list(root)) {
+            for (Path child : children.toList()) {
+                String name = child.getFileName().toString();
+                if (name.startsWith(prefix) && name.endsWith(".json")) {
+                    Files.deleteIfExists(child);
+                }
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to delete Leader epoch state for " + topic, e);
+        }
+    }
+
     private Path path(String topic, int partitionId) {
         if (topic == null || topic.isBlank() || partitionId < 0) {
             throw new IllegalArgumentException("invalid topic partition");

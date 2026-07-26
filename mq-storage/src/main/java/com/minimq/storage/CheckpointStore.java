@@ -67,8 +67,30 @@ public class CheckpointStore {
         }
     }
 
-    public RecoveryCheckpoint checkpoint(long walPosition, java.util.Map<String, Long> highWatermarks) {
-        return new RecoveryCheckpoint(walPosition, highWatermarks, clock.millis());
+    public RecoveryCheckpoint checkpoint(
+            long walPosition,
+            java.util.Map<String, Long> highWatermarks,
+            java.util.Map<String, java.util.Map<Long, Long>> scheduledDeliveries,
+            java.util.Map<String, Long> visibleDeliveryWatermarks) {
+        return new RecoveryCheckpoint(
+                walPosition,
+                highWatermarks,
+                scheduledDeliveries,
+                visibleDeliveryWatermarks,
+                clock.millis());
+    }
+
+    public RecoveryCheckpoint checkpoint(
+            long walPosition,
+            java.util.Map<String, Long> highWatermarks,
+            java.util.Map<String, java.util.Map<Long, Long>> scheduledDeliveries) {
+        return checkpoint(walPosition, highWatermarks, scheduledDeliveries, java.util.Map.of());
+    }
+
+    public RecoveryCheckpoint checkpoint(
+            long walPosition,
+            java.util.Map<String, Long> highWatermarks) {
+        return checkpoint(walPosition, highWatermarks, java.util.Map.of());
     }
 
     private void validate(RecoveryCheckpoint checkpoint) {
@@ -81,12 +103,41 @@ public class CheckpointStore {
         if (checkpoint.partitionHighWatermarks == null) {
             throw new IllegalArgumentException("checkpoint partitionHighWatermarks is required");
         }
+        if (checkpoint.scheduledDeliveries == null) {
+            checkpoint.scheduledDeliveries = new java.util.HashMap<>();
+        }
+        if (checkpoint.visibleDeliveryWatermarks == null) {
+            checkpoint.visibleDeliveryWatermarks = new java.util.HashMap<>();
+        }
         checkpoint.partitionHighWatermarks.forEach((key, value) -> {
             if (key == null || key.isBlank()) {
                 throw new IllegalArgumentException("checkpoint partition key is blank");
             }
             if (value == null || value < 0) {
                 throw new IllegalArgumentException("checkpoint high watermark is invalid for " + key);
+            }
+        });
+        checkpoint.scheduledDeliveries.forEach((partition, deliveries) -> {
+            if (partition == null || partition.isBlank()) {
+                throw new IllegalArgumentException("checkpoint scheduled partition key is blank");
+            }
+            if (deliveries == null) {
+                throw new IllegalArgumentException("checkpoint scheduled deliveries are null for " + partition);
+            }
+            deliveries.forEach((offset, deliverAt) -> {
+                if (offset == null || offset < 0 || deliverAt == null || deliverAt <= 0) {
+                    throw new IllegalArgumentException(
+                            "checkpoint scheduled delivery is invalid for " + partition);
+                }
+            });
+        });
+        checkpoint.visibleDeliveryWatermarks.forEach((partition, visibleWatermark) -> {
+            if (partition == null || partition.isBlank()) {
+                throw new IllegalArgumentException("checkpoint visible delivery partition key is blank");
+            }
+            if (visibleWatermark == null || visibleWatermark < 0) {
+                throw new IllegalArgumentException(
+                        "checkpoint visible delivery watermark is invalid for " + partition);
             }
         });
     }

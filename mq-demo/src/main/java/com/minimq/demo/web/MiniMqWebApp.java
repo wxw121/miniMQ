@@ -9,7 +9,7 @@ import com.minimq.client.model.ConsumerRecord;
 import com.minimq.client.model.ProducerRecord;
 import com.minimq.protocol.ApiKeys;
 import com.minimq.protocol.codec.MqDecoder;
-import com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest;
+import com.minimq.protocol.message.ProtocolMessages.CreateTopicAdminRequest;
 import com.minimq.protocol.message.ProtocolMessages.MetadataRequest;
 import com.minimq.protocol.message.ProtocolMessages.MetadataResponse;
 import com.sun.net.httpserver.HttpExchange;
@@ -41,6 +41,7 @@ public final class MiniMqWebApp implements AutoCloseable {
 
     private final HttpServer server;
     private final String defaultBootstrapServers;
+    private final String adminCredential;
     private final ExecutorService cleanupExecutor = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "minimq-web-runtime-cleanup");
         thread.setDaemon(true);
@@ -48,14 +49,26 @@ public final class MiniMqWebApp implements AutoCloseable {
     });
     private final Map<RealFlowKey, RealFlowRuntime> runtimes = new LinkedHashMap<>(16, 0.75f, true);
 
-    private MiniMqWebApp(HttpServer server, String defaultBootstrapServers) {
+    private MiniMqWebApp(HttpServer server, String defaultBootstrapServers, String adminCredential) {
         this.server = server;
         this.defaultBootstrapServers = defaultBootstrapServers;
+        this.adminCredential = adminCredential;
     }
 
     public static MiniMqWebApp start(int port, String defaultBootstrapServers) throws IOException {
+        return start(
+                port,
+                defaultBootstrapServers,
+                System.getProperty("minimq.admin.token", "web-dev-admin"));
+    }
+
+    public static MiniMqWebApp start(
+            int port, String defaultBootstrapServers, String adminCredential) throws IOException {
+        if (adminCredential == null || adminCredential.isBlank()) {
+            throw new IllegalArgumentException("adminCredential must not be blank");
+        }
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
-        MiniMqWebApp app = new MiniMqWebApp(server, defaultBootstrapServers);
+        MiniMqWebApp app = new MiniMqWebApp(server, defaultBootstrapServers, adminCredential);
         server.createContext("/", app::handleIndex);
         server.createContext("/styles.css", exchange -> app.handleStatic(exchange, "web/styles.css", "text/css; charset=utf-8"));
         server.createContext("/app.js", exchange -> app.handleStatic(exchange, "web/app.js", "application/javascript; charset=utf-8"));
@@ -184,7 +197,7 @@ public final class MiniMqWebApp implements AutoCloseable {
             }
         }
 
-        RealFlowRuntime opened = RealFlowRuntime.open(request);
+        RealFlowRuntime opened = RealFlowRuntime.open(request, adminCredential);
         List<RealFlowRuntime> evicted = new ArrayList<>();
         synchronized (runtimes) {
             RealFlowRuntime existing = runtimes.get(key);
@@ -250,6 +263,7 @@ public final class MiniMqWebApp implements AutoCloseable {
         private final NetworkClient adminClient;
         private final Producer producer;
         private final Consumer consumer;
+        private final String adminCredential;
         private boolean topicReady;
         private boolean consumerReady;
         private boolean closed;
@@ -257,13 +271,15 @@ public final class MiniMqWebApp implements AutoCloseable {
         private RealFlowRuntime(
                 NetworkClient adminClient,
                 Producer producer,
-                Consumer consumer) {
+                Consumer consumer,
+                String adminCredential) {
             this.adminClient = adminClient;
             this.producer = producer;
             this.consumer = consumer;
+            this.adminCredential = adminCredential;
         }
 
-        static RealFlowRuntime open(FlowRequest request) throws Exception {
+        static RealFlowRuntime open(FlowRequest request, String adminCredential) throws Exception {
             String[] hostPort = splitBootstrap(request.bootstrapServers());
             NetworkClient adminClient = null;
             Producer producer = null;
@@ -274,7 +290,7 @@ public final class MiniMqWebApp implements AutoCloseable {
                 producer = new Producer(request.bootstrapServers(), "web-producer-" + request.topic());
                 producer.start();
                 consumer = new Consumer(request.bootstrapServers(), request.groupId(), "web-consumer-" + request.topic());
-                return new RealFlowRuntime(adminClient, producer, consumer);
+                return new RealFlowRuntime(adminClient, producer, consumer, adminCredential);
             } catch (Exception ex) {
                 closeQuietly(consumer);
                 closeQuietly(producer);
@@ -321,7 +337,8 @@ public final class MiniMqWebApp implements AutoCloseable {
                 return;
             }
             MqDecoder.DecodedResponse response = adminClient.send(
-                    ApiKeys.CREATE_TOPIC, new CreateTopicRequest(request.topic(), request.partitions()));
+                    ApiKeys.CREATE_TOPIC_ADMIN,
+                    new CreateTopicAdminRequest(adminCredential, request.topic(), request.partitions(), 1));
             adminClient.ensureSuccess(response);
             topicReady = true;
         }

@@ -13,6 +13,8 @@ import com.minimq.protocol.message.ProtocolMessages.BrokerHeartbeatRequest;
 import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
 import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerResponse;
 import com.minimq.protocol.message.ProtocolMessages.UpdateReplicaLeoRequest;
+import com.minimq.protocol.message.ProtocolMessages.UpdateReplicaStateV2Request;
+import com.minimq.protocol.message.ProtocolMessages.TopicDeleteAckRequest;
 import com.minimq.protocol.message.ProtocolMessages.DiscoverControllerRequest;
 import com.minimq.protocol.message.ProtocolMessages.DiscoverControllerResponse;
 import com.minimq.protocol.message.ProtocolMessages.LeaderReadyRequest;
@@ -103,6 +105,18 @@ public class ControllerClient implements AutoCloseable {
         ensureSuccess(awaitResponse(ApiKeys.UPDATE_REPLICA_LEO));
     }
 
+    public synchronized void updateReplicaStateV2(UpdateReplicaStateV2Request request)
+            throws InterruptedException {
+        send(ApiKeys.UPDATE_REPLICA_STATE_V2, request);
+        ensureSuccess(awaitResponse(ApiKeys.UPDATE_REPLICA_STATE_V2));
+    }
+
+    public synchronized void acknowledgeTopicDeletion(TopicDeleteAckRequest request)
+            throws InterruptedException {
+        send(ApiKeys.TOPIC_DELETE_ACK, request);
+        ensureSuccess(awaitResponse(ApiKeys.TOPIC_DELETE_ACK));
+    }
+
     private void send(short apiKey, Object body) {
         MqRequestHeader header = new MqRequestHeader(apiKey, CORR.getAndIncrement(), "broker-internal");
         channel.writeAndFlush(ProtocolSerdes.encodeRequest(header, body));
@@ -147,7 +161,7 @@ public class ControllerClient implements AutoCloseable {
     public static final class ControllerRequestException extends IllegalStateException {
         private final ErrorCode errorCode;
 
-        ControllerRequestException(ErrorCode errorCode) {
+        public ControllerRequestException(ErrorCode errorCode) {
             super("Controller request failed: " + errorCode);
             this.errorCode = errorCode;
         }

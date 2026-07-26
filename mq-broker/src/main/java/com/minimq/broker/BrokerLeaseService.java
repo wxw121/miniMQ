@@ -1,5 +1,7 @@
 package com.minimq.broker;
 
+import com.minimq.broker.audit.FailoverAuditEventType;
+import com.minimq.broker.audit.FailoverAuditLog;
 import com.minimq.broker.controller.ClusterController;
 import com.minimq.broker.metadata.ClusterMetadata.BrokerEntry;
 import com.minimq.common.error.ErrorCode;
@@ -23,6 +25,7 @@ public final class BrokerLeaseService implements AutoCloseable {
     private final ClusterController localController;
     private final BrokerAvailabilityGuard guard;
     private final ControllerRole controllerRole;
+    private final FailoverAuditLog auditLog;
     private final Supplier<ControllerClient> clientFactory;
     private final LongSupplier nanoTime;
     private final ScheduledExecutorService scheduler;
@@ -30,6 +33,7 @@ public final class BrokerLeaseService implements AutoCloseable {
     private ControllerClient client;
     private long brokerEpoch = -1L;
     private long lastConfirmedRequestStartNanos = Long.MIN_VALUE;
+    private boolean selfFenceRecorded;
 
     public BrokerLeaseService(
             BrokerConfig config,
@@ -63,6 +67,30 @@ public final class BrokerLeaseService implements AutoCloseable {
                 }));
     }
 
+    public BrokerLeaseService(
+            BrokerConfig config,
+            ClusterController localController,
+            BrokerAvailabilityGuard guard,
+            FailoverAuditLog auditLog) {
+        this(config, localController, guard, ControllerRole.legacy(config), auditLog);
+    }
+
+    public BrokerLeaseService(
+            BrokerConfig config,
+            ClusterController localController,
+            BrokerAvailabilityGuard guard,
+            ControllerRole controllerRole,
+            FailoverAuditLog auditLog) {
+        this(config, localController, guard, controllerRole, ControllerClient::new,
+                System::nanoTime,
+                Executors.newSingleThreadScheduledExecutor(runnable -> {
+                    Thread thread = new Thread(runnable, "broker-lease-" + config.brokerId());
+                    thread.setDaemon(true);
+                    return thread;
+                }),
+                auditLog);
+    }
+
     BrokerLeaseService(
             BrokerConfig config,
             ClusterController localController,
@@ -71,7 +99,7 @@ public final class BrokerLeaseService implements AutoCloseable {
             LongSupplier nanoTime,
             ScheduledExecutorService scheduler) {
         this(config, localController, guard, ControllerRole.legacy(config),
-                clientFactory, nanoTime, scheduler);
+                clientFactory, nanoTime, scheduler, null);
     }
 
     BrokerLeaseService(
@@ -82,10 +110,23 @@ public final class BrokerLeaseService implements AutoCloseable {
             Supplier<ControllerClient> clientFactory,
             LongSupplier nanoTime,
             ScheduledExecutorService scheduler) {
+        this(config, localController, guard, controllerRole, clientFactory, nanoTime, scheduler, null);
+    }
+
+    BrokerLeaseService(
+            BrokerConfig config,
+            ClusterController localController,
+            BrokerAvailabilityGuard guard,
+            ControllerRole controllerRole,
+            Supplier<ControllerClient> clientFactory,
+            LongSupplier nanoTime,
+            ScheduledExecutorService scheduler,
+            FailoverAuditLog auditLog) {
         this.config = config;
         this.localController = localController;
         this.guard = guard;
         this.controllerRole = controllerRole;
+        this.auditLog = auditLog;
         this.clientFactory = clientFactory;
         this.nanoTime = nanoTime;
         this.scheduler = scheduler;
@@ -117,7 +158,7 @@ public final class BrokerLeaseService implements AutoCloseable {
 
         long requestStart = nanoTime.getAsLong();
         if (leaseTimedOutAt(requestStart)) {
-            guard.fence();
+            fenceSelf("self-fence timeout before heartbeat");
             return;
         }
         try {
@@ -128,7 +169,7 @@ public final class BrokerLeaseService implements AutoCloseable {
             fenceIfTimedOut();
         } catch (ControllerClient.ControllerRequestException failure) {
             if (failure.errorCode() == ErrorCode.BROKER_FENCED) {
-                guard.fence();
+                fenceSelf("controller fenced broker lease");
             } else {
                 fenceIfTimedOut();
             }
@@ -194,9 +235,10 @@ public final class BrokerLeaseService implements AutoCloseable {
         }
         lastConfirmedRequestStartNanos = confirmedRequestStart;
         if (closed.get() || leaseTimedOut()) {
-            guard.fence();
+            fenceSelf("lease expired during registration");
             throw new IllegalStateException("Broker lease expired during registration and metadata sync");
         }
+        selfFenceRecorded = false;
         guard.activate();
     }
 
@@ -225,13 +267,37 @@ public final class BrokerLeaseService implements AutoCloseable {
             establishLease();
         } catch (Exception failure) {
             resetClient();
-            guard.fence();
+            fenceSelf("lease recovery failed");
         }
     }
 
     private void fenceIfTimedOut() {
         if (leaseTimedOutAt(nanoTime.getAsLong())) {
-            guard.fence();
+            fenceSelf("self-fence timeout after heartbeat");
+        }
+    }
+
+    private void fenceSelf(String detail) {
+        boolean alreadyFenced = guard.state() == BrokerAvailabilityGuard.State.FENCED;
+        guard.fence();
+        if (alreadyFenced || selfFenceRecorded) {
+            return;
+        }
+        selfFenceRecorded = true;
+        if (auditLog == null) {
+            return;
+        }
+        try {
+            auditLog.append(
+                    FailoverAuditEventType.BROKER_SELF_FENCED,
+                    config.brokerId(),
+                    null,
+                    null,
+                    "active",
+                    "fenced",
+                    detail);
+        } catch (RuntimeException ignored) {
+            // Self-fencing remains authoritative even when the audit append fails.
         }
     }
 

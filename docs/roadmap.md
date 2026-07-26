@@ -1,23 +1,26 @@
 ﻿# MiniMQ Roadmap
 
-This roadmap summarizes the completed baseline, the next consolidated major version, and deferred future work.
+This roadmap summarizes the completed baseline, the current V4 Operator Readiness implementation, and deferred future work.
 
-本路线图说明当前完成状态、下一次集中大版本规划，以及后续延后事项。
+本路线图说明当前完成状态、V4 Operator Readiness 实现快照，以及后续延后事项。
 
 ## 1. Current State
 
-MiniMQ has completed the V3.3-V3.5 production-hardening snapshot on top of the V3.0.0 Controller HA baseline.
+MiniMQ has completed the V4 Operator Readiness implementation snapshot on top of the V3.0.0 Controller HA baseline and V3.3-V3.5 production-hardening work.
 
 Current implemented capabilities include:
 
 - Java 17 Maven multi-module project with `mq-common`, `mq-storage`, `mq-protocol`, `mq-broker`, `mq-client`, and `mq-demo`.
 - Custom Netty binary protocol and protocol serdes tests.
-- WAL-backed segmented append-only log, sparse index, retention, compaction, checkpoints, recovery, and zero-copy fetch.
+- WAL-backed segmented append-only log, sparse index, retention, compaction, checkpoints, recovery, zero-copy fetch, delayed-message scheduling, and visible-prefix fetch semantics.
 - Producer and Consumer SDKs with metadata refresh and leader-aware retry behavior.
 - Consumer group assignment, offset commit/fetch, and group coordination basics.
 - Broker replication, ISR tracking, leader epoch fencing, automatic failover, broker leases, and frozen-partition handling.
 - etcd-backed Controller election and metadata persistence for the HA path.
 - Maintenance admin APIs, runtime metrics, deterministic resilience tests, and transport selection for NIO/auto/epoll.
+- V4 operator-readiness APIs for ops status, group status, topic admin, failover audit, auth status, reliability links, metadata V2, metrics V2, and replica-state V2 reporting.
+- Retry and dead-letter links are explicit topic metadata; delayed retry produce uses PRODUCE_V2 with deliverAtEpochMs.
+- Scheduled delayed records are bounded by --max-scheduled-records with default 100000; setting it to 0 disables admission of new future delayed records.
 - CLI and Web demo flows for local produce/consume validation.
 
 ## 2. Remaining Gate
@@ -31,28 +34,27 @@ Current policy:
 - If the same environment blocker remains unresolved after five bounded attempts, document it in a known-issues file and continue with independent work.
 - Do not mark the real-etcd gate complete until the focused Failsafe tests run successfully.
 
-## 3. Next Major Version: V4.0 Operator Readiness
+## 3. Current Major Version: V4.0 Operator Readiness
 
-V4.0 is the next consolidated major release. It folds the previously separate release-gate, multi-node operations, consumer-lag, topic-admin, failover-audit, metrics, local-demo, scoped-permission, retry-topic, dead-letter-topic, and optional delayed-message work into one major version.
+V4.0 is now the current consolidated operator-readiness implementation, not a documentation-only plan. It folds the previously separate release-gate, multi-node operations, consumer-lag, topic-admin, failover-audit, metrics, local-demo, scoped-permission, retry-topic, dead-letter-topic, and required delayed-message work into one major version.
 
 Authoritative planning documents:
 
 - [V4.0 Operator Readiness Design](designs/v4-operator-readiness-design.md)
 - [V4.0 Operator Readiness Implementation Plan](plans/v4-operator-readiness-implementation.md)
 
-### V4.0 Scope
+### V4.0 Implemented Scope
 
 | Area | Capability |
 | --- | --- |
-| Release gate | Recheck focused HA/failover evidence and attempt real-etcd verification when Docker is accessible. |
-| Operations status | Add `ops-status` for broker state, controller role, leader readiness, ISR, metadata version, runtime metrics, maintenance state, and frozen partitions. |
-| Consumer lag | Add `group-status` for group members, assignment, committed offsets, high watermarks, and lag. |
-| Topic admin | Add list, describe, delete, and increase-partitions flows. |
-| Failover audit | Record bounded controller takeover, lease expiry, self-fencing, leader transition, ISR, stale epoch, and leader readiness events. |
-| Metrics | Add throughput, bytes in/out, latency, throttling, and lag snapshots. |
-| Local demo | Provide a bounded three-broker demo and cleanup path. |
-| Permissions | Preserve admin-token compatibility while adding scoped operator permissions. |
-| Reliability extensions | Add retry-topic and dead-letter-topic support; include delayed messages only after the operations surfaces are complete. |
+| Release gate | Keep focused HA/failover evidence and real-etcd verification policy tied to Docker availability. |
+| Operations status | OPS_STATUS reports broker state, controller role, leader readiness, ISR, metadata version, runtime metrics, maintenance state, and frozen partitions through bounded responses. |
+| Consumer lag | GROUP_STATUS reports group members, assignment, committed offsets, high watermarks, lag, and delayed visibility timestamps. |
+| Topic admin | List, describe, delete, increase-partitions, admin create-topic, and delete acknowledgement APIs are present. |
+| Failover audit | Bounded audit events cover controller takeover, lease expiry, self-fencing, leader transition, ISR, stale epoch, and leader readiness events. |
+| Metrics | RUNTIME_METRICS_V2 adds bounded throughput, bytes in/out, latency, throttling, and lag snapshots without replacing key 19 compatibility. |
+| Permissions | Admin-token compatibility is preserved while scoped operator credentials authorize V4 operator APIs. |
+| Reliability extensions | Retry-topic and dead-letter-topic links are explicit metadata; delayed messages are implemented through PRODUCE_V2, WAL type 8, visible-prefix reads, and bounded Consumer waits. |
 
 ### V4.0 Non-Goals
 
@@ -63,7 +65,7 @@ Authoritative planning documents:
 
 ## 4. Future Version Notes
 
-Future versions are not urgent until V4.0 is complete and validated. They should start with design and implementation documents before code work.
+Future versions are not urgent until the current V4.0 implementation is fully validated in the target environment. They should start with design and implementation documents before code work.
 
 Recommended future topics:
 
@@ -75,18 +77,17 @@ Recommended future topics:
 
 ## 5. Recommended Next Tasks
 
-1. Review `docs/designs/v4-operator-readiness-design.md`.
-2. Execute `docs/plans/v4-operator-readiness-implementation.md` task by task.
-3. Keep resource use bounded and close all brokers, clients, event loops, executors, and Docker resources started by tests or demos.
-4. Record unresolved blockers after five bounded attempts instead of repeatedly retrying the same blocked path.
-5. Synchronize `README.md`, `docs/README.md`, `docs/design.md`, `docs/architecture.md`, `docs/testing.md`, and test reports from the actual implementation.
+1. Run focused V4 protocol, storage, broker, and client verification after each operator-readiness change.
+2. Keep resource use bounded and close all brokers, clients, event loops, executors, and Docker resources started by tests or demos.
+3. Record unresolved Docker/real-etcd blockers after five bounded attempts instead of repeatedly retrying the same blocked path.
+4. Keep README.md, docs/README.md, docs/design.md, docs/architecture.md, docs/testing.md, and test reports synchronized from source and tests.
 
 ## 6. Risk Register
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
 | Docker/Testcontainers unavailable | Real-etcd Failsafe verification cannot run locally. | Check Docker first; record environment blocker after bounded attempts; keep deterministic local tests passing. |
-| V4.0 scope grows too broad | Resource use and review complexity increase. | Keep tasks ordered; finish operations/status/lag before optional delayed messages. |
+| V4.0 implementation/docs drift | Operators may read old planning language as current behavior. | Treat source and tests as authoritative; update current-state docs when V4 behavior changes. |
 | Operator APIs leak unbounded data | Large clusters can create large responses. | Use explicit limits, counts, and pagination-style bounded lists. |
 | Topic deletion is unsafe | Data or metadata may be removed unexpectedly. | Require scoped permission, explicit CLI command, tests, and clear documentation. |
 | Metrics become inconsistent | Operators may misread system state. | Define snapshot semantics and verify with deterministic tests. |

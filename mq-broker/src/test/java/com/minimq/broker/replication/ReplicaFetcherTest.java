@@ -11,11 +11,12 @@ import com.minimq.protocol.ProtocolSerdes;
 import com.minimq.protocol.codec.MqDecoder;
 import com.minimq.protocol.codec.MqEncoder;
 import com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest;
-import com.minimq.protocol.message.ProtocolMessages.FetchedRecord;
 import com.minimq.protocol.message.MqResponseHeader;
 import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
-import com.minimq.protocol.message.ProtocolMessages.ReplicaFetchRequest;
-import com.minimq.protocol.message.ProtocolMessages.ReplicaFetchResponse;
+import com.minimq.protocol.message.ProtocolMessages.ReplicaFetchV2Request;
+import com.minimq.protocol.message.ProtocolMessages.ReplicaFetchV2Response;
+import com.minimq.protocol.message.ProtocolMessages.ScheduledReplicaRecord;
+import com.minimq.protocol.message.ProtocolMessages.V4BoundedList;
 import com.minimq.storage.LogManager;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
@@ -46,12 +47,8 @@ class ReplicaFetcherTest {
 
     @Test
     void followerFetchesLeaderRecordsIntoLocalPartitionLog() throws Exception {
-        AtomicReference<ReplicaFetchRequest> captured = new AtomicReference<>();
-        try (LeaderReplicaClientTest.TestLeader leader = LeaderReplicaClientTest.TestLeader.start(
-                ErrorCode.NONE,
-                new ReplicaFetchResponse("orders", 0, 1L,
-                        List.of(new FetchedRecord(0L, "k".getBytes(), "v".getBytes()))),
-                captured)) {
+        AtomicReference<ReplicaFetchV2Request> captured = new AtomicReference<>();
+        try (CountingReplicaLeader leader = CountingReplicaLeader.start(captured)) {
             ClusterController controller = new ClusterController(new MetadataStore(tempDir.resolve("controller")));
             controller.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", leader.port()));
             controller.registerBroker(new RegisterBrokerRequest(1, "127.0.0.1", 19093));
@@ -66,9 +63,24 @@ class ReplicaFetcherTest {
             try {
                 fetcher.start();
                 waitForHighWatermark(partitionManager, "orders", 0, 1L);
+                waitForReplicaState(controller, "orders", 0, 1, 1L);
 
-                assertEquals(new ReplicaFetchRequest("orders", 0, 1, 0L, 1024 * 1024), captured.get());
+                assertEquals(new ReplicaFetchV2Request(
+                        BrokerTestHarness.ADMIN_TOKEN,
+                        "orders",
+                        0,
+                        1,
+                        1L,
+                        0L,
+                        0L,
+                        0L,
+                        1024 * 1024), captured.get());
                 assertEquals(1L, partitionManager.highWatermark("orders", 0));
+                var progress = controller.snapshot().topics.get("orders").partitions.get(0)
+                        .replicaProgress.get(1);
+                assertEquals(1L, progress.physicalLogEndOffset);
+                assertEquals(1L, progress.visibleLogEndOffset);
+                assertEquals(-1L, progress.nextVisibleAtEpochMs);
             } finally {
                 fetcher.close();
                 partitionManager.close();
@@ -105,6 +117,42 @@ class ReplicaFetcherTest {
 
                 waitForAcceptedConnections(leader, 1);
                 assertEquals(1, leader.acceptedConnections());
+            } finally {
+                fetcher.close();
+                partitionManager.close();
+            }
+        }
+    }
+
+    @Test
+    void periodicallyReportsLocalReplicaStateWithoutNewRecords() throws Exception {
+        try (CountingReplicaLeader leader = CountingReplicaLeader.start()) {
+            ClusterController controller =
+                    new ClusterController(new MetadataStore(tempDir.resolve("periodic-controller")));
+            controller.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", leader.port()));
+            controller.registerBroker(new RegisterBrokerRequest(1, "127.0.0.1", 19093));
+            assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("orders", 1, 2)));
+
+            PartitionManager partitionManager =
+                    new PartitionManager(new LogManager(tempDir.resolve("periodic-follower")));
+            partitionManager.replicateAt(
+                    "orders", 0, 0L, "k".getBytes(), "v".getBytes());
+            ReplicaFetcher fetcher = new ReplicaFetcher(
+                    new BrokerConfig(
+                            1,
+                            "127.0.0.1",
+                            19093,
+                            tempDir.resolve("periodic-broker"),
+                            true,
+                            "127.0.0.1",
+                            9092,
+                            false,
+                            BrokerTestHarness.ADMIN_TOKEN),
+                    controller,
+                    partitionManager);
+            try {
+                fetcher.start();
+                waitForReplicaState(controller, "orders", 0, 1, 1L);
             } finally {
                 fetcher.close();
                 partitionManager.close();
@@ -170,24 +218,54 @@ class ReplicaFetcherTest {
         assertEquals(expectedAcceptedConnections, leader.acceptedConnections());
     }
 
+    private static void waitForReplicaState(
+            ClusterController controller,
+            String topicName,
+            int partitionId,
+            int brokerId,
+            long expectedLeo) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (System.nanoTime() < deadline) {
+            var progress = controller.snapshot().topics.get(topicName).partitions.get(partitionId)
+                    .replicaProgress.get(brokerId);
+            if (progress != null
+                    && progress.physicalLogEndOffset == expectedLeo
+                    && progress.visibleLogEndOffset == expectedLeo) {
+                return;
+            }
+            Thread.sleep(25);
+        }
+        var progress = controller.snapshot().topics.get(topicName).partitions.get(partitionId)
+                .replicaProgress.get(brokerId);
+        assertEquals(expectedLeo, progress == null ? -1L : progress.physicalLogEndOffset);
+    }
+
     private static final class CountingReplicaLeader implements AutoCloseable {
         private final EventLoopGroup boss;
         private final EventLoopGroup worker;
         private final Channel channel;
         private final AtomicInteger acceptedConnections;
+        private final AtomicReference<ReplicaFetchV2Request> captured;
 
         private CountingReplicaLeader(
                 EventLoopGroup boss,
                 EventLoopGroup worker,
                 Channel channel,
-                AtomicInteger acceptedConnections) {
+                AtomicInteger acceptedConnections,
+                AtomicReference<ReplicaFetchV2Request> captured) {
             this.boss = boss;
             this.worker = worker;
             this.channel = channel;
             this.acceptedConnections = acceptedConnections;
+            this.captured = captured;
         }
 
         static CountingReplicaLeader start() throws InterruptedException {
+            return start(new AtomicReference<>());
+        }
+
+        static CountingReplicaLeader start(AtomicReference<ReplicaFetchV2Request> captured)
+                throws InterruptedException {
             EventLoopGroup boss = new NioEventLoopGroup(1);
             EventLoopGroup worker = new NioEventLoopGroup(1);
             AtomicInteger acceptedConnections = new AtomicInteger();
@@ -202,14 +280,23 @@ class ReplicaFetcherTest {
                                 @Override
                                 protected void channelRead0(ChannelHandlerContext ctx, ByteBuf msg) {
                                     MqDecoder.DecodedRequest decoded = MqDecoder.decodeRequest(msg);
-                                    ReplicaFetchRequest request = (ReplicaFetchRequest) decoded.body();
-                                    List<FetchedRecord> records = request.fetchOffset() == 0L
-                                            ? List.of(new FetchedRecord(0L, "k".getBytes(), "v".getBytes()))
+                                    ReplicaFetchV2Request request = (ReplicaFetchV2Request) decoded.body();
+                                    captured.set(request);
+                                    List<ScheduledReplicaRecord> records = request.fetchOffset() == 0L
+                                            ? List.of(new ScheduledReplicaRecord(
+                                                    0L, "k".getBytes(), "v".getBytes(), 0L))
                                             : List.of();
                                     ctx.writeAndFlush(ProtocolSerdes.encodeResponse(
                                             new MqResponseHeader(decoded.header().correlationId(), ErrorCode.NONE),
-                                            new ReplicaFetchResponse(
-                                                    request.topicName(), request.partitionId(), 1L, records)));
+                                            new ReplicaFetchV2Response(
+                                                    request.topicName(),
+                                                    request.partitionId(),
+                                                    1L,
+                                                    1L,
+                                                    -1L,
+                                                    request.leaderEpoch(),
+                                                    1L,
+                                                    new V4BoundedList<>(records.size(), false, records))));
                                 }
                             }, new MqEncoder());
                         }
@@ -217,7 +304,7 @@ class ReplicaFetcherTest {
                     .bind("127.0.0.1", 0)
                     .sync()
                     .channel();
-            return new CountingReplicaLeader(boss, worker, server, acceptedConnections);
+            return new CountingReplicaLeader(boss, worker, server, acceptedConnections, captured);
         }
 
         int port() {

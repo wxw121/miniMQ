@@ -36,13 +36,17 @@ class DemoCliTest {
                 "broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --etcd-endpoints http://localhost:2379 --initialize-empty-cluster --admin-token <secret>";
         assertTrue(noArgs.contains(brokerUsage));
         assertTrue(unknown.contains(brokerUsage));
+        assertTrue(noArgs.contains("create-topic --brokers localhost:9092 --admin-token <secret>"));
         assertTrue(noArgs.contains("--broker localhost:9092 --admin-token"));
     }
 
     @Test
     void rejectsInvalidBrokerAddressesBeforeNetworkUse() {
         assertThrows(IllegalArgumentException.class, () -> DemoCli.main(new String[] {
-                "create-topic", "--brokers", "localhost", "--name", "orders"
+                "create-topic", "--brokers", "localhost", "--admin-token", "secret", "--name", "orders"
+        }));
+        assertThrows(IllegalArgumentException.class, () -> DemoCli.main(new String[] {
+                "create-topic", "--brokers", "localhost:9092", "--name", "orders"
         }));
         assertThrows(IllegalArgumentException.class, () -> DemoCli.main(new String[] {
                 "produce", "--brokers", "localhost", "--topic", "orders", "--message", "hello"
@@ -132,7 +136,9 @@ class DemoCliTest {
             String brokers = broker.bootstrapServers();
 
             String createOutput = captureStdout(() -> DemoCli.main(new String[] {
-                    "create-topic", "--brokers", brokers, "--name", "orders", "--partitions", "1"
+                    "create-topic", "--brokers", brokers,
+                    "--admin-token", BrokerTestHarness.ADMIN_TOKEN,
+                    "--name", "orders", "--partitions", "1"
             }));
             String produceOutput = captureStdout(() -> DemoCli.main(new String[] {
                     "produce", "--brokers", brokers, "--topic", "orders", "--key", "user-1", "--message", "hello"
@@ -250,7 +256,9 @@ class DemoCliTest {
     private static void createTopicAndProduceRolledSegments(
             String brokers, String topic, String key, int recordCount) throws Exception {
         DemoCli.main(new String[] {
-                "create-topic", "--brokers", brokers, "--name", topic, "--partitions", "1"
+                "create-topic", "--brokers", brokers,
+                "--admin-token", BrokerTestHarness.ADMIN_TOKEN,
+                "--name", topic, "--partitions", "1"
         });
         for (int i = 0; i < recordCount; i++) {
             DemoCli.main(new String[] {

@@ -21,7 +21,7 @@ import java.net.ServerSocket;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-class ReplicaLeoReporterTest {
+class ReplicaStateReporterTest {
 
     @TempDir
     Path tempDir;
@@ -35,17 +35,24 @@ class ReplicaLeoReporterTest {
                 0, "127.0.0.1", 9092, tempDir, true, "127.0.0.1", 9092, false,
                 BrokerTestHarness.ADMIN_TOKEN);
 
-        try (ReplicaLeoReporter reporter = new ReplicaLeoReporter(config, controller)) {
+        try (ReplicaStateReporter reporter = new ReplicaStateReporter(config, controller)) {
             assertEquals(ErrorCode.NONE, reporter.report("orders", 0, 0, 7L));
         }
 
         assertEquals(7L, controller.replicaLogEndOffset("orders", 0, 0));
+        assertEquals(
+                7L,
+                controller.snapshot().topics.get("orders").partitions.get(0)
+                        .replicaProgress.get(0).visibleLogEndOffset);
     }
 
     @Test
     void followerReporterUpdatesRemoteControllerMetadata() throws Exception {
         Path controllerDir = BrokerTestHarness.newDataDir("leo-reporter-controller");
-        try (BrokerTestHarness controller = BrokerTestHarness.startController(controllerDir);
+        try (BrokerTestHarness controller = BrokerTestHarness.startController(
+                controllerDir,
+                "--allow-legacy-unauthenticated-create",
+                "--allow-legacy-internal-api");
              TestNetworkClient admin = new TestNetworkClient()) {
             admin.connect("127.0.0.1", controller.port());
             assertEquals(ErrorCode.NONE, admin.send(
@@ -67,8 +74,8 @@ class ReplicaLeoReporterTest {
                     BrokerTestHarness.ADMIN_TOKEN);
             ClusterController followerMetadata =
                     new ClusterController(new MetadataStore(tempDir.resolve("follower")));
-            try (ReplicaLeoReporter reporter =
-                         new ReplicaLeoReporter(followerConfig, followerMetadata)) {
+            try (ReplicaStateReporter reporter =
+                         new ReplicaStateReporter(followerConfig, followerMetadata)) {
                 assertEquals(ErrorCode.NONE, reporter.report("orders", 0, 1, 9L));
             }
 
@@ -100,22 +107,15 @@ class ReplicaLeoReporterTest {
         ClusterController followerMetadata = new ClusterController(
                 new MetadataStore(tempDir.resolve("recovering-follower")));
 
-        try (ReplicaLeoReporter reporter =
-                     new ReplicaLeoReporter(followerConfig, followerMetadata)) {
+        try (ReplicaStateReporter reporter =
+                     new ReplicaStateReporter(followerConfig, followerMetadata)) {
             assertEquals(
                     ErrorCode.INVALID_REQUEST,
                     reporter.report("orders", 0, 1, 9L));
 
-            BrokerConfig controllerConfig = new BrokerConfig(
-                    0,
-                    "127.0.0.1",
+            BrokerConfig controllerConfig = legacyControllerConfig(
                     controllerPort,
-                    tempDir.resolve("recovering-controller"),
-                    true,
-                    "127.0.0.1",
-                    controllerPort,
-                    false,
-                    BrokerTestHarness.ADMIN_TOKEN);
+                    tempDir.resolve("recovering-controller"));
             try (BrokerTestHarness controller = BrokerTestHarness.start(controllerConfig);
                  TestNetworkClient admin = new TestNetworkClient()) {
                 admin.connect("127.0.0.1", controller.port());
@@ -138,7 +138,10 @@ class ReplicaLeoReporterTest {
     @Test
     void followerReporterSkipsAlreadyConfirmedLeoWhenControllerIsUnavailable() throws Exception {
         Path controllerDir = BrokerTestHarness.newDataDir("leo-reporter-deduplicate");
-        BrokerTestHarness controller = BrokerTestHarness.startController(controllerDir);
+        BrokerTestHarness controller = BrokerTestHarness.startController(
+                controllerDir,
+                "--allow-legacy-unauthenticated-create",
+                "--allow-legacy-internal-api");
         try (TestNetworkClient admin = new TestNetworkClient()) {
             admin.connect("127.0.0.1", controller.port());
             assertEquals(ErrorCode.NONE, admin.send(
@@ -159,8 +162,8 @@ class ReplicaLeoReporterTest {
                     BrokerTestHarness.ADMIN_TOKEN);
             ClusterController followerMetadata = new ClusterController(
                     new MetadataStore(tempDir.resolve("deduplicate-follower")));
-            try (ReplicaLeoReporter reporter =
-                         new ReplicaLeoReporter(followerConfig, followerMetadata)) {
+            try (ReplicaStateReporter reporter =
+                         new ReplicaStateReporter(followerConfig, followerMetadata)) {
                 assertEquals(ErrorCode.NONE, reporter.report("orders", 0, 1, 9L));
                 controller.close();
                 controller = null;
@@ -189,7 +192,7 @@ class ReplicaLeoReporterTest {
         BrokerAvailabilityGuard guard = new BrokerAvailabilityGuard();
         guard.fence();
 
-        try (ReplicaLeoReporter reporter = new ReplicaLeoReporter(
+        try (ReplicaStateReporter reporter = new ReplicaStateReporter(
                 config,
                 new ClusterController(new MetadataStore(tempDir.resolve("fenced-metadata"))),
                 guard)) {
@@ -214,7 +217,7 @@ class ReplicaLeoReporterTest {
         BrokerAvailabilityGuard guard = new BrokerAvailabilityGuard();
         guard.activate();
 
-        try (ReplicaLeoReporter reporter = new ReplicaLeoReporter(
+        try (ReplicaStateReporter reporter = new ReplicaStateReporter(
                 config,
                 new ClusterController(new MetadataStore(tempDir.resolve("circuit-metadata"))),
                 guard,
@@ -247,5 +250,17 @@ class ReplicaLeoReporterTest {
         try (ServerSocket socket = new ServerSocket(0)) {
             return socket.getLocalPort();
         }
+    }
+
+    private static BrokerConfig legacyControllerConfig(int port, Path dataDir) {
+        return BrokerConfig.parse(new String[] {
+                "--broker-id", "0",
+                "--host", "127.0.0.1",
+                "--port", Integer.toString(port),
+                "--data-dir", dataDir.toString(),
+                "--admin-token", BrokerTestHarness.ADMIN_TOKEN,
+                "--allow-legacy-unauthenticated-create",
+                "--allow-legacy-internal-api"
+        }).withLegacyController(true, "127.0.0.1", port);
     }
 }

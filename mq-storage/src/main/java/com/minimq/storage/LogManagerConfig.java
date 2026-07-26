@@ -7,7 +7,9 @@ public record LogManagerConfig(
         FlushPolicy flushPolicy,
         int checkpointEveryNAppends,
         SegmentedLogConfig segmentedLogConfig,
-        LogMaintenanceConfig maintenanceConfig) {
+        LogMaintenanceConfig maintenanceConfig,
+        int maxScheduledRecords) {
+    public static final int DEFAULT_MAX_SCHEDULED_RECORDS = 100_000;
 
     public LogManagerConfig {
         if (flushPolicy == null) {
@@ -22,6 +24,18 @@ public record LogManagerConfig(
         if (maintenanceConfig == null) {
             throw new IllegalArgumentException("maintenanceConfig is required");
         }
+        if (maxScheduledRecords < 0) {
+            throw new IllegalArgumentException("maxScheduledRecords must be non-negative");
+        }
+    }
+
+    public LogManagerConfig(
+            FlushPolicy flushPolicy,
+            int checkpointEveryNAppends,
+            SegmentedLogConfig segmentedLogConfig,
+            LogMaintenanceConfig maintenanceConfig) {
+        this(flushPolicy, checkpointEveryNAppends, segmentedLogConfig, maintenanceConfig,
+                DEFAULT_MAX_SCHEDULED_RECORDS);
     }
 
     public LogManagerConfig(
@@ -40,7 +54,8 @@ public record LogManagerConfig(
                 FlushPolicy.always(),
                 0,
                 SegmentedLogConfig.defaults(),
-                LogMaintenanceConfig.disabled());
+                LogMaintenanceConfig.disabled(),
+                DEFAULT_MAX_SCHEDULED_RECORDS);
     }
 
     boolean shouldCheckpointAfterAppend(long successfulAppends) {

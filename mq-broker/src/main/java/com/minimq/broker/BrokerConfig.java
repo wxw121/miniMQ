@@ -3,6 +3,7 @@ package com.minimq.broker;
 import com.minimq.broker.auth.OperatorScope;
 import com.minimq.broker.netty.NetworkTransportMode;
 import com.minimq.storage.FlushPolicy;
+import com.minimq.storage.LogManagerConfig;
 import com.minimq.storage.SegmentedLogConfig;
 
 import java.nio.file.Path;
@@ -55,7 +56,9 @@ public record BrokerConfig(
         String clusterToken,
         boolean allowLegacyUnauthenticatedCreate,
         boolean allowLegacyInternalApi,
-        String adminToken) {
+        String adminToken,
+        long topicDeleteTimeoutMs,
+        int maxScheduledRecords) {
 
     public record OperatorCredential(String token, Set<OperatorScope> scopes) {
         public OperatorCredential {
@@ -69,10 +72,128 @@ public record BrokerConfig(
         }
     }
 
+    /** Source compatibility for callers that construct the pre-capacity V4 record directly. */
+    public BrokerConfig(
+            int brokerId,
+            String host,
+            int port,
+            Path dataDir,
+            boolean controller,
+            String controllerHost,
+            int controllerPort,
+            boolean recoverCorruptMetadata,
+            FlushPolicy flushPolicy,
+            int checkpointEveryNAppends,
+            long segmentMaxBytes,
+            int sparseIndexIntervalRecords,
+            long retentionMs,
+            long retentionBytes,
+            boolean compactionEnabled,
+            int compactionMaxSegments,
+            long compactionMaxBytes,
+            int maintenanceWindowStartHour,
+            int maintenanceWindowEndHour,
+            int maintenanceEveryNAppends,
+            FetchTransferMode fetchTransferMode,
+            long fetchTransferTimeoutMs,
+            NetworkTransportMode networkTransportMode,
+            int maxInFlightRequests,
+            long brokerHeartbeatIntervalMs,
+            long brokerSelfFenceTimeoutMs,
+            long controllerBrokerLeaseTimeoutMs,
+            String clusterId,
+            List<String> etcdEndpoints,
+            int controllerSessionTtlSeconds,
+            long controllerFailoverGraceMs,
+            long leaderActivationTimeoutMs,
+            boolean initializeEmptyCluster,
+            boolean initializeClusterFromLocal,
+            List<OperatorCredential> operatorCredentials,
+            String clusterToken,
+            boolean allowLegacyUnauthenticatedCreate,
+            boolean allowLegacyInternalApi,
+            String adminToken,
+            long topicDeleteTimeoutMs) {
+        this(
+                brokerId, host, port, dataDir, controller, controllerHost, controllerPort,
+                recoverCorruptMetadata, flushPolicy, checkpointEveryNAppends, segmentMaxBytes,
+                sparseIndexIntervalRecords, retentionMs, retentionBytes, compactionEnabled,
+                compactionMaxSegments, compactionMaxBytes, maintenanceWindowStartHour,
+                maintenanceWindowEndHour, maintenanceEveryNAppends, fetchTransferMode,
+                fetchTransferTimeoutMs, networkTransportMode, maxInFlightRequests,
+                brokerHeartbeatIntervalMs, brokerSelfFenceTimeoutMs, controllerBrokerLeaseTimeoutMs,
+                clusterId, etcdEndpoints, controllerSessionTtlSeconds, controllerFailoverGraceMs,
+                leaderActivationTimeoutMs, initializeEmptyCluster, initializeClusterFromLocal,
+                operatorCredentials, clusterToken, allowLegacyUnauthenticatedCreate,
+                allowLegacyInternalApi, adminToken, topicDeleteTimeoutMs,
+                DEFAULT_MAX_SCHEDULED_RECORDS);
+    }
+
+    /** Source compatibility for callers that construct the pre-V4 record directly. */
+    public BrokerConfig(
+            int brokerId,
+            String host,
+            int port,
+            Path dataDir,
+            boolean controller,
+            String controllerHost,
+            int controllerPort,
+            boolean recoverCorruptMetadata,
+            FlushPolicy flushPolicy,
+            int checkpointEveryNAppends,
+            long segmentMaxBytes,
+            int sparseIndexIntervalRecords,
+            long retentionMs,
+            long retentionBytes,
+            boolean compactionEnabled,
+            int compactionMaxSegments,
+            long compactionMaxBytes,
+            int maintenanceWindowStartHour,
+            int maintenanceWindowEndHour,
+            int maintenanceEveryNAppends,
+            FetchTransferMode fetchTransferMode,
+            long fetchTransferTimeoutMs,
+            NetworkTransportMode networkTransportMode,
+            int maxInFlightRequests,
+            long brokerHeartbeatIntervalMs,
+            long brokerSelfFenceTimeoutMs,
+            long controllerBrokerLeaseTimeoutMs,
+            String clusterId,
+            List<String> etcdEndpoints,
+            int controllerSessionTtlSeconds,
+            long controllerFailoverGraceMs,
+            long leaderActivationTimeoutMs,
+            boolean initializeEmptyCluster,
+            boolean initializeClusterFromLocal,
+            List<OperatorCredential> operatorCredentials,
+            String clusterToken,
+            boolean allowLegacyUnauthenticatedCreate,
+            boolean allowLegacyInternalApi,
+            String adminToken) {
+        this(
+                brokerId, host, port, dataDir, controller, controllerHost, controllerPort,
+                recoverCorruptMetadata, flushPolicy, checkpointEveryNAppends, segmentMaxBytes,
+                sparseIndexIntervalRecords, retentionMs, retentionBytes, compactionEnabled,
+                compactionMaxSegments, compactionMaxBytes, maintenanceWindowStartHour,
+                maintenanceWindowEndHour, maintenanceEveryNAppends, fetchTransferMode,
+                fetchTransferTimeoutMs, networkTransportMode, maxInFlightRequests,
+                brokerHeartbeatIntervalMs, brokerSelfFenceTimeoutMs, controllerBrokerLeaseTimeoutMs,
+                clusterId, etcdEndpoints, controllerSessionTtlSeconds, controllerFailoverGraceMs,
+                leaderActivationTimeoutMs, initializeEmptyCluster, initializeClusterFromLocal,
+                operatorCredentials, clusterToken, allowLegacyUnauthenticatedCreate,
+                allowLegacyInternalApi, adminToken, DEFAULT_TOPIC_DELETE_TIMEOUT_MS);
+    }
+
     public BrokerConfig {
         operatorCredentials = operatorCredentials == null ? List.of() : List.copyOf(operatorCredentials);
         if (clusterToken == null || clusterToken.isBlank()) {
             clusterToken = adminToken;
+        }
+        if (topicDeleteTimeoutMs <= 0) {
+            throw new IllegalArgumentException("topicDeleteTimeoutMs must be positive");
+        }
+        if (maxScheduledRecords < 0) {
+            throw new IllegalArgumentException("maxScheduledRecords must be non-negative");
         }
     }
 
@@ -94,7 +215,8 @@ public record BrokerConfig(
                 controllerSessionTtlSeconds, controllerFailoverGraceMs, leaderActivationTimeoutMs,
                 initializeEmptyCluster, initializeClusterFromLocal,
                 operatorCredentials, clusterToken,
-                allowLegacyUnauthenticatedCreate, allowLegacyInternalApi, adminToken);
+                allowLegacyUnauthenticatedCreate, allowLegacyInternalApi, adminToken,
+                topicDeleteTimeoutMs, maxScheduledRecords);
     }
 
     public static final int DEFAULT_COMPACTION_MAX_SEGMENTS = 4;
@@ -111,6 +233,9 @@ public record BrokerConfig(
     public static final int DEFAULT_CONTROLLER_SESSION_TTL_SECONDS = 15;
     public static final long DEFAULT_CONTROLLER_FAILOVER_GRACE_MS = 10_000L;
     public static final long DEFAULT_LEADER_ACTIVATION_TIMEOUT_MS = 5_000L;
+    public static final long DEFAULT_TOPIC_DELETE_TIMEOUT_MS = 10_000L;
+    public static final int DEFAULT_MAX_SCHEDULED_RECORDS =
+            LogManagerConfig.DEFAULT_MAX_SCHEDULED_RECORDS;
     public static final int MAX_OPERATOR_CREDENTIALS = 1_000;
     public static final int MAX_OPERATOR_CREDENTIAL_BYTES = 256;
 
@@ -163,7 +288,8 @@ public record BrokerConfig(
                 adminToken,
                 false,
                 false,
-                adminToken);
+                adminToken,
+                DEFAULT_TOPIC_DELETE_TIMEOUT_MS);
     }
 
     public BrokerConfig(
@@ -231,7 +357,8 @@ public record BrokerConfig(
                 adminToken,
                 false,
                 false,
-                adminToken);
+                adminToken,
+                DEFAULT_TOPIC_DELETE_TIMEOUT_MS);
     }
 
     public static BrokerConfig parse(String[] args) {
@@ -269,6 +396,8 @@ public record BrokerConfig(
         int controllerSessionTtlSeconds = DEFAULT_CONTROLLER_SESSION_TTL_SECONDS;
         long controllerFailoverGraceMs = DEFAULT_CONTROLLER_FAILOVER_GRACE_MS;
         long leaderActivationTimeoutMs = DEFAULT_LEADER_ACTIVATION_TIMEOUT_MS;
+        long topicDeleteTimeoutMs = DEFAULT_TOPIC_DELETE_TIMEOUT_MS;
+        int maxScheduledRecords = DEFAULT_MAX_SCHEDULED_RECORDS;
         boolean initializeEmptyCluster = false;
         boolean initializeClusterFromLocal = false;
         List<OperatorCredential> operatorCredentials = new ArrayList<>();
@@ -298,6 +427,14 @@ public record BrokerConfig(
                         parsePositiveLong(
                                 value(args, ++i, "--leader-activation-timeout-ms"),
                                 "--leader-activation-timeout-ms");
+                case "--topic-delete-timeout-ms" -> topicDeleteTimeoutMs =
+                        parsePositiveLong(
+                                value(args, ++i, "--topic-delete-timeout-ms"),
+                                "--topic-delete-timeout-ms");
+                case "--max-scheduled-records" -> maxScheduledRecords =
+                        parseNonNegativeInt(
+                                value(args, ++i, "--max-scheduled-records"),
+                                "--max-scheduled-records");
                 case "--initialize-empty-cluster" -> initializeEmptyCluster = true;
                 case "--initialize-cluster-from-local" -> initializeClusterFromLocal = true;
                 case "--recover-corrupt-metadata" -> recoverCorruptMetadata = true;
@@ -432,7 +569,9 @@ public record BrokerConfig(
                 clusterToken,
                 allowLegacyUnauthenticatedCreate,
                 allowLegacyInternalApi,
-                adminToken);
+                adminToken,
+                topicDeleteTimeoutMs,
+                maxScheduledRecords);
     }
 
     private static OperatorCredential parseOperatorCredential(String value) {

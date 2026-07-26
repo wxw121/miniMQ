@@ -4,16 +4,29 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * 可持久化的集群元数据模型，描述 Broker、Topic、分区和消费组状态。
  */
 public class ClusterMetadata {
-    public int metadataFormatVersion = 3;
+    public static final int CURRENT_FORMAT_VERSION = 4;
+
+    public int metadataFormatVersion = CURRENT_FORMAT_VERSION;
     public long controllerEpoch;
     public long metadataVersion;
     public final Map<Integer, BrokerEntry> brokers = new HashMap<>();
     public final Map<String, TopicEntry> topics = new HashMap<>();
+    /**
+     * Deleted topic names remain reserved in this map.  Keeping tombstones in
+     * the same CAS document as active topics prevents a stale broker from
+     * recreating a name after it rejoins the cluster.
+     */
+    public final Map<String, TopicTombstone> topicTombstones = new HashMap<>();
+    /** Explicit V4 reliability links; names carry no implicit semantics. */
+    public final Map<String, String> retryTopicBySource = new HashMap<>();
+    public final Map<String, String> deadLetterTopicBySource = new HashMap<>();
     public final Map<String, ConsumerGroupEntry> consumerGroups = new HashMap<>();
 
     public static class BrokerEntry {
@@ -29,16 +42,45 @@ public class ClusterMetadata {
         public List<PartitionEntry> partitions = new ArrayList<>();
     }
 
+    public static class TopicTombstone {
+        public String topicName;
+        public String state = "DELETING";
+        public long tombstoneVersion;
+        public long deletedAtEpochMs;
+        public Set<Integer> requiredBrokerIds = new TreeSet<>();
+        public Set<Integer> acknowledgedBrokerIds = new TreeSet<>();
+    }
+
     public static class PartitionEntry {
         public int partitionId;
         public int leaderBrokerId;
         public List<Integer> replicaBrokerIds = new ArrayList<>();
         public List<Integer> isrBrokerIds = new ArrayList<>();
         public Map<Integer, Long> replicaLogEndOffsets = new HashMap<>();
+        public Map<Integer, ReplicaProgressEntry> replicaProgress = new HashMap<>();
+        public WatermarkSnapshot lastCompleteWatermark = new WatermarkSnapshot();
         public boolean frozen;
         public long leaderEpoch;
         public long leaderEpochStartOffset;
         public boolean leaderReady = true;
+    }
+
+    public static class ReplicaProgressEntry {
+        public int brokerId;
+        public long physicalLogEndOffset;
+        public long visibleLogEndOffset;
+        public long nextVisibleAtEpochMs = -1L;
+        public long brokerEpoch;
+        public long controllerEpoch;
+        public long leaderEpoch;
+    }
+
+    public static class WatermarkSnapshot {
+        public long physicalHighWatermark = -1L;
+        public long visibleHighWatermark = -1L;
+        public long nextVisibleAtEpochMs = -1L;
+        public long controllerEpoch = -1L;
+        public long leaderEpoch = -1L;
     }
 
     public static class ConsumerGroupEntry {

@@ -165,11 +165,13 @@ public class WriteAheadLog implements AutoCloseable {
         validateFieldLength(record.key() == null ? NULL_LENGTH : record.key().length, "key", 0);
         validateFieldLength(record.value() == null ? NULL_LENGTH : record.value().length, "value", 0);
 
+        boolean scheduled = record.type() == WalRecordType.SCHEDULED_DATA_APPEND;
         int bodyLength = Short.BYTES + topicBytes.length
                 + Integer.BYTES
                 + Long.BYTES
                 + Integer.BYTES + payloadLength(record.key())
-                + Integer.BYTES + payloadLength(record.value());
+                + Integer.BYTES + payloadLength(record.value())
+                + (scheduled ? Long.BYTES : 0);
         ByteBuffer body = ByteBuffer.allocate(bodyLength);
         body.putShort((short) topicBytes.length);
         body.put(topicBytes);
@@ -177,6 +179,9 @@ public class WriteAheadLog implements AutoCloseable {
         body.putLong(record.offset());
         putBytes(body, record.key());
         putBytes(body, record.value());
+        if (scheduled) {
+            body.putLong(record.deliverAtEpochMs());
+        }
         return body.array();
     }
 
@@ -197,10 +202,35 @@ public class WriteAheadLog implements AutoCloseable {
         long offset = body.getLong();
         byte[] key = getBytes(body, "key", recordStart);
         byte[] value = getBytes(body, "value", recordStart);
+        long deliverAtEpochMs = 0L;
+        if (type == WalRecordType.SCHEDULED_DATA_APPEND) {
+            if (body.remaining() != Long.BYTES) {
+                throw new IOException("Corrupt WAL at byte " + recordStart
+                        + ": scheduled append missing delivery time");
+            }
+            deliverAtEpochMs = body.getLong();
+            if (deliverAtEpochMs <= 0) {
+                throw new IOException("Corrupt WAL at byte " + recordStart + ": invalid delivery time");
+            }
+        } else if (body.hasRemaining()) {
+            // Compatibility with transient builds that briefly appended the
+            // delivery timestamp to DATA_APPEND. New writes keep DATA_APPEND's
+            // original body and use type 8 for scheduled records.
+            if (type != WalRecordType.DATA_APPEND) {
+                throw new IOException("Corrupt WAL at byte " + recordStart + ": trailing body bytes");
+            }
+            if (body.remaining() != Long.BYTES) {
+                throw new IOException("Corrupt WAL at byte " + recordStart + ": trailing body bytes");
+            }
+            deliverAtEpochMs = body.getLong();
+            if (deliverAtEpochMs < 0) {
+                throw new IOException("Corrupt WAL at byte " + recordStart + ": invalid delivery time");
+            }
+        }
         if (body.hasRemaining()) {
             throw new IOException("Corrupt WAL at byte " + recordStart + ": trailing body bytes");
         }
-        return new WalRecord(type, topic, partitionId, offset, key, value);
+        return new WalRecord(type, topic, partitionId, offset, key, value, deliverAtEpochMs);
     }
 
     private void putBytes(ByteBuffer body, byte[] data) {

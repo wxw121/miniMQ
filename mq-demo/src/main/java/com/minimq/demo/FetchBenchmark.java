@@ -9,7 +9,7 @@ import com.minimq.client.NetworkClient;
 import com.minimq.protocol.ApiKeys;
 import com.minimq.protocol.MqFrame;
 import com.minimq.protocol.codec.MqDecoder;
-import com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest;
+import com.minimq.protocol.message.ProtocolMessages.CreateTopicAdminRequest;
 import com.minimq.protocol.message.ProtocolMessages.FetchRequest;
 import com.minimq.protocol.message.ProtocolMessages.FetchResponse;
 import com.minimq.protocol.message.ProtocolMessages.FetchedRecord;
@@ -75,7 +75,9 @@ final class FetchBenchmark {
         server.start();
         try (NetworkClient client = new NetworkClient("fetch-benchmark")) {
             client.connect("127.0.0.1", port);
-            client.ensureSuccess(client.send(ApiKeys.CREATE_TOPIC, new CreateTopicRequest("fetch-benchmark", 1)));
+            client.ensureSuccess(client.send(
+                    ApiKeys.CREATE_TOPIC_ADMIN,
+                    new CreateTopicAdminRequest("benchmark-admin", "fetch-benchmark", 1, 1)));
 
             int maxRecordsPerProduce = Math.max(1, MqFrame.MAX_FRAME_BYTES / Math.max(1, config.valueBytes() + 64) / 2);
             for (int offset = 0; offset < config.records(); ) {

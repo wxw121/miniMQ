@@ -13,10 +13,17 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MiniMqWebAppTest {
     private final HttpClient http = HttpClient.newHttpClient();
+
+    @Test
+    void rejectsBlankAdminCredential() {
+        assertThrows(IllegalArgumentException.class,
+                () -> MiniMqWebApp.start(0, "127.0.0.1:65535", " "));
+    }
 
     @Test
     void servesBrutalistFrontendAssets() throws Exception {
@@ -45,7 +52,7 @@ class MiniMqWebAppTest {
     void runsRealMainFlowThroughHttpApi() throws Exception {
         Path dataDir = BrokerTestHarness.newDataDir("web-real-flow");
         try (BrokerTestHarness broker = BrokerTestHarness.startController(dataDir);
-             MiniMqWebApp app = MiniMqWebApp.start(0, broker.bootstrapServers())) {
+             MiniMqWebApp app = MiniMqWebApp.start(0, broker.bootstrapServers(), BrokerTestHarness.ADMIN_TOKEN)) {
             String body = """
                     {
                       "mode": "real",
@@ -73,7 +80,7 @@ class MiniMqWebAppTest {
     void autoModeKeepsUsingRealFlowWhenTopicAlreadyExists() throws Exception {
         Path dataDir = BrokerTestHarness.newDataDir("web-auto-existing-topic");
         try (BrokerTestHarness broker = BrokerTestHarness.startController(dataDir);
-             MiniMqWebApp app = MiniMqWebApp.start(0, broker.bootstrapServers())) {
+             MiniMqWebApp app = MiniMqWebApp.start(0, broker.bootstrapServers(), BrokerTestHarness.ADMIN_TOKEN)) {
             String firstBody = """
                     {
                       "mode": "auto",
@@ -104,7 +111,7 @@ class MiniMqWebAppTest {
     void reusesRealFlowRuntimeForSameBootstrapTopicAndGroup() throws Exception {
         Path dataDir = BrokerTestHarness.newDataDir("web-reuse-runtime");
         try (BrokerTestHarness broker = BrokerTestHarness.startController(dataDir);
-             MiniMqWebApp app = MiniMqWebApp.start(0, broker.bootstrapServers())) {
+             MiniMqWebApp app = MiniMqWebApp.start(0, broker.bootstrapServers(), BrokerTestHarness.ADMIN_TOKEN)) {
             String firstBody = """
                     {
                       "mode": "real",
@@ -136,7 +143,7 @@ class MiniMqWebAppTest {
     void isolatesConcurrentRealFlowRequestsOnSharedRuntime() throws Exception {
         Path dataDir = BrokerTestHarness.newDataDir("web-concurrent-runtime");
         try (BrokerTestHarness broker = BrokerTestHarness.startController(dataDir);
-             MiniMqWebApp app = MiniMqWebApp.start(0, broker.bootstrapServers())) {
+             MiniMqWebApp app = MiniMqWebApp.start(0, broker.bootstrapServers(), BrokerTestHarness.ADMIN_TOKEN)) {
             String url = "http://127.0.0.1:" + app.port() + "/api/run-flow";
             String bodyTemplate = """
                     {
@@ -172,7 +179,7 @@ class MiniMqWebAppTest {
     void rebuildsCachedRuntimeAfterRuntimeFailure() throws Exception {
         Path dataDir = BrokerTestHarness.newDataDir("web-rebuild-runtime");
         try (BrokerTestHarness broker = BrokerTestHarness.startController(dataDir);
-             MiniMqWebApp app = MiniMqWebApp.start(0, broker.bootstrapServers())) {
+             MiniMqWebApp app = MiniMqWebApp.start(0, broker.bootstrapServers(), BrokerTestHarness.ADMIN_TOKEN)) {
             String body = """
                     {
                       "mode": "real",
@@ -206,7 +213,7 @@ class MiniMqWebAppTest {
     void evictsRuntimeCacheWhenLimitIsExceeded() throws Exception {
         Path dataDir = BrokerTestHarness.newDataDir("web-runtime-cache-limit");
         try (BrokerTestHarness broker = BrokerTestHarness.startController(dataDir);
-             MiniMqWebApp app = MiniMqWebApp.start(0, broker.bootstrapServers())) {
+             MiniMqWebApp app = MiniMqWebApp.start(0, broker.bootstrapServers(), BrokerTestHarness.ADMIN_TOKEN)) {
             String url = "http://127.0.0.1:" + app.port() + "/api/run-flow";
             for (int i = 0; i <= MiniMqWebApp.MAX_RUNTIMES; i++) {
                 String body = """

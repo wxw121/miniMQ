@@ -10,7 +10,10 @@ public enum WalRecordType {
     CHECKPOINT_MARKER((byte) 2),
     CONTROL_MARKER((byte) 3),
     TRUNCATE_BEGIN((byte) 4),
-    TRUNCATE_COMMIT((byte) 5);
+    TRUNCATE_COMMIT((byte) 5),
+    TOPIC_DELETE_BEGIN((byte) 6),
+    TOPIC_DELETE_COMMIT((byte) 7),
+    SCHEDULED_DATA_APPEND((byte) 8);
 
     private final byte id;
 

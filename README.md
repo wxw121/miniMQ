@@ -13,7 +13,7 @@ Kafka 风格的 Java 分布式消息队列。
 | [系统设计文档](docs/design.md) | 协议格式、序列化、存储、元数据、消费组、错误模型。 |
 | [测试文档](docs/testing.md) | 测试策略、覆盖率、命令、报告位置、质量门槛。 |
 | [故障排查文档](docs/troubleshooting.md) | Maven、端口、Windows、测试、GitHub/SSH 常见问题。 |
-| [路线图](docs/roadmap.md) | 当前限制、近期代办、V2/V3 功能规划、风险登记。 |
+| [路线图](docs/roadmap.md) | 当前限制、V4 Operator Readiness 状态、后续功能规划、风险登记。 |
 
 ## 架构
 
@@ -21,6 +21,7 @@ Kafka 风格的 Java 分布式消息队列。
 - **Append-Only Log** 持久化
 - **3 Broker + etcd** Controller 自动选举、分区副本、Leader epoch fencing 与自动故障转移
 - **Consumer Group** + Offset 提交
+- **V4 Operator Readiness** 运维状态、Consumer lag、Topic admin、failover audit、retry/DLQ、delayed delivery
 
 ## 模块
 
@@ -48,33 +49,43 @@ mvn test -gs .mvn/settings.xml -s .mvn/settings.xml
 docker compose -f deploy/etcd/docker-compose.yml up -d
 
 # Terminal 1
-java -cp mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar com.minimq.demo.BrokerMain --broker-id 0 --port 9092 --data-dir ./data/broker-0 --etcd-endpoints http://localhost:2379 --initialize-empty-cluster --admin-token <secret>
+java -cp mq-demo/target/mq-demo-3.0.0.jar com.minimq.demo.BrokerMain --broker-id 0 --port 9092 --data-dir ./data/broker-0 --etcd-endpoints http://localhost:2379 --initialize-empty-cluster --admin-token <secret>
 
 # Terminal 2
-java -cp mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar com.minimq.demo.BrokerMain --broker-id 1 --port 9093 --data-dir ./data/broker-1 --etcd-endpoints http://localhost:2379 --admin-token <secret>
+java -cp mq-demo/target/mq-demo-3.0.0.jar com.minimq.demo.BrokerMain --broker-id 1 --port 9093 --data-dir ./data/broker-1 --etcd-endpoints http://localhost:2379 --admin-token <secret>
 
 # Terminal 3
-java -cp mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar com.minimq.demo.BrokerMain --broker-id 2 --port 9094 --data-dir ./data/broker-2 --etcd-endpoints http://localhost:2379 --admin-token <secret>
+java -cp mq-demo/target/mq-demo-3.0.0.jar com.minimq.demo.BrokerMain --broker-id 2 --port 9094 --data-dir ./data/broker-2 --etcd-endpoints http://localhost:2379 --admin-token <secret>
+```
+
+也可以让脚本从根 `pom.xml` 读取当前版本并启动三个 Broker（脚本不再使用旧的 `--controller` 参数）：
+
+```powershell
+.\scripts\start-brokers.ps1 -AdminToken <secret>
 ```
 
 或使用 fat jar：
 
 ```bash
 mvn -pl mq-demo package
-java -jar mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --etcd-endpoints http://localhost:2379 --initialize-empty-cluster --admin-token <secret>
+java -jar mq-demo/target/mq-demo-3.0.0.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --etcd-endpoints http://localhost:2379 --initialize-empty-cluster --admin-token <secret>
 ```
+
+Delayed-message admission is bounded by --max-scheduled-records, which defaults to 100000. Setting it to 0 disables admission of new future-delayed records while preserving immediate records and ordinary fetch/produce behavior.
+
+延迟消息准入由 --max-scheduled-records 控制，默认值是 100000；设置为 0 时会禁止新的 future delayed record 入队，但不影响即时消息和普通生产/消费路径。
 
 ## Demo 流程
 
 ```bash
 # 1. 创建 Topic
-java -jar mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar create-topic --brokers localhost:9092,localhost:9093,localhost:9094 --name orders --partitions 3
+java -jar mq-demo/target/mq-demo-3.0.0.jar create-topic --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --name orders --partitions 3
 
 # 2. 发送消息
-java -jar mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar produce --brokers localhost:9092,localhost:9093,localhost:9094 --topic orders --key user-1 --message hello
+java -jar mq-demo/target/mq-demo-3.0.0.jar produce --brokers localhost:9092,localhost:9093,localhost:9094 --topic orders --key user-1 --message hello
 
 # 3. 消费消息
-java -jar mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar consume --brokers localhost:9092,localhost:9093,localhost:9094 --topic orders --group order-processors
+java -jar mq-demo/target/mq-demo-3.0.0.jar consume --brokers localhost:9092,localhost:9093,localhost:9094 --topic orders --group order-processors
 ```
 
 ## Controller HA 与 Leader epoch（3.0.0）
@@ -95,6 +106,16 @@ Leader 切换会先按旧 ISR 已确认 LEO 计算恢复点，持久化 Leader e
 
 2.x 数据目录升级时，仅首个节点使用 `--initialize-cluster-from-local` 将本地元数据显式 CAS 导入空的 etcd 集群；全新集群使用 `--initialize-empty-cluster`。导入后不要让 2.x 与 3.0 同时写同一数据目录，回退前也必须保留升级前备份。
 
+
+## V4 Operator Readiness
+
+当前工作树已经包含 V4 operator-readiness 协议与服务实现，不再只是 roadmap 或 design-only 规划。API 20-37 覆盖 OPS_STATUS、GROUP_STATUS、Topic list/describe/delete/increase、FAILOVER_AUDIT、AUTH_STATUS、CONFIGURE_TOPIC_RELIABILITY、admin create-topic、PRODUCE_V2、REPLICA_FETCH_V2、FETCH_V2、METADATA_V2、RUNTIME_METRICS_V2 与 replica-state 上报。
+
+Reliability links are explicit: operators configure retry and dead-letter topics through CONFIGURE_TOPIC_RELIABILITY; the client Producer resolves those links through METADATA_V2. sendToDeadLetter writes immediately with the normal produce path, while sendToRetry uses PRODUCE_V2 and an exact deliverAtEpochMs.
+
+Delayed records are stored in the normal partition log and WAL. Future records are counted against the Broker-wide scheduled-record limit, WAL type 8 is SCHEDULED_DATA_APPEND, and recovery rebuilds scheduling state from checkpoints plus WAL replay.
+
+Consumers use FETCH_V2 and the bounded client wait contract. When a Broker returns nextVisibleAtEpochMs, the client sleeps only up to the remaining poll timeout, then retries the same offset once it can become visible; Brokers do not hold fetch requests open. Legacy FETCH remains compatibility-only and is constrained to the contiguous visible prefix, so future delayed records are not exposed early.
 
 ## Web 前端主流程
 
@@ -146,7 +167,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-web.ps1 
 也可以直接运行开发启动器：
 
 ```powershell
-java -Dminimq.web.port=18082 -Dminimq.broker.port=19092 -Dminimq.data.dir=.run/data-live -cp mq-demo/target/mq-demo-3.0.0-SNAPSHOT.jar com.minimq.demo.web.MiniMqWebDevMain
+java -Dminimq.web.port=18082 -Dminimq.broker.port=19092 -Dminimq.data.dir=.run/data-live -cp mq-demo/target/mq-demo-3.0.0.jar com.minimq.demo.web.MiniMqWebDevMain
 ```
 
 前端自动化测试覆盖：静态页面资源、真实 MiniMQ 主流程、Broker 不可用时的 mock fallback、HTTP 错误处理、表单默认值与模式归一化。
@@ -178,9 +199,18 @@ Without these fixes, concurrent clicks could send message A but consume message 
 | 4-8 | Consumer Group / Offset / 消费组与位点 | 加入消费组、同步分区分配、心跳、提交 offset、拉取 offset。 |
 | 9 | `REGISTER_BROKER` / 注册 Broker | Broker 向 Controller 注册自身地址与状态。 |
 
-## V2 规划
+Additional V4 API keys:
 
-- 分区副本 / ISR
-- Controller 选举
-- Log Segment 分段
+- 20-21: OPS_STATUS and GROUP_STATUS for bounded operator status and Consumer lag snapshots.
+- 22-28: Topic admin, failover audit, auth status, and retry/DLQ reliability-link configuration.
+- 31: PRODUCE_V2 with deliverAtEpochMs for delayed/retry records.
+- 32: REPLICA_FETCH_V2 with delivery timestamps and visibility watermarks.
+- 34: FETCH_V2 with visible watermark and nextVisibleAtEpochMs; Consumer uses this path by default.
+- 35-37: METADATA_V2, RUNTIME_METRICS_V2, and replica-state V2 reporting.
+
+## 已实现里程碑
+
+- V2 系列：分区副本 / ISR、Controller failover、Log Segment、retention、compaction、zero-copy FETCH。
+- V3 系列：etcd Controller HA、Leader epoch fencing、runtime metrics、resilience hardening、network transport selector。
+- V4 当前实现：operator readiness、topic admin、failover audit、bounded metrics V2、retry/DLQ links、delayed messages、FETCH_V2 bounded wait。
 
