@@ -1,6 +1,8 @@
 package com.minimq.broker;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.minimq.broker.audit.FailoverAuditEventType;
+import com.minimq.broker.audit.FailoverAuditLog;
 import com.minimq.broker.coordination.ControllerElectionService;
 import com.minimq.broker.coordination.ControllerIdentity;
 import com.minimq.broker.coordination.EtcdClientFactory;
@@ -31,6 +33,7 @@ public final class ControllerRuntime implements ControllerRole, AutoCloseable {
     private final Function<com.minimq.broker.coordination.ControllerCoordinationStore.Leadership,
             com.minimq.broker.metadata.ClusterMetadataRepository> repositoryFactory;
     private final Runnable activationListener;
+    private final FailoverAuditLog auditLog;
     private final AtomicBoolean closed = new AtomicBoolean();
     private final Thread thread;
     private volatile boolean active;
@@ -40,10 +43,20 @@ public final class ControllerRuntime implements ControllerRole, AutoCloseable {
             ClusterController controller,
             SwitchableClusterMetadataRepository repository,
             Runnable activationListener) {
+        this(config, controller, repository, activationListener, null);
+    }
+
+    public ControllerRuntime(
+            BrokerConfig config,
+            ClusterController controller,
+            SwitchableClusterMetadataRepository repository,
+            Runnable activationListener,
+            FailoverAuditLog auditLog) {
         this.config = config;
         this.controller = controller;
         this.repository = repository;
         this.activationListener = activationListener;
+        this.auditLog = auditLog;
         this.client = EtcdClientFactory.create(config.etcdEndpoints());
         this.coordination = new EtcdControllerCoordinationStore(client, config.clusterId());
         this.election = new ControllerElectionService(
@@ -59,6 +72,15 @@ public final class ControllerRuntime implements ControllerRole, AutoCloseable {
         this.thread.setDaemon(true);
     }
 
+    public ControllerRuntime(
+            BrokerConfig config,
+            ClusterController controller,
+            SwitchableClusterMetadataRepository repository,
+            FailoverAuditLog auditLog,
+            Runnable activationListener) {
+        this(config, controller, repository, activationListener, auditLog);
+    }
+
     ControllerRuntime(
             BrokerConfig config,
             ClusterController controller,
@@ -70,6 +92,22 @@ public final class ControllerRuntime implements ControllerRole, AutoCloseable {
             Function<com.minimq.broker.coordination.ControllerCoordinationStore.Leadership,
                     com.minimq.broker.metadata.ClusterMetadataRepository> repositoryFactory,
             Runnable activationListener) {
+        this(config, controller, repository, client, coordination, election, watch,
+                repositoryFactory, activationListener, null);
+    }
+
+    ControllerRuntime(
+            BrokerConfig config,
+            ClusterController controller,
+            SwitchableClusterMetadataRepository repository,
+            Client client,
+            EtcdControllerCoordinationStore coordination,
+            ControllerElectionService election,
+            MetadataWatchService watch,
+            Function<com.minimq.broker.coordination.ControllerCoordinationStore.Leadership,
+                    com.minimq.broker.metadata.ClusterMetadataRepository> repositoryFactory,
+            Runnable activationListener,
+            FailoverAuditLog auditLog) {
         this.config = config;
         this.controller = controller;
         this.repository = repository;
@@ -79,6 +117,7 @@ public final class ControllerRuntime implements ControllerRole, AutoCloseable {
         this.watch = watch;
         this.repositoryFactory = repositoryFactory;
         this.activationListener = activationListener;
+        this.auditLog = auditLog;
         this.thread = new Thread(this::campaign, "controller-election-" + config.brokerId());
         this.thread.setDaemon(true);
     }
@@ -143,6 +182,9 @@ public final class ControllerRuntime implements ControllerRole, AutoCloseable {
             controller.beginRecovery(config.controllerFailoverGraceMs());
             election.activate();
             active = true;
+            audit(FailoverAuditEventType.CONTROLLER_TAKEOVER,
+                    config.brokerId(), null, null, "inactive", "active",
+                    "controller epoch " + leadership.identity().controllerEpoch());
             activationListener.run();
     }
 
@@ -172,5 +214,23 @@ public final class ControllerRuntime implements ControllerRole, AutoCloseable {
         }
         election.close();
         coordination.close();
+    }
+
+    private void audit(
+            FailoverAuditEventType eventType,
+            Integer brokerId,
+            String topicName,
+            Integer partitionId,
+            String oldValue,
+            String newValue,
+            String detail) {
+        if (auditLog == null) {
+            return;
+        }
+        try {
+            auditLog.append(eventType, brokerId, topicName, partitionId, oldValue, newValue, detail);
+        } catch (RuntimeException ignored) {
+            // Audit is best-effort and cannot make Controller activation fail.
+        }
     }
 }

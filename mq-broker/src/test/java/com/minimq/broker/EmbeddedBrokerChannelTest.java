@@ -3,10 +3,11 @@ package com.minimq.broker;
 import com.minimq.broker.controller.ClusterController;
 import com.minimq.broker.controller.GroupCoordinator;
 import com.minimq.broker.handler.MqRequestHandler;
+import com.minimq.broker.auth.OperatorAuthorizer;
 import com.minimq.broker.metadata.MetadataStore;
 import com.minimq.broker.metrics.BrokerRuntimeMetrics;
 import com.minimq.broker.metrics.BrokerRuntimeMetricsSnapshot;
-import com.minimq.broker.replication.ReplicaLeoReporter;
+import com.minimq.broker.replication.ReplicaStateReporter;
 import com.minimq.broker.replication.ReplicaStateManager;
 import com.minimq.broker.resilience.RequestThrottler;
 import com.minimq.broker.resilience.ThrottleResult;
@@ -15,10 +16,13 @@ import com.minimq.common.error.ErrorCode;
 import com.minimq.protocol.ApiKeys;
 import com.minimq.protocol.MqFrame;
 import com.minimq.protocol.ProtocolSerdes;
+import com.minimq.protocol.codec.ByteBufSerde;
 import com.minimq.protocol.codec.MqDecoder;
 import com.minimq.protocol.codec.MqEncoder;
 import com.minimq.protocol.message.MqRequestHeader;
 import com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest;
+import com.minimq.protocol.message.ProtocolMessages.ConfigureTopicReliabilityRequest;
+import com.minimq.protocol.message.ProtocolMessages.ConfigureTopicReliabilityResponse;
 import com.minimq.protocol.message.ProtocolMessages.DiscoverControllerRequest;
 import com.minimq.protocol.message.ProtocolMessages.DiscoverControllerResponse;
 import com.minimq.protocol.message.ProtocolMessages.FetchRequest;
@@ -32,6 +36,8 @@ import com.minimq.protocol.message.ProtocolMessages.MaintenanceReportRequest;
 import com.minimq.protocol.message.ProtocolMessages.MaintenanceReportResponse;
 import com.minimq.protocol.message.ProtocolMessages.MaintenanceRunRequest;
 import com.minimq.protocol.message.ProtocolMessages.MetadataRequest;
+import com.minimq.protocol.message.ProtocolMessages.MarkBrokerOfflineAdminRequest;
+import com.minimq.protocol.message.ProtocolMessages.MarkBrokerOfflineAdminResponse;
 import com.minimq.protocol.message.ProtocolMessages.OffsetCommitRequest;
 import com.minimq.protocol.message.ProtocolMessages.OffsetFetchRequest;
 import com.minimq.protocol.message.ProtocolMessages.OffsetFetchResponse;
@@ -44,9 +50,13 @@ import com.minimq.protocol.message.ProtocolMessages.ReplicaFetchRequest;
 import com.minimq.protocol.message.ProtocolMessages.ReplicaFetchResponse;
 import com.minimq.protocol.message.ProtocolMessages.RuntimeMetricsRequest;
 import com.minimq.protocol.message.ProtocolMessages.RuntimeMetricsResponse;
+import com.minimq.protocol.message.ProtocolMessages.RuntimeMetricsV2Request;
+import com.minimq.protocol.message.ProtocolMessages.RuntimeMetricsV2Response;
 import com.minimq.protocol.message.ProtocolMessages.SyncGroupRequest;
 import com.minimq.protocol.message.ProtocolMessages.SyncGroupResponse;
 import com.minimq.protocol.message.ProtocolMessages.UpdateReplicaLeoRequest;
+import com.minimq.protocol.message.ProtocolMessages.UpdateReplicaStateV2Request;
+import com.minimq.protocol.message.ProtocolMessages.UpdateReplicaStateV2Response;
 import com.minimq.storage.CompactionPolicy;
 import com.minimq.storage.FlushPolicy;
 import com.minimq.storage.LogMaintenanceConfig;
@@ -86,15 +96,115 @@ class EmbeddedBrokerChannelTest {
     }
 
     @Test
+    void legacyCreateTopicIsDeniedUnlessCompatibilityFlagIsSet() {
+        BrokerConfig defaultConfig = defaultConfig(tempDir.resolve("legacy-create-denied"), true);
+        EmbeddedChannel denied = newChannel(
+                defaultConfig,
+                new ClusterController(new MetadataStore(defaultConfig.dataDir())));
+
+        assertEquals(ErrorCode.UNAUTHORIZED, send(
+                denied, ApiKeys.CREATE_TOPIC, new CreateTopicRequest("orders", 1)).header().errorCode());
+        denied.finishAndReleaseAll();
+
+        BrokerConfig legacyConfig = withLegacyApis(defaultConfig(tempDir.resolve("legacy-create-allowed"), true));
+        ClusterController allowedController = new ClusterController(new MetadataStore(legacyConfig.dataDir()));
+        assertEquals(ErrorCode.NONE,
+                allowedController.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092)).errorCode());
+        EmbeddedChannel allowed = newChannel(
+                legacyConfig,
+                allowedController);
+        assertEquals(ErrorCode.NONE, send(
+                allowed, ApiKeys.CREATE_TOPIC, new CreateTopicRequest("orders", 1)).header().errorCode());
+        allowed.finishAndReleaseAll();
+    }
+
+    @Test
+    void legacyInternalApisAreDeniedBeforeBodyDecodeUnlessCompatibilityFlagIsSet() {
+        short[] internalApis = {
+                ApiKeys.REPLICA_FETCH,
+                ApiKeys.MARK_BROKER_OFFLINE,
+                ApiKeys.UPDATE_REPLICA_LEO
+        };
+        for (short apiKey : internalApis) {
+            BrokerConfig defaultConfig = defaultConfig(tempDir.resolve("legacy-internal-denied-" + apiKey), true);
+            EmbeddedChannel denied = newChannel(
+                    defaultConfig,
+                    new ClusterController(new MetadataStore(defaultConfig.dataDir())));
+
+            assertEquals(ErrorCode.UNAUTHORIZED, sendHeaderOnly(denied, apiKey).header().errorCode());
+            denied.finishAndReleaseAll();
+
+            BrokerConfig legacyConfig =
+                    withLegacyApis(defaultConfig(tempDir.resolve("legacy-internal-allowed-" + apiKey), true));
+            EmbeddedChannel allowed = newChannel(
+                    legacyConfig,
+                    new ClusterController(new MetadataStore(legacyConfig.dataDir())));
+
+            assertEquals(ErrorCode.INVALID_REQUEST, sendHeaderOnly(allowed, apiKey).header().errorCode());
+            allowed.finishAndReleaseAll();
+        }
+    }
+
+    @Test
+    void operatorApisAuthorizeCredentialBeforeFullBodyDecode() {
+        BrokerConfig config = BrokerConfig.parse(new String[] {
+                "--broker-id", "0",
+                "--host", "127.0.0.1",
+                "--port", "9092",
+                "--data-dir", tempDir.resolve("operator-auth").toString(),
+                "--admin-token", BrokerTestHarness.ADMIN_TOKEN,
+                "--operator-credential", "status-token=STATUS",
+                "--operator-credential", "topic-token=TOPIC_ADMIN"
+        });
+        EmbeddedChannel channel = newChannel(
+                config,
+                new ClusterController(new MetadataStore(config.dataDir())));
+
+        assertEquals(ErrorCode.UNAUTHORIZED,
+                sendCredentialPrefixOnly(channel, ApiKeys.OPS_STATUS, "unknown-token").header().errorCode());
+        assertEquals(ErrorCode.FORBIDDEN,
+                sendCredentialPrefixOnly(channel, ApiKeys.OPS_STATUS, "topic-token").header().errorCode());
+        assertEquals(ErrorCode.INVALID_REQUEST,
+                sendCredentialPrefixOnly(channel, ApiKeys.OPS_STATUS, "status-token").header().errorCode());
+        assertEquals(ErrorCode.UNAUTHORIZED,
+                sendCredentialPrefixOnly(channel, ApiKeys.AUTH_STATUS, "unknown-token").header().errorCode());
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void brokerOfflineAdminRoutesAuthorizedMutation() {
+        BrokerConfig config = withLegacyApis(defaultConfig(tempDir.resolve("broker-offline-admin"), true));
+        ClusterController controller = new ClusterController(new MetadataStore(config.dataDir()));
+        assertEquals(ErrorCode.NONE,
+                controller.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092)).errorCode());
+        EmbeddedChannel channel = newChannel(config, controller);
+
+        MqDecoder.DecodedResponse response = send(
+                channel,
+                ApiKeys.MARK_BROKER_OFFLINE_ADMIN,
+                new MarkBrokerOfflineAdminRequest(BrokerTestHarness.ADMIN_TOKEN, 0));
+        assertEquals(ErrorCode.NONE, response.header().errorCode());
+        assertEquals(new MarkBrokerOfflineAdminResponse(0, controller.snapshot().metadataVersion), response.body());
+        assertFalse(controller.snapshot().brokers.get(0).online);
+
+        MqDecoder.DecodedResponse unknown = send(
+                channel,
+                ApiKeys.MARK_BROKER_OFFLINE_ADMIN,
+                new MarkBrokerOfflineAdminRequest(BrokerTestHarness.ADMIN_TOKEN, 99));
+        assertEquals(ErrorCode.UNKNOWN_BROKER, unknown.header().errorCode());
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
     void createTopicOverEmbeddedChannel() {
         MetadataStore store = new MetadataStore(tempDir);
         ClusterController clusterController = new ClusterController(store);
         GroupCoordinator groupCoordinator = new GroupCoordinator(clusterController);
         LogManager logManager = new LogManager(tempDir);
         PartitionManager partitionManager = new PartitionManager(logManager);
-        BrokerConfig config = new BrokerConfig(
+        BrokerConfig config = withLegacyApis(new BrokerConfig(
                 0, "127.0.0.1", 9092, tempDir, true, "127.0.0.1", 9092, false,
-                BrokerTestHarness.ADMIN_TOKEN);
+                BrokerTestHarness.ADMIN_TOKEN));
 
         EmbeddedChannel channel = new EmbeddedChannel(
                 new MqDecoder(),
@@ -123,9 +233,9 @@ class EmbeddedBrokerChannelTest {
         GroupCoordinator groupCoordinator = new GroupCoordinator(clusterController);
         LogManager logManager = new LogManager(tempDir);
         PartitionManager partitionManager = new PartitionManager(logManager);
-        BrokerConfig config = new BrokerConfig(
+        BrokerConfig config = withLegacyApis(new BrokerConfig(
                 0, "127.0.0.1", 9092, tempDir, true, "127.0.0.1", 9092, false,
-                BrokerTestHarness.ADMIN_TOKEN);
+                BrokerTestHarness.ADMIN_TOKEN));
 
         EmbeddedChannel channel = new EmbeddedChannel(
                 new MqDecoder(),
@@ -449,6 +559,84 @@ class EmbeddedBrokerChannelTest {
     }
 
     @Test
+    void controllerAcceptsReplicaStateV2WithClusterCredential() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
+        clusterController.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092));
+        clusterController.createTopic(new CreateTopicRequest("orders", 1));
+        EmbeddedChannel channel = newChannel(clusterController, true);
+
+        MqDecoder.DecodedResponse accepted = send(
+                channel,
+                ApiKeys.UPDATE_REPLICA_STATE_V2,
+                new UpdateReplicaStateV2Request(
+                        BrokerTestHarness.ADMIN_TOKEN,
+                        "orders",
+                        0,
+                        0,
+                        1L,
+                        0L,
+                        0L,
+                        9L,
+                        7L,
+                        1_000L));
+
+        assertEquals(ErrorCode.NONE, accepted.header().errorCode());
+        assertTrue(accepted.body() instanceof UpdateReplicaStateV2Response);
+        assertEquals(
+                7L,
+                clusterController.snapshot().topics.get("orders").partitions.get(0)
+                        .replicaProgress.get(0).visibleLogEndOffset);
+
+        MqDecoder.DecodedResponse denied = send(
+                channel,
+                ApiKeys.UPDATE_REPLICA_STATE_V2,
+                new UpdateReplicaStateV2Request(
+                        "wrong-cluster-token",
+                        "orders",
+                        0,
+                        0,
+                        1L,
+                        0L,
+                        0L,
+                        9L,
+                        9L,
+                        -1L));
+        assertEquals(ErrorCode.UNAUTHORIZED, denied.header().errorCode());
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void configureTopicReliabilityRoutesThroughScopedAdminApi() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
+        clusterController.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092));
+        clusterController.createTopic(new CreateTopicRequest("orders", 1));
+        clusterController.createTopic(new CreateTopicRequest("orders.retry", 1));
+        EmbeddedChannel channel = newChannel(clusterController, true);
+
+        MqDecoder.DecodedResponse response = send(
+                channel,
+                ApiKeys.CONFIGURE_TOPIC_RELIABILITY,
+                new ConfigureTopicReliabilityRequest(
+                        BrokerTestHarness.ADMIN_TOKEN,
+                        "orders",
+                        true,
+                        "orders.retry",
+                        false,
+                        false,
+                        null,
+                        false));
+
+        assertEquals(ErrorCode.NONE, response.header().errorCode());
+        assertTrue(response.body() instanceof ConfigureTopicReliabilityResponse);
+        ConfigureTopicReliabilityResponse body =
+                (ConfigureTopicReliabilityResponse) response.body();
+        assertEquals("orders.retry", body.retryTopicName());
+        assertEquals("orders.retry",
+                clusterController.snapshot().retryTopicBySource.get("orders"));
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
     void storageDegradedMatrixRejectsMutationsButAllowsReadsAndMetrics() {
         ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
         BrokerAvailabilityGuard guard = new BrokerAvailabilityGuard();
@@ -507,6 +695,39 @@ class EmbeddedBrokerChannelTest {
     }
 
     @Test
+    void runtimeMetricsV2IncludesBoundedPartitionLagSnapshot() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
+        assertEquals(ErrorCode.NONE, clusterController.registerBroker(
+                new RegisterBrokerRequest(0, "127.0.0.1", 9092)).errorCode());
+        assertEquals(ErrorCode.NONE, clusterController.createTopic(new CreateTopicRequest("orders", 2, 1)));
+        assertEquals(ErrorCode.NONE, clusterController.updateReplicaStateV2(
+                "orders", 0, 0, 1L, 0L, 0L, 10L, 7L, 9_000L));
+        assertEquals(ErrorCode.NONE, clusterController.updateReplicaStateV2(
+                "orders", 1, 0, 1L, 0L, 0L, 20L, 11L, 10_000L));
+        GroupCoordinator coordinator = new GroupCoordinator(clusterController);
+        coordinator.joinGroup(new JoinGroupRequest("g1", "member-a", "orders"));
+        coordinator.offsetCommit(new OffsetCommitRequest("g1", "orders", 0, 4L));
+        coordinator.offsetCommit(new OffsetCommitRequest("g1", "orders", 1, 12L));
+        EmbeddedChannel channel = newChannel(clusterController, true);
+
+        MqDecoder.DecodedResponse response = send(
+                channel,
+                ApiKeys.RUNTIME_METRICS_V2,
+                new RuntimeMetricsV2Request(BrokerTestHarness.ADMIN_TOKEN, 10, 10, 1));
+
+        assertEquals(ErrorCode.NONE, response.header().errorCode());
+        RuntimeMetricsV2Response metrics = (RuntimeMetricsV2Response) response.body();
+        assertEquals(2, metrics.lagMetrics().total());
+        assertTrue(metrics.lagMetrics().truncated());
+        assertEquals(1, metrics.lagMetrics().items().size());
+        assertEquals("orders", metrics.lagMetrics().items().get(0).topicName());
+        assertEquals(0, metrics.lagMetrics().items().get(0).partitionId());
+        assertEquals(6L, metrics.lagMetrics().items().get(0).physicalLag());
+        assertEquals(3L, metrics.lagMetrics().items().get(0).visibleLag());
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
     void maintenanceAdminApisRejectInvalidToken() {
         ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
         EmbeddedChannel channel = newChannel(clusterController, true);
@@ -542,7 +763,7 @@ class EmbeddedBrokerChannelTest {
         ClusterController clusterController =
                 new ClusterController(new MetadataStore(dataDir.resolve("metadata")));
         GroupCoordinator groupCoordinator = new GroupCoordinator(clusterController);
-        BrokerConfig config = new BrokerConfig(
+        BrokerConfig config = withLegacyApis(new BrokerConfig(
                 0,
                 "127.0.0.1",
                 9092,
@@ -551,9 +772,9 @@ class EmbeddedBrokerChannelTest {
                 "127.0.0.1",
                 9092,
                 false,
-                BrokerTestHarness.ADMIN_TOKEN);
+                BrokerTestHarness.ADMIN_TOKEN));
         MaintenanceAdminService service =
-                new MaintenanceAdminService(config.adminToken(), partitionManager);
+                new MaintenanceAdminService(OperatorAuthorizer.fromConfig(config), partitionManager);
         EmbeddedChannel channel = new EmbeddedChannel(
                 new MqDecoder(),
                 new MqRequestHandler(
@@ -619,12 +840,30 @@ class EmbeddedBrokerChannelTest {
             BrokerAvailabilityGuard guard,
             BrokerRuntimeMetrics runtimeMetrics,
             RequestThrottler requestThrottler) {
+        BrokerConfig config = withLegacyApis(defaultConfig(brokerId, tempDir, controller));
+        return newChannel(config, clusterController, guard, runtimeMetrics, requestThrottler);
+    }
+
+    private EmbeddedChannel newChannel(BrokerConfig config, ClusterController clusterController) {
+        BrokerAvailabilityGuard guard = new BrokerAvailabilityGuard();
+        guard.activate();
+        return newChannel(
+                config,
+                clusterController,
+                guard,
+                new BrokerRuntimeMetrics(),
+                new RequestThrottler(0));
+    }
+
+    private EmbeddedChannel newChannel(
+            BrokerConfig config,
+            ClusterController clusterController,
+            BrokerAvailabilityGuard guard,
+            BrokerRuntimeMetrics runtimeMetrics,
+            RequestThrottler requestThrottler) {
         GroupCoordinator groupCoordinator = new GroupCoordinator(clusterController);
-        LogManager logManager = new LogManager(tempDir);
+        LogManager logManager = new LogManager(config.dataDir());
         PartitionManager partitionManager = new PartitionManager(logManager);
-        BrokerConfig config = new BrokerConfig(
-                brokerId, "127.0.0.1", 9092, tempDir, controller, "127.0.0.1", 9092, false,
-                BrokerTestHarness.ADMIN_TOKEN);
         return new EmbeddedChannel(
                 new MqDecoder(),
                 new MqRequestHandler(
@@ -634,7 +873,7 @@ class EmbeddedBrokerChannelTest {
                         partitionManager,
                         new ReplicaStateManager(),
                         new FetchTransferMetrics(),
-                        new ReplicaLeoReporter(config, clusterController, guard),
+                        new ReplicaStateReporter(config, clusterController, guard),
                         guard,
                         maintenanceServiceFor(config, partitionManager),
                         ControllerRole.legacy(config),
@@ -643,10 +882,63 @@ class EmbeddedBrokerChannelTest {
                 new MqEncoder());
     }
 
+    private static BrokerConfig defaultConfig(Path dataDir, boolean controller) {
+        return defaultConfig(0, dataDir, controller);
+    }
+
+    private static BrokerConfig defaultConfig(int brokerId, Path dataDir, boolean controller) {
+        return new BrokerConfig(
+                brokerId, "127.0.0.1", 9092, dataDir, controller, "127.0.0.1", 9092, false,
+                BrokerTestHarness.ADMIN_TOKEN);
+    }
+
+    private static BrokerConfig withLegacyApis(BrokerConfig config) {
+        return new BrokerConfig(
+                config.brokerId(),
+                config.host(),
+                config.port(),
+                config.dataDir(),
+                config.controller(),
+                config.controllerHost(),
+                config.controllerPort(),
+                config.recoverCorruptMetadata(),
+                config.flushPolicy(),
+                config.checkpointEveryNAppends(),
+                config.segmentMaxBytes(),
+                config.sparseIndexIntervalRecords(),
+                config.retentionMs(),
+                config.retentionBytes(),
+                config.compactionEnabled(),
+                config.compactionMaxSegments(),
+                config.compactionMaxBytes(),
+                config.maintenanceWindowStartHour(),
+                config.maintenanceWindowEndHour(),
+                config.maintenanceEveryNAppends(),
+                config.fetchTransferMode(),
+                config.fetchTransferTimeoutMs(),
+                config.networkTransportMode(),
+                config.maxInFlightRequests(),
+                config.brokerHeartbeatIntervalMs(),
+                config.brokerSelfFenceTimeoutMs(),
+                config.controllerBrokerLeaseTimeoutMs(),
+                config.clusterId(),
+                config.etcdEndpoints(),
+                config.controllerSessionTtlSeconds(),
+                config.controllerFailoverGraceMs(),
+                config.leaderActivationTimeoutMs(),
+                config.initializeEmptyCluster(),
+                config.initializeClusterFromLocal(),
+                config.operatorCredentials(),
+                config.clusterToken(),
+                true,
+                true,
+                config.adminToken());
+    }
+
     private MaintenanceAdminService maintenanceServiceFor(
             BrokerConfig config, PartitionManager partitionManager) {
         MaintenanceAdminService service =
-                new MaintenanceAdminService(config.adminToken(), partitionManager);
+                new MaintenanceAdminService(OperatorAuthorizer.fromConfig(config), partitionManager);
         maintenanceServices.add(service);
         return service;
     }
@@ -667,6 +959,52 @@ class EmbeddedBrokerChannelTest {
             return MqDecoder.decodeResponse(unwrapPayload(responseFrame), apiKey);
         } finally {
             responseFrame.release();
+        }
+    }
+
+    private static MqDecoder.DecodedResponse sendHeaderOnly(EmbeddedChannel channel, short apiKey) {
+        ByteBuf payload = channel.alloc().buffer();
+        payload.writeShort(apiKey);
+        payload.writeInt(11);
+        ByteBufSerde.writeString(payload, "test");
+        return sendRawPayload(channel, apiKey, payload);
+    }
+
+    private static MqDecoder.DecodedResponse sendCredentialPrefixOnly(
+            EmbeddedChannel channel, short apiKey, String credential) {
+        ByteBuf payload = channel.alloc().buffer();
+        payload.writeShort(apiKey);
+        payload.writeInt(11);
+        ByteBufSerde.writeString(payload, "test");
+        ByteBufSerde.writeString(payload, credential);
+        return sendRawPayload(channel, apiKey, payload);
+    }
+
+    private static MqDecoder.DecodedResponse sendRawPayload(
+            EmbeddedChannel channel, short apiKey, ByteBuf payload) {
+        ByteBuf frame = channel.alloc().buffer();
+        try {
+            frame.writeShort(MqFrame.MAGIC);
+            frame.writeByte(MqFrame.VERSION);
+            frame.writeInt(payload.readableBytes());
+            frame.writeBytes(payload);
+            channel.writeInbound(frame);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            ByteBuf responseFrame;
+            while ((responseFrame = channel.readOutbound()) == null) {
+                channel.runPendingTasks();
+                if (System.nanoTime() >= deadline) {
+                    throw new AssertionError("timed out waiting for broker response");
+                }
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));
+            }
+            try {
+                return MqDecoder.decodeResponse(unwrapPayload(responseFrame), apiKey);
+            } finally {
+                responseFrame.release();
+            }
+        } finally {
+            payload.release();
         }
     }
 }

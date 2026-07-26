@@ -37,6 +37,7 @@ public final class MiniMqWebDevMain implements AutoCloseable {
     static MiniMqWebDevMain start(DevConfig config) throws Exception {
         Files.createDirectories(config.dataDir());
         int brokerPort = config.brokerPort() == 0 ? freePort() : config.brokerPort();
+        String adminToken = System.getProperty("minimq.admin.token", "web-dev-admin");
         BrokerConfig brokerConfig = new BrokerConfig(
                 0,
                 config.host(),
@@ -46,10 +47,11 @@ public final class MiniMqWebDevMain implements AutoCloseable {
                 config.host(),
                 brokerPort,
                 false,
-                "web-dev-admin");
+                adminToken);
         BrokerServer broker = new BrokerServer(brokerConfig);
         broker.start();
-        MiniMqWebApp web = MiniMqWebApp.start(config.webPort(), config.host() + ":" + brokerPort);
+        MiniMqWebApp web = MiniMqWebApp.start(
+                config.webPort(), config.host() + ":" + brokerPort, adminToken);
         return new MiniMqWebDevMain(broker, web, config, brokerPort);
     }
 

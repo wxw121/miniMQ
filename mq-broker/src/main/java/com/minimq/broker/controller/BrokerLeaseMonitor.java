@@ -1,5 +1,6 @@
 package com.minimq.broker.controller;
 
+import com.minimq.broker.audit.FailoverAuditLog;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -15,6 +16,7 @@ public final class BrokerLeaseMonitor implements AutoCloseable {
     private final long scanIntervalMs;
     private final long leaderActivationTimeoutMs;
     private final BooleanSupplier controllerActive;
+    private final FailoverAuditLog auditLog;
     private final ScheduledExecutorService scheduler;
 
     public BrokerLeaseMonitor(ClusterController clusterController, long scanIntervalMs) {
@@ -33,11 +35,22 @@ public final class BrokerLeaseMonitor implements AutoCloseable {
             long scanIntervalMs,
             long leaderActivationTimeoutMs,
             BooleanSupplier controllerActive) {
+        this(clusterController, scanIntervalMs, leaderActivationTimeoutMs, controllerActive,
+                (FailoverAuditLog) null);
+    }
+
+    public BrokerLeaseMonitor(
+            ClusterController clusterController,
+            long scanIntervalMs,
+            long leaderActivationTimeoutMs,
+            BooleanSupplier controllerActive,
+            FailoverAuditLog auditLog) {
         this(
                 clusterController,
                 scanIntervalMs,
                 leaderActivationTimeoutMs,
                 controllerActive,
+                auditLog,
                 Executors.newSingleThreadScheduledExecutor(runnable -> {
                     Thread thread = new Thread(runnable, "broker-lease-monitor");
                     thread.setDaemon(true);
@@ -66,11 +79,34 @@ public final class BrokerLeaseMonitor implements AutoCloseable {
             long leaderActivationTimeoutMs,
             BooleanSupplier controllerActive,
             ScheduledExecutorService scheduler) {
+        this(clusterController, scanIntervalMs, leaderActivationTimeoutMs, controllerActive,
+                (FailoverAuditLog) null, scheduler);
+    }
+
+    BrokerLeaseMonitor(
+            ClusterController clusterController,
+            long scanIntervalMs,
+            long leaderActivationTimeoutMs,
+            BooleanSupplier controllerActive,
+            FailoverAuditLog auditLog,
+            ScheduledExecutorService scheduler) {
         this.clusterController = clusterController;
         this.scanIntervalMs = scanIntervalMs;
         this.leaderActivationTimeoutMs = leaderActivationTimeoutMs;
         this.controllerActive = controllerActive;
+        this.auditLog = auditLog;
         this.scheduler = scheduler;
+    }
+
+    BrokerLeaseMonitor(
+            ClusterController clusterController,
+            long scanIntervalMs,
+            long leaderActivationTimeoutMs,
+            BooleanSupplier controllerActive,
+            ScheduledExecutorService scheduler,
+            FailoverAuditLog auditLog) {
+        this(clusterController, scanIntervalMs, leaderActivationTimeoutMs,
+                controllerActive, auditLog, scheduler);
     }
 
     public void start() {

@@ -1,5 +1,7 @@
 package com.minimq.protocol.message;
 
+import com.minimq.protocol.MqFrame;
+
 import java.util.List;
 import java.util.Map;
 
@@ -13,6 +15,25 @@ public final class ProtocolMessages {
     private static void requireNonNegative(long value, String fieldName) {
         if (value < 0) {
             throw new IllegalArgumentException(fieldName + " must be non-negative");
+        }
+    }
+
+    private static void requireRange(int value, int min, int max, String fieldName) {
+        if (value < min || value > max) {
+            throw new IllegalArgumentException(
+                    fieldName + " must be in " + min + ".." + max + ": " + value);
+        }
+    }
+
+    private static void requireNonEmpty(String value, String fieldName) {
+        if (value == null || value.isEmpty()) {
+            throw new IllegalArgumentException(fieldName + " must not be empty");
+        }
+    }
+
+    private static void requireOptionalNonEmpty(String value, String fieldName) {
+        if (value != null && value.isEmpty()) {
+            throw new IllegalArgumentException(fieldName + " must be absent or non-empty");
         }
     }
 
@@ -367,5 +388,502 @@ public final class ProtocolMessages {
             List<RuntimeErrorCount> responsesByErrorCode,
             List<RuntimeLatencySummary> latencyByApiKey,
             List<RuntimeMetricCount> throttledByApiKey) {
+    }
+
+    public record OpsStatusRequest(String credential, int brokerLimit, int partitionLimit) {
+        public OpsStatusRequest {
+            requireNonEmpty(credential, "credential");
+            requireRange(brokerLimit, 1, 1_000, "brokerLimit");
+            requireRange(partitionLimit, 1, 1_000, "partitionLimit");
+        }
+    }
+
+    public record GroupStatusRequest(
+            String credential,
+            String groupId,
+            String topicFilter,
+            int memberLimit,
+            int partitionLimit) {
+        public GroupStatusRequest {
+            requireNonEmpty(credential, "credential");
+            requireNonEmpty(groupId, "groupId");
+            requireOptionalNonEmpty(topicFilter, "topicFilter");
+            requireRange(memberLimit, 1, 1_000, "memberLimit");
+            requireRange(partitionLimit, 1, 1_000, "partitionLimit");
+        }
+    }
+
+    public record ListTopicsRequest(String credential, int limit) {
+        public ListTopicsRequest {
+            requireNonEmpty(credential, "credential");
+            requireRange(limit, 1, 1_000, "limit");
+        }
+    }
+
+    public record DescribeTopicRequest(
+            String credential, String topicName, int partitionLimit, boolean includeDeleted) {
+        public DescribeTopicRequest {
+            requireNonEmpty(credential, "credential");
+            requireNonEmpty(topicName, "topicName");
+            requireRange(partitionLimit, 1, 1_000, "partitionLimit");
+        }
+    }
+
+    public record DeleteTopicRequest(String credential, String topicName) {
+        public DeleteTopicRequest {
+            requireNonEmpty(credential, "credential");
+            requireNonEmpty(topicName, "topicName");
+        }
+    }
+
+    public record IncreasePartitionsRequest(
+            String credential, String topicName, int targetPartitionCount) {
+        public IncreasePartitionsRequest {
+            requireNonEmpty(credential, "credential");
+            requireNonEmpty(topicName, "topicName");
+            requireRange(targetPartitionCount, 1, 10_000, "targetPartitionCount");
+        }
+    }
+
+    public record FailoverAuditRequest(String credential, int limit) {
+        public FailoverAuditRequest {
+            requireNonEmpty(credential, "credential");
+            requireRange(limit, 1, 1_000, "limit");
+        }
+    }
+
+    public record AuthStatusRequest(String credential) {
+        public AuthStatusRequest {
+            requireNonEmpty(credential, "credential");
+        }
+    }
+
+    public record ConfigureTopicReliabilityRequest(
+            String credential,
+            String sourceTopicName,
+            boolean retryTopicSupplied,
+            String retryTopicName,
+            boolean clearRetryTopic,
+            boolean deadLetterTopicSupplied,
+            String deadLetterTopicName,
+            boolean clearDeadLetterTopic) {
+        public ConfigureTopicReliabilityRequest {
+            requireNonEmpty(credential, "credential");
+            requireNonEmpty(sourceTopicName, "sourceTopicName");
+            if (retryTopicSupplied == clearRetryTopic) {
+                if (retryTopicSupplied) {
+                    throw new IllegalArgumentException("retry topic cannot be supplied and cleared");
+                }
+            }
+            if (deadLetterTopicSupplied == clearDeadLetterTopic) {
+                if (deadLetterTopicSupplied) {
+                    throw new IllegalArgumentException(
+                            "dead-letter topic cannot be supplied and cleared");
+                }
+            }
+            if (retryTopicSupplied) {
+                requireNonEmpty(retryTopicName, "retryTopicName");
+            } else if (retryTopicName != null) {
+                throw new IllegalArgumentException(
+                        "retryTopicName requires retryTopicSupplied");
+            }
+            if (deadLetterTopicSupplied) {
+                requireNonEmpty(deadLetterTopicName, "deadLetterTopicName");
+            } else if (deadLetterTopicName != null) {
+                throw new IllegalArgumentException(
+                        "deadLetterTopicName requires deadLetterTopicSupplied");
+            }
+        }
+    }
+
+    public record MarkBrokerOfflineAdminRequest(String credential, int brokerId) {
+        public MarkBrokerOfflineAdminRequest {
+            requireNonEmpty(credential, "credential");
+        }
+    }
+
+    public record CreateTopicAdminRequest(
+            String credential, String topicName, int numPartitions, int replicationFactor) {
+        public CreateTopicAdminRequest {
+            requireNonEmpty(credential, "credential");
+            requireNonEmpty(topicName, "topicName");
+            requireRange(numPartitions, 1, 10_000, "numPartitions");
+            requireRange(replicationFactor, 1, 10_000, "replicationFactor");
+        }
+    }
+
+    public record ScheduledProduceRecord(byte[] key, byte[] value, long deliverAtEpochMs) {
+        public ScheduledProduceRecord {
+            requireNonNegative(deliverAtEpochMs, "deliverAtEpochMs");
+        }
+    }
+
+    public record ProduceV2Request(
+            String topicName,
+            int partitionId,
+            long leaderEpoch,
+            V4BoundedList<ScheduledProduceRecord> records) {
+        public ProduceV2Request {
+            requireNonEmpty(topicName, "topicName");
+            requireNonNegative(leaderEpoch, "leaderEpoch");
+            if (records == null) {
+                throw new IllegalArgumentException("records must not be null");
+            }
+        }
+    }
+
+    public record ReplicaFetchV2Request(
+            String clusterCredential,
+            String topicName,
+            int partitionId,
+            int replicaBrokerId,
+            long brokerEpoch,
+            long controllerEpoch,
+            long leaderEpoch,
+            long fetchOffset,
+            int maxBytes) {
+        public ReplicaFetchV2Request {
+            requireNonEmpty(clusterCredential, "clusterCredential");
+            requireNonEmpty(topicName, "topicName");
+            requireNonNegative(brokerEpoch, "brokerEpoch");
+            requireNonNegative(controllerEpoch, "controllerEpoch");
+            requireNonNegative(leaderEpoch, "leaderEpoch");
+            requireNonNegative(fetchOffset, "fetchOffset");
+            requireRange(maxBytes, 1, MqFrame.MAX_FRAME_BYTES, "maxBytes");
+        }
+    }
+
+    public record TopicDeleteAckRequest(
+            String clusterCredential,
+            String topicName,
+            long tombstoneVersion,
+            int brokerId,
+            long brokerEpoch,
+            long controllerEpoch) {
+        public TopicDeleteAckRequest {
+            requireNonEmpty(clusterCredential, "clusterCredential");
+            requireNonEmpty(topicName, "topicName");
+            requireNonNegative(tombstoneVersion, "tombstoneVersion");
+            requireNonNegative(brokerEpoch, "brokerEpoch");
+            requireNonNegative(controllerEpoch, "controllerEpoch");
+        }
+    }
+
+    public record FetchV2Request(
+            String topicName, int partitionId, long leaderEpoch, long fetchOffset, int maxBytes) {
+        public FetchV2Request {
+            requireNonEmpty(topicName, "topicName");
+            requireNonNegative(leaderEpoch, "leaderEpoch");
+            requireNonNegative(fetchOffset, "fetchOffset");
+            requireRange(maxBytes, 1, MqFrame.MAX_FRAME_BYTES, "maxBytes");
+        }
+    }
+
+    public record MetadataV2Request(String topicFilter, int topicLimit, int partitionLimit) {
+        public MetadataV2Request {
+            requireOptionalNonEmpty(topicFilter, "topicFilter");
+            requireRange(topicLimit, 1, 10_000, "topicLimit");
+            requireRange(partitionLimit, 1, 10_000, "partitionLimit");
+        }
+    }
+
+    public record RuntimeMetricsV2Request(
+            String credential, int counterLimit, int latencyLimit, int lagLimit) {
+        public RuntimeMetricsV2Request {
+            requireNonEmpty(credential, "credential");
+            requireRange(counterLimit, 1, 1_000, "counterLimit");
+            requireRange(latencyLimit, 1, 1_000, "latencyLimit");
+            requireRange(lagLimit, 1, 1_000, "lagLimit");
+        }
+    }
+
+    public record UpdateReplicaStateV2Request(
+            String clusterCredential,
+            String topicName,
+            int partitionId,
+            int replicaBrokerId,
+            long brokerEpoch,
+            long controllerEpoch,
+            long leaderEpoch,
+            long physicalLogEndOffset,
+            long visibleLogEndOffset,
+            long nextVisibleAtEpochMs) {
+        public UpdateReplicaStateV2Request {
+            requireNonEmpty(clusterCredential, "clusterCredential");
+            requireNonEmpty(topicName, "topicName");
+            requireNonNegative(brokerEpoch, "brokerEpoch");
+            requireNonNegative(controllerEpoch, "controllerEpoch");
+            requireNonNegative(leaderEpoch, "leaderEpoch");
+            requireNonNegative(physicalLogEndOffset, "physicalLogEndOffset");
+            requireNonNegative(visibleLogEndOffset, "visibleLogEndOffset");
+            if (visibleLogEndOffset > physicalLogEndOffset) {
+                throw new IllegalArgumentException(
+                        "visibleLogEndOffset cannot exceed physicalLogEndOffset");
+            }
+            if (visibleLogEndOffset == physicalLogEndOffset) {
+                if (nextVisibleAtEpochMs != -1L) {
+                    throw new IllegalArgumentException(
+                            "nextVisibleAtEpochMs must be -1 when visible equals physical");
+                }
+            } else if (nextVisibleAtEpochMs < 0L) {
+                throw new IllegalArgumentException(
+                        "nextVisibleAtEpochMs must be non-negative when visibility is blocked");
+            }
+        }
+    }
+
+    public record V4BoundedList<T>(int total, boolean truncated, List<T> items) {
+        public V4BoundedList {
+            if (total < 0) {
+                throw new IllegalArgumentException("total must be non-negative");
+            }
+            if (items == null || items.size() > 10_000) {
+                throw new IllegalArgumentException("items must contain at most 10000 entries");
+            }
+            items = List.copyOf(items);
+            if (total < items.size()) {
+                throw new IllegalArgumentException("total cannot be smaller than encoded item count");
+            }
+            if (truncated && total <= items.size()) {
+                throw new IllegalArgumentException(
+                        "truncated list total must exceed encoded item count");
+            }
+            if (!truncated && total != items.size()) {
+                throw new IllegalArgumentException(
+                        "non-truncated list total must equal encoded item count");
+            }
+        }
+    }
+
+    public record OpsBrokerInfo(
+            int brokerId,
+            String host,
+            int port,
+            String state,
+            long brokerEpoch,
+            long leaseDeadlineEpochMs) {
+    }
+
+    public record OpsPartitionInfo(
+            String topicName,
+            int partitionId,
+            int leaderId,
+            long leaderEpoch,
+            long physicalHighWatermark,
+            long visibleHighWatermark,
+            long nextVisibleAtEpochMs,
+            String readiness,
+            boolean frozen,
+            V4BoundedList<Integer> replicaIds,
+            V4BoundedList<Integer> isrIds) {
+    }
+
+    public record GroupAssignmentInfo(String topicName, int partitionId) {
+    }
+
+    public record GroupMemberInfo(
+            String memberId,
+            boolean active,
+            long lastHeartbeatEpochMs,
+            V4BoundedList<GroupAssignmentInfo> assignments) {
+    }
+
+    public record PartitionLagInfo(
+            String topicName,
+            int partitionId,
+            long committedOffset,
+            String commitState,
+            long physicalHighWatermark,
+            long physicalLag,
+            long visibleHighWatermark,
+            long visibleLag,
+            long nextVisibleAtEpochMs,
+            String readiness,
+            boolean frozen) {
+    }
+
+    public record TopicPartitionInfo(
+            int partitionId,
+            int leaderId,
+            long leaderEpoch,
+            V4BoundedList<Integer> replicaIds,
+            V4BoundedList<Integer> isrIds,
+            String readiness,
+            boolean frozen) {
+    }
+
+    public record TopicTombstoneInfo(
+            String state,
+            long tombstoneVersion,
+            long deletedAtEpochMs,
+            V4BoundedList<Integer> requiredBrokerIds,
+            V4BoundedList<Integer> acknowledgedBrokerIds,
+            V4BoundedList<Integer> pendingBrokerIds) {
+    }
+
+    public record AuditEventInfo(
+            long sequence,
+            long timestampEpochMs,
+            String eventType,
+            Integer brokerId,
+            String topicName,
+            Integer partitionId,
+            String oldValue,
+            String newValue,
+            String detail) {
+    }
+
+    public record TopicSummary(
+            String topicName,
+            int partitionCount,
+            int replicationFactor,
+            String retryTopic,
+            String deadLetterTopic) {
+    }
+
+    public record ScheduledReplicaRecord(
+            long offset, byte[] key, byte[] value, long deliverAtEpochMs) {
+        public ScheduledReplicaRecord {
+            requireNonNegative(offset, "offset");
+            requireNonNegative(deliverAtEpochMs, "deliverAtEpochMs");
+        }
+    }
+
+    public record RuntimeLatencyV2Summary(
+            short apiKey, long count, long totalNanos, double maxMillis) {
+        public RuntimeLatencyV2Summary {
+            requireNonNegative(count, "count");
+            requireNonNegative(totalNanos, "totalNanos");
+            if (maxMillis < 0.0) {
+                throw new IllegalArgumentException("maxMillis must be non-negative");
+            }
+        }
+    }
+
+    public record OpsStatusResponse(
+            int targetBrokerId,
+            long startedAtEpochMs,
+            long snapshotAtEpochMs,
+            long metadataVersion,
+            int metadataFormatVersion,
+            String role,
+            long brokerEpoch,
+            long controllerEpoch,
+            String transportMode,
+            String maintenanceState,
+            V4BoundedList<OpsBrokerInfo> brokers,
+            V4BoundedList<OpsPartitionInfo> partitions) {
+    }
+
+    public record GroupStatusResponse(
+            String groupId,
+            String topicName,
+            int generationId,
+            V4BoundedList<GroupMemberInfo> members,
+            V4BoundedList<PartitionLagInfo> partitionLags) {
+    }
+
+    public record ListTopicsResponse(V4BoundedList<String> topicNames) {
+    }
+
+    public record DescribeTopicResponse(
+            String topicName,
+            long metadataVersion,
+            boolean active,
+            String retryTopic,
+            String deadLetterTopic,
+            V4BoundedList<TopicPartitionInfo> partitions,
+            TopicTombstoneInfo tombstone) {
+    }
+
+    public record DeleteTopicResponse(
+            String topicName,
+            String tombstoneState,
+            long tombstoneVersion,
+            long deletedAtEpochMs,
+            V4BoundedList<Integer> requiredBrokerIds,
+            V4BoundedList<Integer> acknowledgedBrokerIds,
+            V4BoundedList<Integer> pendingBrokerIds) {
+    }
+
+    public record IncreasePartitionsResponse(
+            String topicName,
+            int previousPartitionCount,
+            int newPartitionCount,
+            long metadataVersion) {
+    }
+
+    public record FailoverAuditResponse(
+            int brokerId,
+            long brokerStartedAtEpochMs,
+            long overwrittenCount,
+            V4BoundedList<AuditEventInfo> events) {
+    }
+
+    public record AuthStatusResponse(int targetBrokerId, V4BoundedList<String> scopes) {
+    }
+
+    public record ConfigureTopicReliabilityResponse(
+            String sourceTopicName,
+            String retryTopicName,
+            String deadLetterTopicName,
+            long metadataVersion) {
+    }
+
+    public record MarkBrokerOfflineAdminResponse(int brokerId, long metadataVersion) {
+    }
+
+    public record CreateTopicAdminResponse(String topicName, long metadataVersion) {
+    }
+
+    public record ProduceV2Response(String topicName, int partitionId, long baseOffset) {
+    }
+
+    public record ReplicaFetchV2Response(
+            String topicName,
+            int partitionId,
+            long physicalHighWatermark,
+            long visibleHighWatermark,
+            long nextVisibleAtEpochMs,
+            long leaderEpoch,
+            long leaderLogEndOffset,
+            V4BoundedList<ScheduledReplicaRecord> records) {
+    }
+
+    public record TopicDeleteAckResponse() {
+    }
+
+    public record FetchV2Response(
+            String topicName,
+            int partitionId,
+            long physicalHighWatermark,
+            long visibleHighWatermark,
+            long nextVisibleAtEpochMs,
+            V4BoundedList<FetchedRecord> records) {
+    }
+
+    public record MetadataV2Response(
+            V4BoundedList<OpsBrokerInfo> brokers,
+            V4BoundedList<TopicSummary> topics,
+            ControllerMetadata controller,
+            long metadataVersion,
+            int metadataFormatVersion) {
+    }
+
+    public record RuntimeMetricsV2Response(
+            long startedAtEpochMs,
+            long snapshotAtEpochMs,
+            long uptimeMs,
+            V4BoundedList<RuntimeMetricCount> requestsByApiKey,
+            V4BoundedList<RuntimeErrorCount> responsesByErrorCode,
+            V4BoundedList<RuntimeLatencyV2Summary> latencyByApiKey,
+            V4BoundedList<RuntimeMetricCount> throttledByApiKey,
+            long produceBytes,
+            long fetchBytes,
+            long auditOverwrittenCount,
+            V4BoundedList<PartitionLagInfo> lagMetrics) {
+    }
+
+    public record UpdateReplicaStateV2Response() {
     }
 }

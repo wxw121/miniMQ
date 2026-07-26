@@ -1,5 +1,7 @@
 package com.minimq.broker.controller;
 
+import com.minimq.broker.audit.FailoverAuditEventType;
+import com.minimq.broker.audit.FailoverAuditLog;
 import com.minimq.broker.metadata.ClusterMetadata;
 import com.minimq.broker.metadata.ClusterMetadata.BrokerEntry;
 import com.minimq.broker.metadata.ClusterMetadata.PartitionEntry;
@@ -9,7 +11,10 @@ import com.minimq.broker.metadata.VersionedClusterMetadata;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.protocol.message.ProtocolMessages.BrokerMetadata;
 import com.minimq.protocol.message.ProtocolMessages.BrokerHeartbeatRequest;
+import com.minimq.protocol.message.ProtocolMessages.ConfigureTopicReliabilityRequest;
 import com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest;
+import com.minimq.protocol.message.ProtocolMessages.CreateTopicAdminRequest;
+import com.minimq.protocol.message.ProtocolMessages.ConfigureTopicReliabilityRequest;
 import com.minimq.protocol.message.ProtocolMessages.MetadataRequest;
 import com.minimq.protocol.message.ProtocolMessages.MetadataResponse;
 import com.minimq.protocol.message.ProtocolMessages.PartitionMetadata;
@@ -26,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
@@ -41,6 +47,7 @@ public class ClusterController {
     private final ClusterMetadataRepository metadataRepository;
     private final long leaseTimeoutMs;
     private final LongSupplier nanoTime;
+    private final FailoverAuditLog auditLog;
     private final Map<Integer, BrokerLease> brokerLeases = new HashMap<>();
     private ClusterMetadata metadata;
     private long metadataRevision;
@@ -53,6 +60,14 @@ public class ClusterController {
         static BrokerRegistration failed(ErrorCode errorCode) {
             return new BrokerRegistration(errorCode, null);
         }
+    }
+
+    public record IncreasePartitionsResult(
+            ErrorCode errorCode, int previousPartitionCount, int newPartitionCount, long metadataVersion) {
+    }
+
+    public record ReliabilityConfigResult(
+            ErrorCode errorCode, String retryTopicName, String deadLetterTopicName, long metadataVersion) {
     }
 
     private record BrokerLease(long brokerEpoch, long deadlineNanos) {
@@ -72,11 +87,33 @@ public class ClusterController {
         this(metadataRepository, leaseTimeoutMs, System::nanoTime);
     }
 
+    public ClusterController(
+            ClusterMetadataRepository metadataRepository,
+            FailoverAuditLog auditLog) {
+        this(metadataRepository, DEFAULT_LEASE_TIMEOUT_MS, System::nanoTime, auditLog);
+    }
+
+    public ClusterController(
+            ClusterMetadataRepository metadataRepository,
+            long leaseTimeoutMs,
+            FailoverAuditLog auditLog) {
+        this(metadataRepository, leaseTimeoutMs, System::nanoTime, auditLog);
+    }
+
     ClusterController(
             ClusterMetadataRepository metadataRepository, long leaseTimeoutMs, LongSupplier nanoTime) {
+        this(metadataRepository, leaseTimeoutMs, nanoTime, null);
+    }
+
+    public ClusterController(
+            ClusterMetadataRepository metadataRepository,
+            long leaseTimeoutMs,
+            LongSupplier nanoTime,
+            FailoverAuditLog auditLog) {
         this.metadataRepository = metadataRepository;
         this.leaseTimeoutMs = leaseTimeoutMs;
         this.nanoTime = nanoTime;
+        this.auditLog = auditLog;
         VersionedClusterMetadata loaded = metadataRepository.read();
         this.metadata = copyMetadata(loaded.metadata());
         this.metadataRevision = loaded.revision();
@@ -188,6 +225,7 @@ public class ClusterController {
                     partition.leaderEpoch = Math.addExact(partition.leaderEpoch, 1L);
                     partition.leaderEpochStartOffset = cleanRecoveryOffset;
                     partition.leaderReady = false;
+                    invalidateWatermarkSnapshot(partition);
                 }
             }
         }
@@ -196,6 +234,14 @@ public class ClusterController {
             return false;
         }
         brokerLeases.remove(brokerId, lease);
+        audit(
+                FailoverAuditEventType.BROKER_LEASE_EXPIRED,
+                brokerId,
+                null,
+                null,
+                "online",
+                "offline",
+                "broker lease expired at epoch " + expectedEpoch);
         return true;
     }
 
@@ -207,7 +253,8 @@ public class ClusterController {
                 || request.numPartitions() <= 0 || request.replicationFactor() <= 0) {
             return ErrorCode.INVALID_REQUEST;
         }
-        if (metadata.topics.containsKey(request.topicName())) {
+        if (metadata.topics.containsKey(request.topicName())
+                || metadata.topicTombstones.containsKey(request.topicName())) {
             return ErrorCode.INVALID_REQUEST;
         }
         List<BrokerEntry> onlineBrokers = metadata.brokers.values().stream()
@@ -241,7 +288,7 @@ public class ClusterController {
     public synchronized ErrorCode markBrokerOffline(int brokerId) {
         BrokerEntry broker = metadata.brokers.get(brokerId);
         if (broker == null) {
-            return ErrorCode.INVALID_REQUEST;
+            return ErrorCode.UNKNOWN_BROKER;
         }
         ClusterMetadata next = copyMetadata(metadata);
         Map<PartitionEntry, Integer> replacementLeaders = new IdentityHashMap<>();
@@ -269,6 +316,7 @@ public class ClusterController {
                     partition.leaderEpoch = Math.addExact(partition.leaderEpoch, 1L);
                     partition.leaderEpochStartOffset = recoveryOffsets.get(partition);
                     partition.leaderReady = false;
+                    invalidateWatermarkSnapshot(partition);
                 }
             }
         }
@@ -322,10 +370,18 @@ public class ClusterController {
 
     public synchronized ErrorCode leaderReady(LeaderReadyRequest request) {
         if (request.controllerEpoch() != metadata.controllerEpoch) {
+            auditStaleEpoch(request.topicName(), request.partitionId(),
+                    request.brokerId(), request.controllerEpoch(), metadata.controllerEpoch,
+                    "controller epoch rejected during leader-ready");
             return ErrorCode.CONTROLLER_FENCED;
         }
         BrokerEntry broker = metadata.brokers.get(request.brokerId());
         if (broker == null || !broker.online || broker.brokerEpoch != request.brokerEpoch()) {
+            if (broker != null && broker.brokerEpoch != request.brokerEpoch()) {
+                auditStaleEpoch(request.topicName(), request.partitionId(),
+                        request.brokerId(), request.brokerEpoch(), broker.brokerEpoch,
+                        "broker epoch rejected during leader-ready");
+            }
             return ErrorCode.BROKER_FENCED;
         }
         ClusterMetadata next = copyMetadata(metadata);
@@ -334,6 +390,9 @@ public class ClusterController {
             return ErrorCode.NOT_LEADER;
         }
         if (partition.leaderEpoch != request.leaderEpoch()) {
+            auditStaleEpoch(request.topicName(), request.partitionId(),
+                    request.brokerId(), request.leaderEpoch(), partition.leaderEpoch,
+                    "leader epoch rejected during leader-ready");
             return ErrorCode.STALE_LEADER_EPOCH;
         }
         if (request.logEndOffset() < partition.leaderEpochStartOffset) {
@@ -344,6 +403,318 @@ public class ClusterController {
         }
         partition.leaderReady = true;
         return commit(next);
+    }
+
+    /** Creates a topic through the V4 scoped-admin API. */
+    public synchronized ErrorCode createTopicAdmin(CreateTopicAdminRequest request) {
+        if (request == null
+                || request.topicName() == null
+                || request.topicName().isBlank()
+                || request.numPartitions() < 1
+                || request.numPartitions() > 10_000
+                || request.replicationFactor() < 1
+                || request.replicationFactor() > 10_000) {
+            return ErrorCode.INVALID_REQUEST;
+        }
+        return createTopic(new CreateTopicRequest(
+                request.topicName(), request.numPartitions(), request.replicationFactor()));
+    }
+
+    /** Mutates explicit retry/DLQ links for one active source topic. */
+    public synchronized ReliabilityConfigResult configureTopicReliability(
+            ConfigureTopicReliabilityRequest request) {
+        if (recovering) {
+            return reliabilityResult(ErrorCode.CONTROLLER_NOT_READY, request);
+        }
+        if (request == null
+                || request.sourceTopicName() == null
+                || request.sourceTopicName().isBlank()) {
+            return new ReliabilityConfigResult(ErrorCode.INVALID_REQUEST, null, null, metadata.metadataVersion);
+        }
+        String sourceTopic = request.sourceTopicName();
+        if (!metadata.topics.containsKey(sourceTopic)) {
+            return reliabilityResult(ErrorCode.UNKNOWN_TOPIC, request);
+        }
+
+        ClusterMetadata next = copyMetadata(metadata);
+        ErrorCode retryError = applyReliabilityLink(
+                next,
+                next.retryTopicBySource,
+                sourceTopic,
+                request.retryTopicSupplied(),
+                request.retryTopicName(),
+                request.clearRetryTopic());
+        if (retryError != ErrorCode.NONE) {
+            return reliabilityResult(retryError, request);
+        }
+        ErrorCode deadLetterError = applyReliabilityLink(
+                next,
+                next.deadLetterTopicBySource,
+                sourceTopic,
+                request.deadLetterTopicSupplied(),
+                request.deadLetterTopicName(),
+                request.clearDeadLetterTopic());
+        if (deadLetterError != ErrorCode.NONE) {
+            return reliabilityResult(deadLetterError, request);
+        }
+        if (hasReliabilityCycle(next)) {
+            return reliabilityResult(ErrorCode.INVALID_REQUEST, request);
+        }
+
+        if (metadata.retryTopicBySource.equals(next.retryTopicBySource)
+                && metadata.deadLetterTopicBySource.equals(next.deadLetterTopicBySource)) {
+            return new ReliabilityConfigResult(
+                    ErrorCode.NONE,
+                    metadata.retryTopicBySource.get(sourceTopic),
+                    metadata.deadLetterTopicBySource.get(sourceTopic),
+                    metadata.metadataVersion);
+        }
+        ErrorCode error = commit(next);
+        return new ReliabilityConfigResult(
+                error,
+                error == ErrorCode.NONE ? metadata.retryTopicBySource.get(sourceTopic) : null,
+                error == ErrorCode.NONE ? metadata.deadLetterTopicBySource.get(sourceTopic) : null,
+                metadata.metadataVersion);
+    }
+
+    /**
+     * Appends partitions without rebuilding existing entries.  The returned
+     * version is the controller's committed metadata version when successful.
+     */
+    public synchronized IncreasePartitionsResult increasePartitions(
+            String topicName, int targetPartitionCount) {
+        TopicEntry currentTopic = metadata.topics.get(topicName);
+        if (recovering) {
+            return new IncreasePartitionsResult(
+                    ErrorCode.CONTROLLER_NOT_READY, 0, 0, metadata.metadataVersion);
+        }
+        if (currentTopic == null) {
+            return new IncreasePartitionsResult(
+                    ErrorCode.UNKNOWN_TOPIC, 0, 0, metadata.metadataVersion);
+        }
+        int previousCount = currentTopic.partitions == null ? 0 : currentTopic.partitions.size();
+        if (targetPartitionCount <= previousCount || targetPartitionCount > 10_000) {
+            return new IncreasePartitionsResult(
+                    ErrorCode.INVALID_REQUEST, previousCount, previousCount, metadata.metadataVersion);
+        }
+        List<BrokerEntry> onlineBrokers = metadata.brokers.values().stream()
+                .filter(b -> b.online)
+                .sorted(Comparator.comparingInt(b -> b.brokerId))
+                .toList();
+        if (onlineBrokers.isEmpty()) {
+            return new IncreasePartitionsResult(
+                    ErrorCode.INVALID_REQUEST, previousCount, previousCount, metadata.metadataVersion);
+        }
+        int replicationFactor = currentTopic.partitions.isEmpty()
+                ? 1
+                : currentTopic.partitions.get(0).replicaBrokerIds.size();
+        if (replicationFactor < 1 || replicationFactor > onlineBrokers.size()) {
+            return new IncreasePartitionsResult(
+                    ErrorCode.INVALID_REQUEST, previousCount, previousCount, metadata.metadataVersion);
+        }
+
+        ClusterMetadata next = copyMetadata(metadata);
+        TopicEntry topic = next.topics.get(topicName);
+        for (int partitionId = previousCount; partitionId < targetPartitionCount; partitionId++) {
+            PartitionEntry partition = new PartitionEntry();
+            partition.partitionId = partitionId;
+            int firstReplicaIndex = partitionId % onlineBrokers.size();
+            List<Integer> replicas = new ArrayList<>(replicationFactor);
+            for (int replica = 0; replica < replicationFactor; replica++) {
+                replicas.add(onlineBrokers
+                        .get((firstReplicaIndex + replica) % onlineBrokers.size()).brokerId);
+            }
+            partition.replicaBrokerIds = replicas;
+            partition.isrBrokerIds = new ArrayList<>(replicas);
+            partition.leaderBrokerId = replicas.get(0);
+            for (int replicaId : replicas) {
+                partition.replicaLogEndOffsets.put(replicaId, 0L);
+            }
+            topic.partitions.add(partition);
+        }
+        ErrorCode error = commit(next);
+        return new IncreasePartitionsResult(
+                error,
+                previousCount,
+                error == ErrorCode.NONE ? targetPartitionCount : previousCount,
+                error == ErrorCode.NONE ? metadata.metadataVersion : metadata.metadataVersion);
+    }
+
+    /** Returns active topic names in deterministic order. */
+    public synchronized List<String> listTopicNames() {
+        return metadata.topics.keySet().stream().sorted().toList();
+    }
+
+    private ReliabilityConfigResult reliabilityResult(
+            ErrorCode errorCode, ConfigureTopicReliabilityRequest request) {
+        String sourceTopic = request == null ? null : request.sourceTopicName();
+        return new ReliabilityConfigResult(
+                errorCode,
+                sourceTopic == null ? null : metadata.retryTopicBySource.get(sourceTopic),
+                sourceTopic == null ? null : metadata.deadLetterTopicBySource.get(sourceTopic),
+                metadata.metadataVersion);
+    }
+
+    private static ErrorCode applyReliabilityLink(
+            ClusterMetadata metadata,
+            Map<String, String> links,
+            String sourceTopic,
+            boolean supplied,
+            String targetTopic,
+            boolean clear) {
+        if (clear) {
+            links.remove(sourceTopic);
+            return ErrorCode.NONE;
+        }
+        if (!supplied) {
+            return ErrorCode.NONE;
+        }
+        if (targetTopic == null || targetTopic.isBlank()) {
+            return ErrorCode.INVALID_REQUEST;
+        }
+        if (!metadata.topics.containsKey(targetTopic)) {
+            return ErrorCode.UNKNOWN_TOPIC;
+        }
+        if (sourceTopic.equals(targetTopic)) {
+            return ErrorCode.INVALID_REQUEST;
+        }
+        links.put(sourceTopic, targetTopic);
+        return ErrorCode.NONE;
+    }
+
+    private static boolean hasReliabilityCycle(ClusterMetadata metadata) {
+        Set<String> topics = metadata.topics.keySet();
+        Set<String> checked = new HashSet<>();
+        for (String topicName : topics) {
+            if (visitsReliabilityCycle(topicName, metadata, checked, new HashSet<>())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean visitsReliabilityCycle(
+            String topicName,
+            ClusterMetadata metadata,
+            Set<String> checked,
+            Set<String> path) {
+        if (!metadata.topics.containsKey(topicName)) {
+            return false;
+        }
+        if (checked.contains(topicName)) {
+            return false;
+        }
+        if (!path.add(topicName)) {
+            return true;
+        }
+        String retryTopic = metadata.retryTopicBySource.get(topicName);
+        if (retryTopic != null && visitsReliabilityCycle(retryTopic, metadata, checked, path)) {
+            return true;
+        }
+        String deadLetterTopic = metadata.deadLetterTopicBySource.get(topicName);
+        if (deadLetterTopic != null && visitsReliabilityCycle(deadLetterTopic, metadata, checked, path)) {
+            return true;
+        }
+        path.remove(topicName);
+        checked.add(topicName);
+        return false;
+    }
+
+    public synchronized long metadataVersion() {
+        return metadata.metadataVersion;
+    }
+
+    public synchronized ClusterMetadata.TopicTombstone getTopicTombstone(String topicName) {
+        ClusterMetadata.TopicTombstone tombstone = metadata.topicTombstones.get(topicName);
+        return tombstone == null ? null : copyTombstone(tombstone);
+    }
+
+    /** Returns a deep copy of an active topic, or null when it is absent. */
+    public synchronized TopicEntry getActiveTopic(String topicName) {
+        TopicEntry topic = metadata.topics.get(topicName);
+        return topic == null ? null : copyTopic(topic);
+    }
+
+    /**
+     * Atomically removes active topic state and installs its durable tombstone.
+     * The tombstone version is the metadata version allocated by this first
+     * deletion CAS, not the later DELETED transition version.
+     */
+    public synchronized ErrorCode deleteTopic(String topicName, long deletedAtEpochMs) {
+        if (topicName == null || topicName.isBlank() || deletedAtEpochMs < 0) {
+            return ErrorCode.INVALID_REQUEST;
+        }
+        if (metadata.topicTombstones.containsKey(topicName)) {
+            return ErrorCode.NONE;
+        }
+        if (!metadata.topics.containsKey(topicName)) {
+            return ErrorCode.UNKNOWN_TOPIC;
+        }
+        ClusterMetadata next = copyMetadata(metadata);
+        next.topics.remove(topicName);
+        next.consumerGroups.entrySet().removeIf(entry ->
+                topicName.equals(entry.getValue().topicName));
+        next.retryTopicBySource.entrySet().removeIf(entry -> topicName.equals(entry.getKey()));
+        next.deadLetterTopicBySource.entrySet().removeIf(entry -> topicName.equals(entry.getKey()));
+        next.retryTopicBySource.entrySet().removeIf(entry -> topicName.equals(entry.getValue()));
+        next.deadLetterTopicBySource.entrySet().removeIf(entry -> topicName.equals(entry.getValue()));
+
+        ClusterMetadata.TopicTombstone tombstone = new ClusterMetadata.TopicTombstone();
+        tombstone.topicName = topicName;
+        tombstone.state = "DELETING";
+        tombstone.tombstoneVersion = Math.addExact(metadataRevision, 1L);
+        tombstone.deletedAtEpochMs = deletedAtEpochMs;
+        metadata.brokers.values().stream()
+                .filter(broker -> broker.online)
+                .map(broker -> broker.brokerId)
+                .sorted()
+                .forEach(tombstone.requiredBrokerIds::add);
+        next.topicTombstones.put(topicName, tombstone);
+        ErrorCode error = commit(next);
+        if (error != ErrorCode.NONE || !tombstone.requiredBrokerIds.isEmpty()) {
+            return error;
+        }
+        // No online broker needs to clean local files; persist the terminal
+        // state as a second CAS so clients can query DELETED durably.
+        ClusterMetadata terminal = copyMetadata(metadata);
+        terminal.topicTombstones.get(topicName).state = "DELETED";
+        return commit(terminal);
+    }
+
+    /** Applies one broker's idempotent local-cleanup acknowledgement. */
+    public synchronized ErrorCode acknowledgeTopicDeletion(
+            String topicName,
+            long tombstoneVersion,
+            int brokerId,
+            long brokerEpoch,
+            long controllerEpoch) {
+        BrokerEntry broker = metadata.brokers.get(brokerId);
+        if (broker == null) {
+            return ErrorCode.UNKNOWN_BROKER;
+        }
+        if (controllerEpoch != metadata.controllerEpoch) {
+            return ErrorCode.CONTROLLER_FENCED;
+        }
+        if (!broker.online || broker.brokerEpoch != brokerEpoch) {
+            return ErrorCode.BROKER_FENCED;
+        }
+        ClusterMetadata.TopicTombstone current = metadata.topicTombstones.get(topicName);
+        if (current == null || current.tombstoneVersion != tombstoneVersion) {
+            return ErrorCode.STALE_TOMBSTONE;
+        }
+        if (current.acknowledgedBrokerIds.contains(brokerId)
+                && "DELETED".equals(current.state)) {
+            return ErrorCode.NONE;
+        }
+        ClusterMetadata next = copyMetadata(metadata);
+        ClusterMetadata.TopicTombstone tombstone = next.topicTombstones.get(topicName);
+        boolean changed = tombstone.acknowledgedBrokerIds.add(brokerId);
+        if ("DELETING".equals(tombstone.state)
+                && tombstone.acknowledgedBrokerIds.containsAll(tombstone.requiredBrokerIds)) {
+            tombstone.state = "DELETED";
+            changed = true;
+        }
+        return changed ? commit(next) : ErrorCode.NONE;
     }
 
     private long deadlineFrom(long now) {
@@ -437,6 +808,7 @@ public class ClusterController {
                     partition.frozen = false;
                     partition.leaderReady = true;
                     partition.isrBrokerIds = new ArrayList<>(List.of(brokerId));
+                    invalidateWatermarkSnapshot(partition);
                 }
             }
         }
@@ -498,7 +870,7 @@ public class ClusterController {
             String topicName, int partitionId, int brokerId, long logEndOffset) {
         BrokerEntry broker = metadata.brokers.get(brokerId);
         if (broker == null) {
-            return ErrorCode.INVALID_REQUEST;
+            return ErrorCode.UNKNOWN_BROKER;
         }
         return updateReplicaLogEndOffset(
                 topicName, partitionId, brokerId,
@@ -511,10 +883,16 @@ public class ClusterController {
             String topicName, int partitionId, int brokerId,
             long brokerEpoch, long controllerEpoch, long logEndOffset) {
         if (controllerEpoch != metadata.controllerEpoch) {
+            auditStaleEpoch(topicName, partitionId, brokerId, controllerEpoch,
+                    metadata.controllerEpoch, "controller epoch rejected for replica progress");
             return ErrorCode.CONTROLLER_FENCED;
         }
         BrokerEntry broker = metadata.brokers.get(brokerId);
         if (broker == null || !broker.online || broker.brokerEpoch != brokerEpoch) {
+            if (broker != null && broker.brokerEpoch != brokerEpoch) {
+                auditStaleEpoch(topicName, partitionId, brokerId, brokerEpoch, broker.brokerEpoch,
+                        "broker epoch rejected for replica progress");
+            }
             return ErrorCode.BROKER_FENCED;
         }
         ClusterMetadata next = copyMetadata(metadata);
@@ -586,6 +964,7 @@ public class ClusterController {
     }
 
     private ErrorCode commit(ClusterMetadata next) {
+        ClusterMetadata previous = metadata;
         ClusterMetadataRepository.UpdateResult result =
                 metadataRepository.compareAndSet(metadataRevision, next);
         if (result.errorCode() != ErrorCode.NONE) {
@@ -593,7 +972,234 @@ public class ClusterController {
         }
         metadata = copyMetadata(result.value().metadata());
         metadataRevision = result.value().revision();
+        try {
+            auditMetadataTransitions(previous, metadata);
+        } catch (RuntimeException ignored) {
+            // A malformed diagnostic projection must not report a committed mutation as failed.
+        }
         return ErrorCode.NONE;
+    }
+
+    /**
+     * Records transitions at the metadata mutation boundary. The audit ring is deliberately
+     * best-effort: failures are swallowed by {@link #audit} and never change the committed state.
+     */
+    private void auditMetadataTransitions(ClusterMetadata previous, ClusterMetadata current) {
+        List<String> topicNames = new ArrayList<>(previous.topics.keySet());
+        topicNames.retainAll(current.topics.keySet());
+        topicNames.sort(String::compareTo);
+        for (String topicName : topicNames) {
+            TopicEntry oldTopic = previous.topics.get(topicName);
+            TopicEntry newTopic = current.topics.get(topicName);
+            for (PartitionEntry oldPartition : oldTopic.partitions) {
+                PartitionEntry newPartition = newTopic.partitions.stream()
+                        .filter(candidate -> candidate.partitionId == oldPartition.partitionId)
+                        .findFirst()
+                        .orElse(null);
+                if (newPartition == null) {
+                    continue;
+                }
+                List<Integer> oldIsr = oldPartition.isrBrokerIds == null
+                        ? List.of() : List.copyOf(oldPartition.isrBrokerIds);
+                List<Integer> newIsr = newPartition.isrBrokerIds == null
+                        ? List.of() : List.copyOf(newPartition.isrBrokerIds);
+                if (oldPartition.leaderBrokerId != newPartition.leaderBrokerId) {
+                    audit(
+                            FailoverAuditEventType.LEADER_CHANGED,
+                            newPartition.leaderBrokerId,
+                            topicName,
+                            oldPartition.partitionId,
+                            String.valueOf(oldPartition.leaderBrokerId),
+                            String.valueOf(newPartition.leaderBrokerId),
+                            "leader epoch " + oldPartition.leaderEpoch + " -> "
+                                    + newPartition.leaderEpoch);
+                }
+                Set<Integer> oldIsrSet = new HashSet<>(oldIsr);
+                Set<Integer> newIsrSet = new HashSet<>(newIsr);
+                if (newIsr.size() < oldIsr.size() || !newIsrSet.containsAll(oldIsrSet)) {
+                    audit(
+                            FailoverAuditEventType.ISR_SHRUNK,
+                            null,
+                            topicName,
+                            oldPartition.partitionId,
+                            oldIsr.toString(),
+                            newIsr.toString(),
+                            "ISR membership shrank");
+                }
+                if (newIsr.size() > oldIsr.size() || !oldIsrSet.containsAll(newIsrSet)) {
+                    audit(
+                            FailoverAuditEventType.ISR_EXPANDED,
+                            null,
+                            topicName,
+                            oldPartition.partitionId,
+                            oldIsr.toString(),
+                            newIsr.toString(),
+                            "ISR membership expanded");
+                }
+                if (!oldPartition.leaderReady && newPartition.leaderReady) {
+                    audit(
+                            FailoverAuditEventType.LEADER_READY,
+                            newPartition.leaderBrokerId,
+                            topicName,
+                            oldPartition.partitionId,
+                            "false",
+                            "true",
+                            "leader readiness handshake completed");
+                } else if (oldPartition.leaderReady && !newPartition.leaderReady) {
+                    audit(
+                            FailoverAuditEventType.LEADER_NOT_READY,
+                            newPartition.leaderBrokerId,
+                            topicName,
+                            oldPartition.partitionId,
+                            "true",
+                            "false",
+                            "leader readiness revoked");
+                } else if (!oldPartition.frozen && newPartition.frozen) {
+                    audit(
+                            FailoverAuditEventType.LEADER_NOT_READY,
+                            newPartition.leaderBrokerId,
+                            topicName,
+                            oldPartition.partitionId,
+                            "active",
+                            "frozen",
+                            "leader activation timed out");
+                }
+            }
+        }
+    }
+
+    private void audit(
+            FailoverAuditEventType eventType,
+            Integer brokerId,
+            String topicName,
+            Integer partitionId,
+            String oldValue,
+            String newValue,
+            String detail) {
+        if (auditLog == null) {
+            return;
+        }
+        try {
+            auditLog.append(eventType, brokerId, topicName, partitionId, oldValue, newValue, detail);
+        } catch (RuntimeException ignored) {
+            // Audit is operational evidence and must never break the control-plane transition.
+        }
+    }
+
+    private void auditStaleEpoch(
+            String topicName,
+            int partitionId,
+            int brokerId,
+            long suppliedEpoch,
+            long currentEpoch,
+            String detail) {
+        audit(
+                FailoverAuditEventType.STALE_EPOCH_REJECTED,
+                brokerId,
+                topicName,
+                partitionId,
+                String.valueOf(suppliedEpoch),
+                String.valueOf(currentEpoch),
+                detail);
+    }
+
+    /**
+     * Accepts a V4 replica progress report.  Legacy LEO state is kept in sync for
+     * V3 metadata consumers, while visible watermarks are only published after
+     * every current ISR member has reported for the current controller/leader epoch.
+     */
+    public synchronized ErrorCode updateReplicaStateV2(
+            String topicName,
+            int partitionId,
+            int brokerId,
+            long brokerEpoch,
+            long controllerEpoch,
+            long leaderEpoch,
+            long physicalLogEndOffset,
+            long visibleLogEndOffset,
+            long nextVisibleAtEpochMs) {
+        BrokerEntry broker = metadata.brokers.get(brokerId);
+        if (broker == null) {
+            return ErrorCode.UNKNOWN_BROKER;
+        }
+        PartitionEntry currentPartition = getPartitionEntry(topicName, partitionId);
+        if (currentPartition == null) {
+            return metadata.topics.containsKey(topicName)
+                    ? ErrorCode.UNKNOWN_PARTITION
+                    : ErrorCode.UNKNOWN_TOPIC;
+        }
+        if (!currentPartition.replicaBrokerIds.contains(brokerId)) {
+            return ErrorCode.INVALID_REQUEST;
+        }
+        if (!broker.online || broker.brokerEpoch != brokerEpoch) {
+            if (broker.brokerEpoch != brokerEpoch) {
+                auditStaleEpoch(topicName, partitionId, brokerId, brokerEpoch, broker.brokerEpoch,
+                        "broker epoch rejected for V2 replica progress");
+            }
+            return ErrorCode.BROKER_FENCED;
+        }
+        if (controllerEpoch != metadata.controllerEpoch) {
+            auditStaleEpoch(topicName, partitionId, brokerId, controllerEpoch,
+                    metadata.controllerEpoch, "controller epoch rejected for V2 replica progress");
+            return ErrorCode.CONTROLLER_FENCED;
+        }
+        if (currentPartition.frozen || !currentPartition.leaderReady) {
+            return ErrorCode.LEADER_NOT_READY;
+        }
+        if (leaderEpoch != currentPartition.leaderEpoch) {
+            auditStaleEpoch(topicName, partitionId, brokerId, leaderEpoch,
+                    currentPartition.leaderEpoch, "leader epoch rejected for V2 replica progress");
+            return ErrorCode.STALE_LEADER_EPOCH;
+        }
+        if (physicalLogEndOffset < 0
+                || visibleLogEndOffset < 0
+                || visibleLogEndOffset > physicalLogEndOffset
+                || (visibleLogEndOffset == physicalLogEndOffset
+                        ? nextVisibleAtEpochMs != -1L
+                        : nextVisibleAtEpochMs < 0L)) {
+            return ErrorCode.INVALID_REQUEST;
+        }
+
+        ClusterMetadata next = copyMetadata(metadata);
+        PartitionEntry partition = getPartitionEntry(next, topicName, partitionId);
+        ensureReplicaProgressState(next, partition);
+        ClusterMetadata.ReplicaProgressEntry previous =
+                partition.replicaProgress.get(brokerId);
+        ClusterMetadata.WatermarkSnapshot previousWatermark =
+                copyWatermark(partition.lastCompleteWatermark);
+        boolean sameReport = previous != null
+                && previous.brokerEpoch == brokerEpoch
+                && previous.controllerEpoch == controllerEpoch
+                && previous.leaderEpoch == leaderEpoch
+                && previous.physicalLogEndOffset == physicalLogEndOffset
+                && previous.visibleLogEndOffset == visibleLogEndOffset
+                && previous.nextVisibleAtEpochMs == nextVisibleAtEpochMs;
+
+        ClusterMetadata.ReplicaProgressEntry progress =
+                new ClusterMetadata.ReplicaProgressEntry();
+        progress.brokerId = brokerId;
+        progress.physicalLogEndOffset = physicalLogEndOffset;
+        progress.visibleLogEndOffset = visibleLogEndOffset;
+        progress.nextVisibleAtEpochMs = nextVisibleAtEpochMs;
+        progress.brokerEpoch = brokerEpoch;
+        progress.controllerEpoch = controllerEpoch;
+        progress.leaderEpoch = leaderEpoch;
+        partition.replicaProgress.put(brokerId, progress);
+        partition.replicaLogEndOffsets.put(brokerId, physicalLogEndOffset);
+        // A physical progress report can move a replica into or out of the ISR.
+        // Reconcile before evaluating completeness so the watermark uses the
+        // authoritative current-ISR set from this same metadata snapshot.
+        reconcileIsrByLeo(next, partition);
+
+        if (hasCompleteCurrentIsrReport(next, partition)) {
+            updateCompleteWatermarkSnapshot(next, partition);
+        } else {
+            invalidateWatermarkSnapshot(partition);
+        }
+        if (sameReport && watermarkEquals(previousWatermark, partition.lastCompleteWatermark)) {
+            return ErrorCode.NONE;
+        }
+        return commit(next);
     }
 
     public synchronized ErrorCode validateLeaderEpoch(
@@ -605,8 +1211,13 @@ public class ClusterController {
         if (partition.frozen || !partition.leaderReady) {
             return ErrorCode.LEADER_NOT_READY;
         }
-        return partition.leaderEpoch == requestLeaderEpoch
-                ? ErrorCode.NONE : ErrorCode.STALE_LEADER_EPOCH;
+        if (partition.leaderEpoch == requestLeaderEpoch) {
+            return ErrorCode.NONE;
+        }
+        auditStaleEpoch(topicName, partitionId, partition.leaderBrokerId,
+                requestLeaderEpoch, partition.leaderEpoch,
+                "data-plane request used a stale leader epoch");
+        return ErrorCode.STALE_LEADER_EPOCH;
     }
 
     private PartitionEntry getPartitionEntry(String topicName, int partitionId) {
@@ -673,6 +1284,7 @@ public class ClusterController {
         for (int replicaId : partition.replicaBrokerIds) {
             partition.replicaLogEndOffsets.putIfAbsent(replicaId, 0L);
         }
+        ensureReplicaProgressState(source, partition);
         if (partition.frozen) {
             partition.leaderReady = false;
             partition.isrBrokerIds.clear();
@@ -734,6 +1346,121 @@ public class ClusterController {
         return !partition.isrBrokerIds.equals(before);
     }
 
+    private static void ensureReplicaProgressState(
+            ClusterMetadata source, PartitionEntry partition) {
+        if (partition.replicaProgress == null) {
+            partition.replicaProgress = new java.util.HashMap<>();
+        }
+        if (partition.lastCompleteWatermark == null) {
+            partition.lastCompleteWatermark = new ClusterMetadata.WatermarkSnapshot();
+        }
+        for (int replicaId : partition.replicaBrokerIds) {
+            partition.replicaLogEndOffsets.putIfAbsent(replicaId, 0L);
+            partition.replicaProgress.computeIfAbsent(replicaId, id -> {
+                ClusterMetadata.ReplicaProgressEntry progress =
+                        new ClusterMetadata.ReplicaProgressEntry();
+                progress.brokerId = id;
+                progress.physicalLogEndOffset =
+                        partition.replicaLogEndOffsets.getOrDefault(id, 0L);
+                progress.visibleLogEndOffset = -1L;
+                progress.nextVisibleAtEpochMs = -1L;
+                progress.brokerEpoch = 0L;
+                progress.controllerEpoch = source.controllerEpoch;
+                progress.leaderEpoch = partition.leaderEpoch;
+                return progress;
+            });
+        }
+    }
+
+    private static boolean hasCompleteCurrentIsrReport(
+            ClusterMetadata source, PartitionEntry partition) {
+        if (partition.isrBrokerIds == null || partition.isrBrokerIds.isEmpty()) {
+            return false;
+        }
+        for (int brokerId : partition.isrBrokerIds) {
+            BrokerEntry broker = source.brokers.get(brokerId);
+            ClusterMetadata.ReplicaProgressEntry progress =
+                    partition.replicaProgress.get(brokerId);
+            if (broker == null
+                    || !broker.online
+                    || progress == null
+                    || progress.brokerEpoch != broker.brokerEpoch
+                    || progress.controllerEpoch != source.controllerEpoch
+                    || progress.leaderEpoch != partition.leaderEpoch
+                    || progress.visibleLogEndOffset < 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static void updateCompleteWatermarkSnapshot(
+            ClusterMetadata source, PartitionEntry partition) {
+        long physicalHighWatermark = Long.MAX_VALUE;
+        long visibleHighWatermark = Long.MAX_VALUE;
+        for (int brokerId : partition.isrBrokerIds) {
+            ClusterMetadata.ReplicaProgressEntry progress =
+                    partition.replicaProgress.get(brokerId);
+            physicalHighWatermark = Math.min(
+                    physicalHighWatermark, progress.physicalLogEndOffset);
+            visibleHighWatermark = Math.min(
+                    visibleHighWatermark, progress.visibleLogEndOffset);
+        }
+        visibleHighWatermark = Math.min(visibleHighWatermark, physicalHighWatermark);
+        long nextVisibleAtEpochMs = -1L;
+        if (visibleHighWatermark < physicalHighWatermark) {
+            for (int brokerId : partition.isrBrokerIds) {
+                ClusterMetadata.ReplicaProgressEntry progress =
+                        partition.replicaProgress.get(brokerId);
+                if (progress.visibleLogEndOffset == visibleHighWatermark) {
+                    nextVisibleAtEpochMs = Math.max(
+                            nextVisibleAtEpochMs, progress.nextVisibleAtEpochMs);
+                }
+            }
+        }
+        ClusterMetadata.WatermarkSnapshot snapshot =
+                new ClusterMetadata.WatermarkSnapshot();
+        snapshot.physicalHighWatermark = physicalHighWatermark;
+        snapshot.visibleHighWatermark = visibleHighWatermark;
+        snapshot.nextVisibleAtEpochMs = nextVisibleAtEpochMs;
+        snapshot.controllerEpoch = source.controllerEpoch;
+        snapshot.leaderEpoch = partition.leaderEpoch;
+        partition.lastCompleteWatermark = snapshot;
+    }
+
+    private static void invalidateWatermarkSnapshot(PartitionEntry partition) {
+        if (partition.lastCompleteWatermark == null) {
+            partition.lastCompleteWatermark = new ClusterMetadata.WatermarkSnapshot();
+            return;
+        }
+        partition.lastCompleteWatermark.controllerEpoch = -1L;
+        partition.lastCompleteWatermark.leaderEpoch = -1L;
+    }
+
+    private static ClusterMetadata.WatermarkSnapshot copyWatermark(
+            ClusterMetadata.WatermarkSnapshot source) {
+        ClusterMetadata.WatermarkSnapshot copy = new ClusterMetadata.WatermarkSnapshot();
+        if (source == null) {
+            return copy;
+        }
+        copy.physicalHighWatermark = source.physicalHighWatermark;
+        copy.visibleHighWatermark = source.visibleHighWatermark;
+        copy.nextVisibleAtEpochMs = source.nextVisibleAtEpochMs;
+        copy.controllerEpoch = source.controllerEpoch;
+        copy.leaderEpoch = source.leaderEpoch;
+        return copy;
+    }
+
+    private static boolean watermarkEquals(
+            ClusterMetadata.WatermarkSnapshot left,
+            ClusterMetadata.WatermarkSnapshot right) {
+        return left.physicalHighWatermark == right.physicalHighWatermark
+                && left.visibleHighWatermark == right.visibleHighWatermark
+                && left.nextVisibleAtEpochMs == right.nextVisibleAtEpochMs
+                && left.controllerEpoch == right.controllerEpoch
+                && left.leaderEpoch == right.leaderEpoch;
+    }
+
     // Return deep copies so callers cannot mutate controller-owned state directly.
     private static ClusterMetadata copyMetadata(ClusterMetadata source) {
         ClusterMetadata copy = new ClusterMetadata();
@@ -742,7 +1469,23 @@ public class ClusterController {
         copy.metadataVersion = source.metadataVersion;
         source.brokers.forEach((id, broker) -> copy.brokers.put(id, copyBroker(broker)));
         source.topics.forEach((name, topic) -> copy.topics.put(name, copyTopic(topic)));
+        source.topicTombstones.forEach((name, tombstone) ->
+                copy.topicTombstones.put(name, copyTombstone(tombstone)));
+        copy.retryTopicBySource.putAll(source.retryTopicBySource);
+        copy.deadLetterTopicBySource.putAll(source.deadLetterTopicBySource);
         source.consumerGroups.forEach((id, group) -> copy.consumerGroups.put(id, copyConsumerGroup(group)));
+        return copy;
+    }
+
+    private static ClusterMetadata.TopicTombstone copyTombstone(
+            ClusterMetadata.TopicTombstone source) {
+        ClusterMetadata.TopicTombstone copy = new ClusterMetadata.TopicTombstone();
+        copy.topicName = source.topicName;
+        copy.state = source.state;
+        copy.tombstoneVersion = source.tombstoneVersion;
+        copy.deletedAtEpochMs = source.deletedAtEpochMs;
+        copy.requiredBrokerIds.addAll(source.requiredBrokerIds);
+        copy.acknowledgedBrokerIds.addAll(source.acknowledgedBrokerIds);
         return copy;
     }
 
@@ -766,6 +1509,30 @@ public class ClusterController {
             partitionCopy.replicaBrokerIds = new ArrayList<>(partition.replicaBrokerIds);
             partitionCopy.isrBrokerIds = new ArrayList<>(partition.isrBrokerIds);
             partitionCopy.replicaLogEndOffsets = new java.util.HashMap<>(partition.replicaLogEndOffsets);
+            partitionCopy.replicaProgress = new java.util.HashMap<>();
+            partition.replicaProgress.forEach((brokerId, progress) -> {
+                ClusterMetadata.ReplicaProgressEntry progressCopy =
+                        new ClusterMetadata.ReplicaProgressEntry();
+                progressCopy.brokerId = progress.brokerId;
+                progressCopy.physicalLogEndOffset = progress.physicalLogEndOffset;
+                progressCopy.visibleLogEndOffset = progress.visibleLogEndOffset;
+                progressCopy.nextVisibleAtEpochMs = progress.nextVisibleAtEpochMs;
+                progressCopy.brokerEpoch = progress.brokerEpoch;
+                progressCopy.controllerEpoch = progress.controllerEpoch;
+                progressCopy.leaderEpoch = progress.leaderEpoch;
+                partitionCopy.replicaProgress.put(brokerId, progressCopy);
+            });
+            partitionCopy.lastCompleteWatermark = new ClusterMetadata.WatermarkSnapshot();
+            partitionCopy.lastCompleteWatermark.physicalHighWatermark =
+                    partition.lastCompleteWatermark.physicalHighWatermark;
+            partitionCopy.lastCompleteWatermark.visibleHighWatermark =
+                    partition.lastCompleteWatermark.visibleHighWatermark;
+            partitionCopy.lastCompleteWatermark.nextVisibleAtEpochMs =
+                    partition.lastCompleteWatermark.nextVisibleAtEpochMs;
+            partitionCopy.lastCompleteWatermark.controllerEpoch =
+                    partition.lastCompleteWatermark.controllerEpoch;
+            partitionCopy.lastCompleteWatermark.leaderEpoch =
+                    partition.lastCompleteWatermark.leaderEpoch;
             partitionCopy.frozen = partition.frozen;
             partitionCopy.leaderEpoch = partition.leaderEpoch;
             partitionCopy.leaderEpochStartOffset = partition.leaderEpochStartOffset;

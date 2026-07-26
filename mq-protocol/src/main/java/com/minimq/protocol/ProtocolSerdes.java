@@ -9,10 +9,16 @@ import com.minimq.protocol.message.ProtocolMessages.*;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.BiConsumer;
+import java.util.function.Function;
 
 /**
  * MiniMQ 协议序列化入口，负责请求/响应 body 与完整网络帧之间的双向转换。
@@ -20,6 +26,7 @@ import java.util.Map;
 public final class ProtocolSerdes {
     private static final int MAX_COLLECTION_ITEMS = 10_000;
     private static final int MAX_SHORT_BYTES = 0xFFFF;
+    private static final int MAX_CREDENTIAL_BYTES = 256;
 
     private ProtocolSerdes() {
     }
@@ -75,7 +82,16 @@ public final class ProtocolSerdes {
 
     // apiKey 决定 body 的结构，新增 API 时必须同步维护这里的解码分支。
     public static Object decodeRequestBody(short apiKey, ByteBuf payload) {
-        return switch (apiKey) {
+        try {
+            return decodeRequestBodyUnchecked(apiKey, payload);
+        } catch (IndexOutOfBoundsException e) {
+            throw new IllegalArgumentException(
+                    "Malformed request body for apiKey " + apiKey, e);
+        }
+    }
+
+    private static Object decodeRequestBodyUnchecked(short apiKey, ByteBuf payload) {
+        Object body = switch (apiKey) {
             case ApiKeys.CREATE_TOPIC -> new CreateTopicRequest(
                     ByteBufSerde.readString(payload), payload.readInt(), payload.readInt());
             case ApiKeys.METADATA -> new MetadataRequest(ByteBufSerde.readString(payload));
@@ -142,8 +158,104 @@ public final class ProtocolSerdes {
                     payload.readLong(),
                     payload.readLong(),
                     payload.readLong());
+            case ApiKeys.OPS_STATUS -> new OpsStatusRequest(
+                    readV4Credential(payload), payload.readInt(), payload.readInt());
+            case ApiKeys.GROUP_STATUS -> new GroupStatusRequest(
+                    readV4Credential(payload),
+                    readV4String(payload, "group id"),
+                    readOptionalString(payload, "topic filter"),
+                    payload.readInt(),
+                    payload.readInt());
+            case ApiKeys.LIST_TOPICS ->
+                    new ListTopicsRequest(readV4Credential(payload), payload.readInt());
+            case ApiKeys.DESCRIBE_TOPIC -> new DescribeTopicRequest(
+                    readV4Credential(payload),
+                    readV4String(payload, "topic name"),
+                    payload.readInt(),
+                    readBoolean(payload, "includeDeleted"));
+            case ApiKeys.DELETE_TOPIC -> new DeleteTopicRequest(
+                    readV4Credential(payload), readV4String(payload, "topic name"));
+            case ApiKeys.INCREASE_PARTITIONS -> new IncreasePartitionsRequest(
+                    readV4Credential(payload),
+                    readV4String(payload, "topic name"),
+                    payload.readInt());
+            case ApiKeys.FAILOVER_AUDIT ->
+                    new FailoverAuditRequest(readV4Credential(payload), payload.readInt());
+            case ApiKeys.AUTH_STATUS -> new AuthStatusRequest(readV4Credential(payload));
+            case ApiKeys.CONFIGURE_TOPIC_RELIABILITY ->
+                    decodeConfigureTopicReliabilityRequest(payload);
+            case ApiKeys.MARK_BROKER_OFFLINE_ADMIN -> new MarkBrokerOfflineAdminRequest(
+                    readV4Credential(payload), payload.readInt());
+            case ApiKeys.CREATE_TOPIC_ADMIN -> new CreateTopicAdminRequest(
+                    readV4Credential(payload),
+                    readV4String(payload, "topic name"),
+                    payload.readInt(),
+                    payload.readInt());
+            case ApiKeys.PRODUCE_V2 -> decodeProduceV2Request(payload);
+            case ApiKeys.REPLICA_FETCH_V2 -> new ReplicaFetchV2Request(
+                    readV4Credential(payload),
+                    readV4String(payload, "topic name"),
+                    payload.readInt(),
+                    payload.readInt(),
+                    payload.readLong(),
+                    payload.readLong(),
+                    payload.readLong(),
+                    payload.readLong(),
+                    payload.readInt());
+            case ApiKeys.TOPIC_DELETE_ACK -> new TopicDeleteAckRequest(
+                    readV4Credential(payload),
+                    readV4String(payload, "topic name"),
+                    payload.readLong(),
+                    payload.readInt(),
+                    payload.readLong(),
+                    payload.readLong());
+            case ApiKeys.FETCH_V2 -> new FetchV2Request(
+                    readV4String(payload, "topic name"),
+                    payload.readInt(),
+                    payload.readLong(),
+                    payload.readLong(),
+                    payload.readInt());
+            case ApiKeys.METADATA_V2 -> new MetadataV2Request(
+                    readOptionalString(payload, "topic filter"),
+                    payload.readInt(),
+                    payload.readInt());
+            case ApiKeys.RUNTIME_METRICS_V2 -> new RuntimeMetricsV2Request(
+                    readV4Credential(payload),
+                    payload.readInt(),
+                    payload.readInt(),
+                    payload.readInt());
+            case ApiKeys.UPDATE_REPLICA_STATE_V2 -> new UpdateReplicaStateV2Request(
+                    readV4Credential(payload),
+                    readV4String(payload, "topic name"),
+                    payload.readInt(),
+                    payload.readInt(),
+                    payload.readLong(),
+                    payload.readLong(),
+                    payload.readLong(),
+                    payload.readLong(),
+                    payload.readLong(),
+                    payload.readLong());
             default -> throw new IllegalArgumentException("Unknown apiKey: " + apiKey);
         };
+        requireFullyConsumed(payload, "request body for apiKey " + apiKey);
+        return body;
+    }
+
+    public static String peekRequestCredential(short apiKey, ByteBuf payload) {
+        if (!hasCredentialPrefix(apiKey)) {
+            throw new IllegalArgumentException(
+                    "apiKey does not carry a credential prefix: " + apiKey);
+        }
+        if (payload.readableBytes() > MqFrame.MAX_FRAME_BYTES) {
+            throw new IllegalArgumentException(
+                    "Request body is too large: " + payload.readableBytes());
+        }
+        int readerIndex = payload.readerIndex();
+        try {
+            return readCredentialPrefix(payload);
+        } finally {
+            payload.readerIndex(readerIndex);
+        }
     }
 
     public static MqResponseHeader decodeResponseHeader(ByteBuf payload) {
@@ -154,7 +266,16 @@ public final class ProtocolSerdes {
     }
 
     public static Object decodeResponseBody(short apiKey, ByteBuf payload) {
-        return switch (apiKey) {
+        try {
+            return decodeResponseBodyUnchecked(apiKey, payload);
+        } catch (IndexOutOfBoundsException e) {
+            throw new IllegalArgumentException(
+                    "Malformed response body for apiKey " + apiKey, e);
+        }
+    }
+
+    private static Object decodeResponseBodyUnchecked(short apiKey, ByteBuf payload) {
+        Object body = switch (apiKey) {
             case ApiKeys.CREATE_TOPIC -> new CreateTopicResponse(ByteBufSerde.readString(payload));
             case ApiKeys.METADATA -> decodeMetadataResponse(payload);
             case ApiKeys.PRODUCE -> new ProduceResponse(
@@ -177,8 +298,50 @@ public final class ProtocolSerdes {
             case ApiKeys.DISCOVER_CONTROLLER -> new DiscoverControllerResponse(
                     readControllerMetadata(payload), payload.readLong());
             case ApiKeys.LEADER_READY -> new LeaderReadyResponse();
+            case ApiKeys.OPS_STATUS -> decodeOpsStatusResponse(payload);
+            case ApiKeys.GROUP_STATUS -> decodeGroupStatusResponse(payload);
+            case ApiKeys.LIST_TOPICS -> new ListTopicsResponse(
+                    readBoundedList(
+                            payload,
+                            "topic names",
+                            target -> readV4String(target, "topic name")));
+            case ApiKeys.DESCRIBE_TOPIC -> decodeDescribeTopicResponse(payload);
+            case ApiKeys.DELETE_TOPIC -> decodeDeleteTopicResponse(payload);
+            case ApiKeys.INCREASE_PARTITIONS -> new IncreasePartitionsResponse(
+                    readV4String(payload, "topic name"),
+                    payload.readInt(),
+                    payload.readInt(),
+                    payload.readLong());
+            case ApiKeys.FAILOVER_AUDIT -> decodeFailoverAuditResponse(payload);
+            case ApiKeys.AUTH_STATUS -> new AuthStatusResponse(
+                    payload.readInt(),
+                    readBoundedList(
+                            payload,
+                            "auth scopes",
+                            target -> readV4String(target, "auth scope")));
+            case ApiKeys.CONFIGURE_TOPIC_RELIABILITY ->
+                    new ConfigureTopicReliabilityResponse(
+                            readV4String(payload, "source topic name"),
+                            readOptionalString(payload, "retry topic"),
+                            readOptionalString(payload, "dead-letter topic"),
+                            payload.readLong());
+            case ApiKeys.MARK_BROKER_OFFLINE_ADMIN ->
+                    new MarkBrokerOfflineAdminResponse(
+                            payload.readInt(), payload.readLong());
+            case ApiKeys.CREATE_TOPIC_ADMIN -> new CreateTopicAdminResponse(
+                    readV4String(payload, "topic name"), payload.readLong());
+            case ApiKeys.PRODUCE_V2 -> new ProduceV2Response(
+                    readV4String(payload, "topic name"), payload.readInt(), payload.readLong());
+            case ApiKeys.REPLICA_FETCH_V2 -> decodeReplicaFetchV2Response(payload);
+            case ApiKeys.TOPIC_DELETE_ACK -> new TopicDeleteAckResponse();
+            case ApiKeys.FETCH_V2 -> decodeFetchV2Response(payload);
+            case ApiKeys.METADATA_V2 -> decodeMetadataV2Response(payload);
+            case ApiKeys.RUNTIME_METRICS_V2 -> decodeRuntimeMetricsV2Response(payload);
+            case ApiKeys.UPDATE_REPLICA_STATE_V2 -> new UpdateReplicaStateV2Response();
             default -> throw new IllegalArgumentException("Unknown apiKey: " + apiKey);
         };
+        requireFullyConsumed(payload, "response body for apiKey " + apiKey);
+        return body;
     }
 
     private static void writeRequestBody(short apiKey, ByteBuf buf, Object body) {
@@ -275,13 +438,131 @@ public final class ProtocolSerdes {
                 buf.writeLong(req.leaderEpoch());
                 buf.writeLong(req.logEndOffset());
             }
+            case ApiKeys.OPS_STATUS -> {
+                OpsStatusRequest req = (OpsStatusRequest) body;
+                ByteBufSerde.writeString(buf, req.credential());
+                buf.writeInt(req.brokerLimit());
+                buf.writeInt(req.partitionLimit());
+            }
+            case ApiKeys.GROUP_STATUS -> {
+                GroupStatusRequest req = (GroupStatusRequest) body;
+                ByteBufSerde.writeString(buf, req.credential());
+                ByteBufSerde.writeString(buf, req.groupId());
+                writeOptionalString(buf, req.topicFilter());
+                buf.writeInt(req.memberLimit());
+                buf.writeInt(req.partitionLimit());
+            }
+            case ApiKeys.LIST_TOPICS -> {
+                ListTopicsRequest req = (ListTopicsRequest) body;
+                ByteBufSerde.writeString(buf, req.credential());
+                buf.writeInt(req.limit());
+            }
+            case ApiKeys.DESCRIBE_TOPIC -> {
+                DescribeTopicRequest req = (DescribeTopicRequest) body;
+                ByteBufSerde.writeString(buf, req.credential());
+                ByteBufSerde.writeString(buf, req.topicName());
+                buf.writeInt(req.partitionLimit());
+                writeBoolean(buf, req.includeDeleted());
+            }
+            case ApiKeys.DELETE_TOPIC -> {
+                DeleteTopicRequest req = (DeleteTopicRequest) body;
+                ByteBufSerde.writeString(buf, req.credential());
+                ByteBufSerde.writeString(buf, req.topicName());
+            }
+            case ApiKeys.INCREASE_PARTITIONS -> {
+                IncreasePartitionsRequest req = (IncreasePartitionsRequest) body;
+                ByteBufSerde.writeString(buf, req.credential());
+                ByteBufSerde.writeString(buf, req.topicName());
+                buf.writeInt(req.targetPartitionCount());
+            }
+            case ApiKeys.FAILOVER_AUDIT -> {
+                FailoverAuditRequest req = (FailoverAuditRequest) body;
+                ByteBufSerde.writeString(buf, req.credential());
+                buf.writeInt(req.limit());
+            }
+            case ApiKeys.AUTH_STATUS ->
+                    ByteBufSerde.writeString(buf, ((AuthStatusRequest) body).credential());
+            case ApiKeys.CONFIGURE_TOPIC_RELIABILITY ->
+                    writeConfigureTopicReliabilityRequest(
+                            buf, (ConfigureTopicReliabilityRequest) body);
+            case ApiKeys.MARK_BROKER_OFFLINE_ADMIN -> {
+                MarkBrokerOfflineAdminRequest req = (MarkBrokerOfflineAdminRequest) body;
+                ByteBufSerde.writeString(buf, req.credential());
+                buf.writeInt(req.brokerId());
+            }
+            case ApiKeys.CREATE_TOPIC_ADMIN -> {
+                CreateTopicAdminRequest req = (CreateTopicAdminRequest) body;
+                ByteBufSerde.writeString(buf, req.credential());
+                ByteBufSerde.writeString(buf, req.topicName());
+                buf.writeInt(req.numPartitions());
+                buf.writeInt(req.replicationFactor());
+            }
+            case ApiKeys.PRODUCE_V2 -> writeProduceV2Request(buf, (ProduceV2Request) body);
+            case ApiKeys.REPLICA_FETCH_V2 -> {
+                ReplicaFetchV2Request req = (ReplicaFetchV2Request) body;
+                ByteBufSerde.writeString(buf, req.clusterCredential());
+                ByteBufSerde.writeString(buf, req.topicName());
+                buf.writeInt(req.partitionId());
+                buf.writeInt(req.replicaBrokerId());
+                buf.writeLong(req.brokerEpoch());
+                buf.writeLong(req.controllerEpoch());
+                buf.writeLong(req.leaderEpoch());
+                buf.writeLong(req.fetchOffset());
+                buf.writeInt(req.maxBytes());
+            }
+            case ApiKeys.TOPIC_DELETE_ACK -> {
+                TopicDeleteAckRequest req = (TopicDeleteAckRequest) body;
+                ByteBufSerde.writeString(buf, req.clusterCredential());
+                ByteBufSerde.writeString(buf, req.topicName());
+                buf.writeLong(req.tombstoneVersion());
+                buf.writeInt(req.brokerId());
+                buf.writeLong(req.brokerEpoch());
+                buf.writeLong(req.controllerEpoch());
+            }
+            case ApiKeys.FETCH_V2 -> {
+                FetchV2Request req = (FetchV2Request) body;
+                ByteBufSerde.writeString(buf, req.topicName());
+                buf.writeInt(req.partitionId());
+                buf.writeLong(req.leaderEpoch());
+                buf.writeLong(req.fetchOffset());
+                buf.writeInt(req.maxBytes());
+            }
+            case ApiKeys.METADATA_V2 -> {
+                MetadataV2Request req = (MetadataV2Request) body;
+                writeOptionalString(buf, req.topicFilter());
+                buf.writeInt(req.topicLimit());
+                buf.writeInt(req.partitionLimit());
+            }
+            case ApiKeys.RUNTIME_METRICS_V2 -> {
+                RuntimeMetricsV2Request req = (RuntimeMetricsV2Request) body;
+                ByteBufSerde.writeString(buf, req.credential());
+                buf.writeInt(req.counterLimit());
+                buf.writeInt(req.latencyLimit());
+                buf.writeInt(req.lagLimit());
+            }
+            case ApiKeys.UPDATE_REPLICA_STATE_V2 -> {
+                UpdateReplicaStateV2Request req = (UpdateReplicaStateV2Request) body;
+                ByteBufSerde.writeString(buf, req.clusterCredential());
+                ByteBufSerde.writeString(buf, req.topicName());
+                buf.writeInt(req.partitionId());
+                buf.writeInt(req.replicaBrokerId());
+                buf.writeLong(req.brokerEpoch());
+                buf.writeLong(req.controllerEpoch());
+                buf.writeLong(req.leaderEpoch());
+                buf.writeLong(req.physicalLogEndOffset());
+                buf.writeLong(req.visibleLogEndOffset());
+                buf.writeLong(req.nextVisibleAtEpochMs());
+            }
             default -> throw new IllegalArgumentException("Unknown apiKey: " + apiKey);
         }
     }
 
     private static void writeResponseBody(ErrorCode errorCode, ByteBuf buf, Object body) {
-        if (errorCode != ErrorCode.NONE || body == null) {
+        if (errorCode != ErrorCode.NONE) {
             return;
+        }
+        if (body == null) {
+            throw new IllegalArgumentException("Successful response requires a body object");
         }
         if (body instanceof CreateTopicResponse res) {
             ByteBufSerde.writeString(buf, res.topicName());
@@ -317,6 +598,67 @@ public final class ProtocolSerdes {
             buf.writeLong(res.metadataVersion());
         } else if (body instanceof LeaderReadyResponse) {
             // Successful Leader ready responses have no body fields.
+        } else if (body instanceof OpsStatusResponse res) {
+            writeOpsStatusResponse(buf, res);
+        } else if (body instanceof GroupStatusResponse res) {
+            writeGroupStatusResponse(buf, res);
+        } else if (body instanceof ListTopicsResponse res) {
+            writeBoundedList(
+                    buf,
+                    res.topicNames(),
+                    "topic names",
+                    (target, value) -> ByteBufSerde.writeString(target, value));
+        } else if (body instanceof DescribeTopicResponse res) {
+            writeDescribeTopicResponse(buf, res);
+        } else if (body instanceof DeleteTopicResponse res) {
+            writeDeleteTopicResponse(buf, res);
+        } else if (body instanceof IncreasePartitionsResponse res) {
+            ByteBufSerde.writeString(buf, res.topicName());
+            buf.writeInt(res.previousPartitionCount());
+            buf.writeInt(res.newPartitionCount());
+            buf.writeLong(res.metadataVersion());
+        } else if (body instanceof FailoverAuditResponse res) {
+            writeFailoverAuditResponse(buf, res);
+        } else if (body instanceof AuthStatusResponse res) {
+            buf.writeInt(res.targetBrokerId());
+            writeBoundedList(
+                    buf,
+                    res.scopes(),
+                    "auth scopes",
+                    (target, value) -> ByteBufSerde.writeString(target, value));
+        } else if (body instanceof ConfigureTopicReliabilityResponse res) {
+            ByteBufSerde.writeString(buf, res.sourceTopicName());
+            writeOptionalString(buf, res.retryTopicName());
+            writeOptionalString(buf, res.deadLetterTopicName());
+            buf.writeLong(res.metadataVersion());
+        } else if (body instanceof MarkBrokerOfflineAdminResponse res) {
+            buf.writeInt(res.brokerId());
+            buf.writeLong(res.metadataVersion());
+        } else if (body instanceof CreateTopicAdminResponse res) {
+            ByteBufSerde.writeString(buf, res.topicName());
+            buf.writeLong(res.metadataVersion());
+        } else if (body instanceof ProduceV2Response res) {
+            ByteBufSerde.writeString(buf, res.topicName());
+            buf.writeInt(res.partitionId());
+            buf.writeLong(res.baseOffset());
+        } else if (body instanceof ReplicaFetchV2Response res) {
+            writeReplicaFetchV2Response(buf, res);
+        } else if (body instanceof FetchV2Response res) {
+            writeFetchV2Response(buf, res);
+        } else if (body instanceof MetadataV2Response res) {
+            writeMetadataV2Response(buf, res);
+        } else if (body instanceof RuntimeMetricsV2Response res) {
+            writeRuntimeMetricsV2Response(buf, res);
+        } else if (body instanceof HeartbeatResponse
+                || body instanceof OffsetCommitResponse
+                || body instanceof MarkBrokerOfflineResponse
+                || body instanceof UpdateReplicaLeoResponse
+                || body instanceof TopicDeleteAckResponse
+                || body instanceof UpdateReplicaStateV2Response) {
+            // Successful acknowledgement responses have no body fields.
+        } else {
+            throw new IllegalArgumentException(
+                    "Unknown response body type: " + body.getClass().getName());
         }
     }
 
@@ -367,6 +709,81 @@ public final class ProtocolSerdes {
             ByteBufSerde.writeBytes(buf, record.key());
             ByteBufSerde.writeBytes(buf, record.value());
         }
+    }
+
+    private static ProduceV2Request decodeProduceV2Request(ByteBuf buf) {
+        String topic = readV4String(buf, "topic name");
+        requireReadable(buf, Integer.BYTES + Long.BYTES, "produce v2 request");
+        int partitionId = buf.readInt();
+        long leaderEpoch = buf.readLong();
+        V4BoundedList<ScheduledProduceRecord> records = readBoundedList(
+                buf,
+                "scheduled produce records",
+                ProtocolSerdes::readScheduledProduceRecord);
+        return new ProduceV2Request(topic, partitionId, leaderEpoch, records);
+    }
+
+    private static void writeProduceV2Request(ByteBuf buf, ProduceV2Request req) {
+        ByteBufSerde.writeString(buf, req.topicName());
+        buf.writeInt(req.partitionId());
+        buf.writeLong(req.leaderEpoch());
+        writeBoundedList(
+                buf,
+                req.records(),
+                "scheduled produce records",
+                ProtocolSerdes::writeScheduledProduceRecord);
+    }
+
+    private static ScheduledProduceRecord readScheduledProduceRecord(ByteBuf buf) {
+        byte[] key = ByteBufSerde.readBytes(buf);
+        byte[] value = ByteBufSerde.readBytes(buf);
+        requireReadable(buf, Long.BYTES, "scheduled produce timestamp");
+        return new ScheduledProduceRecord(key, value, buf.readLong());
+    }
+
+    private static void writeScheduledProduceRecord(ByteBuf buf, ScheduledProduceRecord record) {
+        ByteBufSerde.writeBytes(buf, record.key());
+        ByteBufSerde.writeBytes(buf, record.value());
+        buf.writeLong(record.deliverAtEpochMs());
+    }
+
+    private static ConfigureTopicReliabilityRequest decodeConfigureTopicReliabilityRequest(
+            ByteBuf buf) {
+        String credential = readV4Credential(buf);
+        String sourceTopicName = readV4String(buf, "source topic name");
+        boolean retryTopicSupplied = readBoolean(buf, "retryTopicSupplied");
+        String retryTopicName =
+                retryTopicSupplied ? readV4String(buf, "retry topic name") : null;
+        boolean clearRetryTopic = readBoolean(buf, "clearRetryTopic");
+        boolean deadLetterTopicSupplied = readBoolean(buf, "deadLetterTopicSupplied");
+        String deadLetterTopicName =
+                deadLetterTopicSupplied ? readV4String(buf, "dead-letter topic name") : null;
+        boolean clearDeadLetterTopic = readBoolean(buf, "clearDeadLetterTopic");
+        return new ConfigureTopicReliabilityRequest(
+                credential,
+                sourceTopicName,
+                retryTopicSupplied,
+                retryTopicName,
+                clearRetryTopic,
+                deadLetterTopicSupplied,
+                deadLetterTopicName,
+                clearDeadLetterTopic);
+    }
+
+    private static void writeConfigureTopicReliabilityRequest(
+            ByteBuf buf, ConfigureTopicReliabilityRequest req) {
+        ByteBufSerde.writeString(buf, req.credential());
+        ByteBufSerde.writeString(buf, req.sourceTopicName());
+        writeBoolean(buf, req.retryTopicSupplied());
+        if (req.retryTopicSupplied()) {
+            ByteBufSerde.writeString(buf, req.retryTopicName());
+        }
+        writeBoolean(buf, req.clearRetryTopic());
+        writeBoolean(buf, req.deadLetterTopicSupplied());
+        if (req.deadLetterTopicSupplied()) {
+            ByteBufSerde.writeString(buf, req.deadLetterTopicName());
+        }
+        writeBoolean(buf, req.clearDeadLetterTopic());
     }
 
     private static MetadataResponse decodeMetadataResponse(ByteBuf buf) {
@@ -451,6 +868,14 @@ public final class ProtocolSerdes {
         requireReadable(buf, Integer.BYTES, "controller broker id");
         int brokerId = buf.readInt();
         String host = ByteBufSerde.readString(buf);
+        requireReadable(buf, Integer.BYTES + Long.BYTES, "controller metadata");
+        return new ControllerMetadata(brokerId, host, buf.readInt(), buf.readLong());
+    }
+
+    private static ControllerMetadata readV4ControllerMetadata(ByteBuf buf) {
+        requireReadable(buf, Integer.BYTES, "controller broker id");
+        int brokerId = buf.readInt();
+        String host = readV4String(buf, "controller host");
         requireReadable(buf, Integer.BYTES + Long.BYTES, "controller metadata");
         return new ControllerMetadata(brokerId, host, buf.readInt(), buf.readLong());
     }
@@ -742,6 +1167,651 @@ public final class ProtocolSerdes {
         }
     }
 
+    private static OpsStatusResponse decodeOpsStatusResponse(ByteBuf buf) {
+        int targetBrokerId = buf.readInt();
+        long startedAtEpochMs = buf.readLong();
+        long snapshotAtEpochMs = buf.readLong();
+        long metadataVersion = buf.readLong();
+        int metadataFormatVersion = buf.readInt();
+        String role = readV4String(buf, "broker role");
+        long brokerEpoch = buf.readLong();
+        long controllerEpoch = buf.readLong();
+        String transportMode = readV4String(buf, "transport mode");
+        String maintenanceState = readV4String(buf, "maintenance state");
+        V4BoundedList<OpsBrokerInfo> brokers =
+                readBoundedList(buf, "ops brokers", ProtocolSerdes::readOpsBrokerInfo);
+        V4BoundedList<OpsPartitionInfo> partitions =
+                readBoundedList(buf, "ops partitions", ProtocolSerdes::readOpsPartitionInfo);
+        return new OpsStatusResponse(
+                targetBrokerId,
+                startedAtEpochMs,
+                snapshotAtEpochMs,
+                metadataVersion,
+                metadataFormatVersion,
+                role,
+                brokerEpoch,
+                controllerEpoch,
+                transportMode,
+                maintenanceState,
+                brokers,
+                partitions);
+    }
+
+    private static void writeOpsStatusResponse(ByteBuf buf, OpsStatusResponse res) {
+        buf.writeInt(res.targetBrokerId());
+        buf.writeLong(res.startedAtEpochMs());
+        buf.writeLong(res.snapshotAtEpochMs());
+        buf.writeLong(res.metadataVersion());
+        buf.writeInt(res.metadataFormatVersion());
+        ByteBufSerde.writeString(buf, res.role());
+        buf.writeLong(res.brokerEpoch());
+        buf.writeLong(res.controllerEpoch());
+        ByteBufSerde.writeString(buf, res.transportMode());
+        ByteBufSerde.writeString(buf, res.maintenanceState());
+        writeBoundedList(buf, res.brokers(), "ops brokers", ProtocolSerdes::writeOpsBrokerInfo);
+        writeBoundedList(
+                buf,
+                res.partitions(),
+                "ops partitions",
+                ProtocolSerdes::writeOpsPartitionInfo);
+    }
+
+    private static OpsBrokerInfo readOpsBrokerInfo(ByteBuf buf) {
+        return new OpsBrokerInfo(
+                buf.readInt(),
+                readV4String(buf, "broker host"),
+                buf.readInt(),
+                readV4String(buf, "broker state"),
+                buf.readLong(),
+                buf.readLong());
+    }
+
+    private static void writeOpsBrokerInfo(ByteBuf buf, OpsBrokerInfo broker) {
+        buf.writeInt(broker.brokerId());
+        ByteBufSerde.writeString(buf, broker.host());
+        buf.writeInt(broker.port());
+        ByteBufSerde.writeString(buf, broker.state());
+        buf.writeLong(broker.brokerEpoch());
+        buf.writeLong(broker.leaseDeadlineEpochMs());
+    }
+
+    private static OpsPartitionInfo readOpsPartitionInfo(ByteBuf buf) {
+        return new OpsPartitionInfo(
+                readV4String(buf, "partition topic name"),
+                buf.readInt(),
+                buf.readInt(),
+                buf.readLong(),
+                buf.readLong(),
+                buf.readLong(),
+                buf.readLong(),
+                readV4String(buf, "partition readiness"),
+                readBoolean(buf, "partition frozen"),
+                readBoundedIntList(buf, "replica ids"),
+                readBoundedIntList(buf, "isr ids"));
+    }
+
+    private static void writeOpsPartitionInfo(ByteBuf buf, OpsPartitionInfo partition) {
+        ByteBufSerde.writeString(buf, partition.topicName());
+        buf.writeInt(partition.partitionId());
+        buf.writeInt(partition.leaderId());
+        buf.writeLong(partition.leaderEpoch());
+        buf.writeLong(partition.physicalHighWatermark());
+        buf.writeLong(partition.visibleHighWatermark());
+        buf.writeLong(partition.nextVisibleAtEpochMs());
+        ByteBufSerde.writeString(buf, partition.readiness());
+        writeBoolean(buf, partition.frozen());
+        writeBoundedIntList(buf, partition.replicaIds(), "replica ids");
+        writeBoundedIntList(buf, partition.isrIds(), "isr ids");
+    }
+
+    private static GroupStatusResponse decodeGroupStatusResponse(ByteBuf buf) {
+        return new GroupStatusResponse(
+                readV4String(buf, "group id"),
+                readOptionalString(buf, "group topic"),
+                buf.readInt(),
+                readBoundedList(buf, "group members", ProtocolSerdes::readGroupMemberInfo),
+                readBoundedList(buf, "partition lag rows", ProtocolSerdes::readPartitionLagInfo));
+    }
+
+    private static void writeGroupStatusResponse(ByteBuf buf, GroupStatusResponse res) {
+        ByteBufSerde.writeString(buf, res.groupId());
+        writeOptionalString(buf, res.topicName());
+        buf.writeInt(res.generationId());
+        writeBoundedList(
+                buf,
+                res.members(),
+                "group members",
+                ProtocolSerdes::writeGroupMemberInfo);
+        writeBoundedList(
+                buf,
+                res.partitionLags(),
+                "partition lag rows",
+                ProtocolSerdes::writePartitionLagInfo);
+    }
+
+    private static GroupMemberInfo readGroupMemberInfo(ByteBuf buf) {
+        return new GroupMemberInfo(
+                readV4String(buf, "member id"),
+                readBoolean(buf, "member active"),
+                buf.readLong(),
+                readBoundedList(
+                        buf,
+                        "member assignments",
+                        ProtocolSerdes::readGroupAssignmentInfo));
+    }
+
+    private static void writeGroupMemberInfo(ByteBuf buf, GroupMemberInfo member) {
+        ByteBufSerde.writeString(buf, member.memberId());
+        writeBoolean(buf, member.active());
+        buf.writeLong(member.lastHeartbeatEpochMs());
+        writeBoundedList(
+                buf,
+                member.assignments(),
+                "member assignments",
+                ProtocolSerdes::writeGroupAssignmentInfo);
+    }
+
+    private static GroupAssignmentInfo readGroupAssignmentInfo(ByteBuf buf) {
+        return new GroupAssignmentInfo(
+                readV4String(buf, "assignment topic name"), buf.readInt());
+    }
+
+    private static void writeGroupAssignmentInfo(ByteBuf buf, GroupAssignmentInfo assignment) {
+        ByteBufSerde.writeString(buf, assignment.topicName());
+        buf.writeInt(assignment.partitionId());
+    }
+
+    private static PartitionLagInfo readPartitionLagInfo(ByteBuf buf) {
+        return new PartitionLagInfo(
+                readV4String(buf, "lag topic name"),
+                buf.readInt(),
+                buf.readLong(),
+                readV4String(buf, "commit state"),
+                buf.readLong(),
+                buf.readLong(),
+                buf.readLong(),
+                buf.readLong(),
+                buf.readLong(),
+                readV4String(buf, "lag readiness"),
+                readBoolean(buf, "partition lag frozen"));
+    }
+
+    private static void writePartitionLagInfo(ByteBuf buf, PartitionLagInfo lag) {
+        ByteBufSerde.writeString(buf, lag.topicName());
+        buf.writeInt(lag.partitionId());
+        buf.writeLong(lag.committedOffset());
+        ByteBufSerde.writeString(buf, lag.commitState());
+        buf.writeLong(lag.physicalHighWatermark());
+        buf.writeLong(lag.physicalLag());
+        buf.writeLong(lag.visibleHighWatermark());
+        buf.writeLong(lag.visibleLag());
+        buf.writeLong(lag.nextVisibleAtEpochMs());
+        ByteBufSerde.writeString(buf, lag.readiness());
+        writeBoolean(buf, lag.frozen());
+    }
+
+    private static <T> V4BoundedList<T> readBoundedList(
+            ByteBuf buf, String fieldName, Function<ByteBuf, T> itemReader) {
+        requireReadable(buf, Integer.BYTES + Byte.BYTES + Integer.BYTES, fieldName);
+        int total = buf.readInt();
+        boolean truncated = readBoolean(buf, fieldName + " truncated");
+        int count = readItemCount(buf, fieldName);
+        validateBoundedListEnvelope(total, truncated, count);
+        List<T> items = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            items.add(itemReader.apply(buf));
+        }
+        return new V4BoundedList<>(total, truncated, items);
+    }
+
+    private static void validateBoundedListEnvelope(
+            int total, boolean truncated, int count) {
+        if (total < 0) {
+            throw new IllegalArgumentException("total must be non-negative");
+        }
+        if (total < count) {
+            throw new IllegalArgumentException(
+                    "total cannot be smaller than encoded item count");
+        }
+        if (truncated && total <= count) {
+            throw new IllegalArgumentException(
+                    "truncated list total must exceed encoded item count");
+        }
+        if (!truncated && total != count) {
+            throw new IllegalArgumentException(
+                    "non-truncated list total must equal encoded item count");
+        }
+    }
+
+    private static <T> void writeBoundedList(
+            ByteBuf buf,
+            V4BoundedList<T> list,
+            String fieldName,
+            BiConsumer<ByteBuf, T> itemWriter) {
+        buf.writeInt(list.total());
+        writeBoolean(buf, list.truncated());
+        writeItemCount(buf, list.items().size(), fieldName);
+        for (T item : list.items()) {
+            itemWriter.accept(buf, item);
+        }
+    }
+
+    private static V4BoundedList<Integer> readBoundedIntList(
+            ByteBuf buf, String fieldName) {
+        return readBoundedList(buf, fieldName, target -> {
+            requireReadable(target, Integer.BYTES, fieldName + " item");
+            return target.readInt();
+        });
+    }
+
+    private static void writeBoundedIntList(
+            ByteBuf buf, V4BoundedList<Integer> list, String fieldName) {
+        writeBoundedList(buf, list, fieldName, (target, value) -> target.writeInt(value));
+    }
+
+    private static DescribeTopicResponse decodeDescribeTopicResponse(ByteBuf buf) {
+        String topicName = readV4String(buf, "topic name");
+        long metadataVersion = buf.readLong();
+        boolean active = readBoolean(buf, "topic active");
+        String retryTopic = readOptionalString(buf, "retry topic");
+        String deadLetterTopic = readOptionalString(buf, "dead-letter topic");
+        V4BoundedList<TopicPartitionInfo> partitions = readBoundedList(
+                buf,
+                "topic partitions",
+                ProtocolSerdes::readTopicPartitionInfo);
+        TopicTombstoneInfo tombstone = readBoolean(buf, "tombstone present")
+                ? readTopicTombstoneInfo(buf)
+                : null;
+        return new DescribeTopicResponse(
+                topicName,
+                metadataVersion,
+                active,
+                retryTopic,
+                deadLetterTopic,
+                partitions,
+                tombstone);
+    }
+
+    private static void writeDescribeTopicResponse(ByteBuf buf, DescribeTopicResponse res) {
+        ByteBufSerde.writeString(buf, res.topicName());
+        buf.writeLong(res.metadataVersion());
+        writeBoolean(buf, res.active());
+        writeOptionalString(buf, res.retryTopic());
+        writeOptionalString(buf, res.deadLetterTopic());
+        writeBoundedList(
+                buf,
+                res.partitions(),
+                "topic partitions",
+                ProtocolSerdes::writeTopicPartitionInfo);
+        writeBoolean(buf, res.tombstone() != null);
+        if (res.tombstone() != null) {
+            writeTopicTombstoneInfo(buf, res.tombstone());
+        }
+    }
+
+    private static DeleteTopicResponse decodeDeleteTopicResponse(ByteBuf buf) {
+        return new DeleteTopicResponse(
+                readV4String(buf, "topic name"),
+                readV4String(buf, "tombstone state"),
+                buf.readLong(),
+                buf.readLong(),
+                readBoundedIntList(buf, "required broker ids"),
+                readBoundedIntList(buf, "acknowledged broker ids"),
+                readBoundedIntList(buf, "pending broker ids"));
+    }
+
+    private static void writeDeleteTopicResponse(ByteBuf buf, DeleteTopicResponse res) {
+        ByteBufSerde.writeString(buf, res.topicName());
+        ByteBufSerde.writeString(buf, res.tombstoneState());
+        buf.writeLong(res.tombstoneVersion());
+        buf.writeLong(res.deletedAtEpochMs());
+        writeBoundedIntList(buf, res.requiredBrokerIds(), "required broker ids");
+        writeBoundedIntList(
+                buf,
+                res.acknowledgedBrokerIds(),
+                "acknowledged broker ids");
+        writeBoundedIntList(buf, res.pendingBrokerIds(), "pending broker ids");
+    }
+
+    private static TopicPartitionInfo readTopicPartitionInfo(ByteBuf buf) {
+        return new TopicPartitionInfo(
+                buf.readInt(),
+                buf.readInt(),
+                buf.readLong(),
+                readBoundedIntList(buf, "topic partition replica ids"),
+                readBoundedIntList(buf, "topic partition isr ids"),
+                readV4String(buf, "topic partition readiness"),
+                readBoolean(buf, "topic partition frozen"));
+    }
+
+    private static void writeTopicPartitionInfo(ByteBuf buf, TopicPartitionInfo partition) {
+        buf.writeInt(partition.partitionId());
+        buf.writeInt(partition.leaderId());
+        buf.writeLong(partition.leaderEpoch());
+        writeBoundedIntList(
+                buf,
+                partition.replicaIds(),
+                "topic partition replica ids");
+        writeBoundedIntList(buf, partition.isrIds(), "topic partition isr ids");
+        ByteBufSerde.writeString(buf, partition.readiness());
+        writeBoolean(buf, partition.frozen());
+    }
+
+    private static TopicTombstoneInfo readTopicTombstoneInfo(ByteBuf buf) {
+        return new TopicTombstoneInfo(
+                readV4String(buf, "tombstone state"),
+                buf.readLong(),
+                buf.readLong(),
+                readBoundedIntList(buf, "tombstone required broker ids"),
+                readBoundedIntList(buf, "tombstone acknowledged broker ids"),
+                readBoundedIntList(buf, "tombstone pending broker ids"));
+    }
+
+    private static void writeTopicTombstoneInfo(ByteBuf buf, TopicTombstoneInfo tombstone) {
+        ByteBufSerde.writeString(buf, tombstone.state());
+        buf.writeLong(tombstone.tombstoneVersion());
+        buf.writeLong(tombstone.deletedAtEpochMs());
+        writeBoundedIntList(
+                buf,
+                tombstone.requiredBrokerIds(),
+                "tombstone required broker ids");
+        writeBoundedIntList(
+                buf,
+                tombstone.acknowledgedBrokerIds(),
+                "tombstone acknowledged broker ids");
+        writeBoundedIntList(
+                buf,
+                tombstone.pendingBrokerIds(),
+                "tombstone pending broker ids");
+    }
+
+    private static FailoverAuditResponse decodeFailoverAuditResponse(ByteBuf buf) {
+        return new FailoverAuditResponse(
+                buf.readInt(),
+                buf.readLong(),
+                buf.readLong(),
+                readBoundedList(buf, "audit events", ProtocolSerdes::readAuditEventInfo));
+    }
+
+    private static void writeFailoverAuditResponse(ByteBuf buf, FailoverAuditResponse res) {
+        buf.writeInt(res.brokerId());
+        buf.writeLong(res.brokerStartedAtEpochMs());
+        buf.writeLong(res.overwrittenCount());
+        writeBoundedList(
+                buf,
+                res.events(),
+                "audit events",
+                ProtocolSerdes::writeAuditEventInfo);
+    }
+
+    private static AuditEventInfo readAuditEventInfo(ByteBuf buf) {
+        return new AuditEventInfo(
+                buf.readLong(),
+                buf.readLong(),
+                readV4String(buf, "audit event type"),
+                readOptionalInt(buf, "audit broker id"),
+                readOptionalString(buf, "audit topic name"),
+                readOptionalInt(buf, "audit partition id"),
+                readV4String(buf, "audit old value"),
+                readV4String(buf, "audit new value"),
+                readV4String(buf, "audit detail"));
+    }
+
+    private static void writeAuditEventInfo(ByteBuf buf, AuditEventInfo event) {
+        buf.writeLong(event.sequence());
+        buf.writeLong(event.timestampEpochMs());
+        ByteBufSerde.writeString(buf, event.eventType());
+        writeOptionalInt(buf, event.brokerId());
+        writeOptionalString(buf, event.topicName());
+        writeOptionalInt(buf, event.partitionId());
+        ByteBufSerde.writeString(buf, event.oldValue());
+        ByteBufSerde.writeString(buf, event.newValue());
+        ByteBufSerde.writeString(buf, event.detail());
+    }
+
+    private static ReplicaFetchV2Response decodeReplicaFetchV2Response(ByteBuf buf) {
+        return new ReplicaFetchV2Response(
+                readV4String(buf, "topic name"),
+                buf.readInt(),
+                buf.readLong(),
+                buf.readLong(),
+                buf.readLong(),
+                buf.readLong(),
+                buf.readLong(),
+                readBoundedList(
+                        buf,
+                        "scheduled replica records",
+                        ProtocolSerdes::readScheduledReplicaRecord));
+    }
+
+    private static void writeReplicaFetchV2Response(ByteBuf buf, ReplicaFetchV2Response res) {
+        ByteBufSerde.writeString(buf, res.topicName());
+        buf.writeInt(res.partitionId());
+        buf.writeLong(res.physicalHighWatermark());
+        buf.writeLong(res.visibleHighWatermark());
+        buf.writeLong(res.nextVisibleAtEpochMs());
+        buf.writeLong(res.leaderEpoch());
+        buf.writeLong(res.leaderLogEndOffset());
+        writeBoundedList(
+                buf,
+                res.records(),
+                "scheduled replica records",
+                ProtocolSerdes::writeScheduledReplicaRecord);
+    }
+
+    private static ScheduledReplicaRecord readScheduledReplicaRecord(ByteBuf buf) {
+        requireReadable(buf, Long.BYTES, "scheduled replica record offset");
+        long offset = buf.readLong();
+        byte[] key = ByteBufSerde.readBytes(buf);
+        byte[] value = ByteBufSerde.readBytes(buf);
+        requireReadable(buf, Long.BYTES, "scheduled replica record timestamp");
+        return new ScheduledReplicaRecord(offset, key, value, buf.readLong());
+    }
+
+    private static void writeScheduledReplicaRecord(
+            ByteBuf buf, ScheduledReplicaRecord record) {
+        buf.writeLong(record.offset());
+        ByteBufSerde.writeBytes(buf, record.key());
+        ByteBufSerde.writeBytes(buf, record.value());
+        buf.writeLong(record.deliverAtEpochMs());
+    }
+
+    private static FetchV2Response decodeFetchV2Response(ByteBuf buf) {
+        return new FetchV2Response(
+                readV4String(buf, "topic name"),
+                buf.readInt(),
+                buf.readLong(),
+                buf.readLong(),
+                buf.readLong(),
+                readBoundedList(buf, "fetch v2 records", ProtocolSerdes::readFetchedRecord));
+    }
+
+    private static void writeFetchV2Response(ByteBuf buf, FetchV2Response res) {
+        ByteBufSerde.writeString(buf, res.topicName());
+        buf.writeInt(res.partitionId());
+        buf.writeLong(res.physicalHighWatermark());
+        buf.writeLong(res.visibleHighWatermark());
+        buf.writeLong(res.nextVisibleAtEpochMs());
+        writeBoundedList(
+                buf,
+                res.records(),
+                "fetch v2 records",
+                ProtocolSerdes::writeFetchedRecord);
+    }
+
+    private static FetchedRecord readFetchedRecord(ByteBuf buf) {
+        requireReadable(buf, Long.BYTES, "fetched record offset");
+        return new FetchedRecord(
+                buf.readLong(), ByteBufSerde.readBytes(buf), ByteBufSerde.readBytes(buf));
+    }
+
+    private static void writeFetchedRecord(ByteBuf buf, FetchedRecord record) {
+        buf.writeLong(record.offset());
+        ByteBufSerde.writeBytes(buf, record.key());
+        ByteBufSerde.writeBytes(buf, record.value());
+    }
+
+    private static MetadataV2Response decodeMetadataV2Response(ByteBuf buf) {
+        V4BoundedList<OpsBrokerInfo> brokers =
+                readBoundedList(buf, "metadata v2 brokers", ProtocolSerdes::readOpsBrokerInfo);
+        V4BoundedList<TopicSummary> topics =
+                readBoundedList(buf, "metadata v2 topics", ProtocolSerdes::readTopicSummary);
+        ControllerMetadata controller = readBoolean(buf, "controller present")
+                ? readV4ControllerMetadata(buf)
+                : null;
+        return new MetadataV2Response(
+                brokers, topics, controller, buf.readLong(), buf.readInt());
+    }
+
+    private static void writeMetadataV2Response(ByteBuf buf, MetadataV2Response res) {
+        writeBoundedList(
+                buf,
+                res.brokers(),
+                "metadata v2 brokers",
+                ProtocolSerdes::writeOpsBrokerInfo);
+        writeBoundedList(
+                buf,
+                res.topics(),
+                "metadata v2 topics",
+                ProtocolSerdes::writeTopicSummary);
+        writeBoolean(buf, res.controller() != null);
+        if (res.controller() != null) {
+            writeControllerMetadata(buf, res.controller());
+        }
+        buf.writeLong(res.metadataVersion());
+        buf.writeInt(res.metadataFormatVersion());
+    }
+
+    private static TopicSummary readTopicSummary(ByteBuf buf) {
+        return new TopicSummary(
+                readV4String(buf, "topic name"),
+                buf.readInt(),
+                buf.readInt(),
+                readOptionalString(buf, "topic retry link"),
+                readOptionalString(buf, "topic dead-letter link"));
+    }
+
+    private static void writeTopicSummary(ByteBuf buf, TopicSummary topic) {
+        ByteBufSerde.writeString(buf, topic.topicName());
+        buf.writeInt(topic.partitionCount());
+        buf.writeInt(topic.replicationFactor());
+        writeOptionalString(buf, topic.retryTopic());
+        writeOptionalString(buf, topic.deadLetterTopic());
+    }
+
+    private static RuntimeMetricsV2Response decodeRuntimeMetricsV2Response(ByteBuf buf) {
+        long startedAtEpochMs = buf.readLong();
+        long snapshotAtEpochMs = buf.readLong();
+        long uptimeMs = buf.readLong();
+        V4BoundedList<RuntimeMetricCount> requests = readBoundedList(
+                buf,
+                "runtime v2 request metrics",
+                ProtocolSerdes::readRuntimeMetricCount);
+        V4BoundedList<RuntimeErrorCount> responses = readBoundedList(
+                buf,
+                "runtime v2 response metrics",
+                ProtocolSerdes::readRuntimeErrorCount);
+        V4BoundedList<RuntimeLatencyV2Summary> latencies = readBoundedList(
+                buf,
+                "runtime v2 latency metrics",
+                ProtocolSerdes::readRuntimeLatencyV2Summary);
+        V4BoundedList<RuntimeMetricCount> throttled = readBoundedList(
+                buf,
+                "runtime v2 throttled metrics",
+                ProtocolSerdes::readRuntimeMetricCount);
+        long produceBytes = buf.readLong();
+        long fetchBytes = buf.readLong();
+        long auditOverwrittenCount = buf.readLong();
+        V4BoundedList<PartitionLagInfo> lagMetrics = readBoundedList(
+                buf,
+                "runtime v2 lag metrics",
+                ProtocolSerdes::readPartitionLagInfo);
+        return new RuntimeMetricsV2Response(
+                startedAtEpochMs,
+                snapshotAtEpochMs,
+                uptimeMs,
+                requests,
+                responses,
+                latencies,
+                throttled,
+                produceBytes,
+                fetchBytes,
+                auditOverwrittenCount,
+                lagMetrics);
+    }
+
+    private static void writeRuntimeMetricsV2Response(
+            ByteBuf buf, RuntimeMetricsV2Response res) {
+        buf.writeLong(res.startedAtEpochMs());
+        buf.writeLong(res.snapshotAtEpochMs());
+        buf.writeLong(res.uptimeMs());
+        writeBoundedList(
+                buf,
+                res.requestsByApiKey(),
+                "runtime v2 request metrics",
+                ProtocolSerdes::writeRuntimeMetricCount);
+        writeBoundedList(
+                buf,
+                res.responsesByErrorCode(),
+                "runtime v2 response metrics",
+                ProtocolSerdes::writeRuntimeErrorCount);
+        writeBoundedList(
+                buf,
+                res.latencyByApiKey(),
+                "runtime v2 latency metrics",
+                ProtocolSerdes::writeRuntimeLatencyV2Summary);
+        writeBoundedList(
+                buf,
+                res.throttledByApiKey(),
+                "runtime v2 throttled metrics",
+                ProtocolSerdes::writeRuntimeMetricCount);
+        buf.writeLong(res.produceBytes());
+        buf.writeLong(res.fetchBytes());
+        buf.writeLong(res.auditOverwrittenCount());
+        writeBoundedList(
+                buf,
+                res.lagMetrics(),
+                "runtime v2 lag metrics",
+                ProtocolSerdes::writePartitionLagInfo);
+    }
+
+    private static RuntimeMetricCount readRuntimeMetricCount(ByteBuf buf) {
+        requireReadable(buf, Short.BYTES + Long.BYTES, "runtime metric");
+        return new RuntimeMetricCount(buf.readShort(), buf.readLong());
+    }
+
+    private static void writeRuntimeMetricCount(ByteBuf buf, RuntimeMetricCount metric) {
+        buf.writeShort(metric.apiKey());
+        buf.writeLong(metric.count());
+    }
+
+    private static RuntimeErrorCount readRuntimeErrorCount(ByteBuf buf) {
+        requireReadable(buf, Short.BYTES + Long.BYTES, "runtime error metric");
+        return new RuntimeErrorCount(buf.readShort(), buf.readLong());
+    }
+
+    private static void writeRuntimeErrorCount(ByteBuf buf, RuntimeErrorCount metric) {
+        buf.writeShort(metric.errorCode());
+        buf.writeLong(metric.count());
+    }
+
+    private static RuntimeLatencyV2Summary readRuntimeLatencyV2Summary(ByteBuf buf) {
+        requireReadable(
+                buf,
+                Short.BYTES + Long.BYTES + Long.BYTES + Double.BYTES,
+                "runtime latency v2 summary");
+        return new RuntimeLatencyV2Summary(
+                buf.readShort(), buf.readLong(), buf.readLong(), buf.readDouble());
+    }
+
+    private static void writeRuntimeLatencyV2Summary(
+            ByteBuf buf, RuntimeLatencyV2Summary summary) {
+        buf.writeShort(summary.apiKey());
+        buf.writeLong(summary.count());
+        buf.writeLong(summary.totalNanos());
+        buf.writeDouble(summary.maxMillis());
+    }
+
     private static void writeByteArrayWithShortPrefix(ByteBuf buf, byte[] data) {
         if (data == null || data.length == 0) {
             buf.writeShort(0);
@@ -781,6 +1851,121 @@ public final class ProtocolSerdes {
             throw new IllegalArgumentException("Invalid " + fieldName + " count: " + count);
         }
         buf.writeInt(count);
+    }
+
+    private static boolean readBoolean(ByteBuf buf, String fieldName) {
+        requireReadable(buf, Byte.BYTES, fieldName);
+        byte value = buf.readByte();
+        if (value == 0) {
+            return false;
+        }
+        if (value == 1) {
+            return true;
+        }
+        throw new IllegalArgumentException("Invalid " + fieldName + " boolean: " + value);
+    }
+
+    private static void writeBoolean(ByteBuf buf, boolean value) {
+        buf.writeByte(value ? 1 : 0);
+    }
+
+    private static String readOptionalString(ByteBuf buf, String fieldName) {
+        if (!readBoolean(buf, fieldName + " present")) {
+            return null;
+        }
+        String value = readV4String(buf, fieldName);
+        if (value.isEmpty()) {
+            throw new IllegalArgumentException(fieldName + " must be non-empty when present");
+        }
+        return value;
+    }
+
+    private static void writeOptionalString(ByteBuf buf, String value) {
+        writeBoolean(buf, value != null);
+        if (value != null) {
+            if (value.isEmpty()) {
+                throw new IllegalArgumentException("optional string must be absent or non-empty");
+            }
+            ByteBufSerde.writeString(buf, value);
+        }
+    }
+
+    private static String readCredentialPrefix(ByteBuf payload) {
+        return readV4String(payload, "credential", 1, MAX_CREDENTIAL_BYTES);
+    }
+
+    private static String readV4Credential(ByteBuf payload) {
+        return readV4String(payload, "credential", 1, MAX_CREDENTIAL_BYTES);
+    }
+
+    private static String readV4String(ByteBuf payload, String fieldName) {
+        return readV4String(payload, fieldName, 0, MAX_SHORT_BYTES);
+    }
+
+    private static String readV4String(
+            ByteBuf payload, String fieldName, int minLength, int maxLength) {
+        requireReadable(payload, Short.BYTES, fieldName + " length");
+        int length = payload.readUnsignedShort();
+        if (length < minLength || length > maxLength) {
+            throw new IllegalArgumentException(
+                    fieldName + " must encode to " + minLength + ".." + maxLength + " bytes");
+        }
+        requireReadable(payload, length, fieldName);
+        byte[] bytes = new byte[length];
+        payload.readBytes(bytes);
+        try {
+            return StandardCharsets.UTF_8
+                    .newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(bytes))
+                    .toString();
+        } catch (CharacterCodingException e) {
+            throw new IllegalArgumentException(fieldName + " must be valid UTF-8", e);
+        }
+    }
+
+    private static Integer readOptionalInt(ByteBuf buf, String fieldName) {
+        if (!readBoolean(buf, fieldName + " present")) {
+            return null;
+        }
+        requireReadable(buf, Integer.BYTES, fieldName);
+        return buf.readInt();
+    }
+
+    private static void writeOptionalInt(ByteBuf buf, Integer value) {
+        writeBoolean(buf, value != null);
+        if (value != null) {
+            buf.writeInt(value);
+        }
+    }
+
+    private static boolean hasCredentialPrefix(short apiKey) {
+        return switch (apiKey) {
+            case ApiKeys.OPS_STATUS,
+                    ApiKeys.GROUP_STATUS,
+                    ApiKeys.LIST_TOPICS,
+                    ApiKeys.DESCRIBE_TOPIC,
+                    ApiKeys.DELETE_TOPIC,
+                    ApiKeys.INCREASE_PARTITIONS,
+                    ApiKeys.FAILOVER_AUDIT,
+                    ApiKeys.AUTH_STATUS,
+                    ApiKeys.CONFIGURE_TOPIC_RELIABILITY,
+                    ApiKeys.MARK_BROKER_OFFLINE_ADMIN,
+                    ApiKeys.CREATE_TOPIC_ADMIN,
+                    ApiKeys.REPLICA_FETCH_V2,
+                    ApiKeys.TOPIC_DELETE_ACK,
+                    ApiKeys.RUNTIME_METRICS_V2,
+                    ApiKeys.UPDATE_REPLICA_STATE_V2 -> true;
+            default -> false;
+        };
+    }
+
+    private static void requireFullyConsumed(ByteBuf buf, String fieldName) {
+        if (buf.isReadable()) {
+            throw new IllegalArgumentException(
+                    "Trailing bytes after " + fieldName + ": " + buf.readableBytes());
+        }
     }
 
     private static void requireReadable(ByteBuf buf, int length, String fieldName) {

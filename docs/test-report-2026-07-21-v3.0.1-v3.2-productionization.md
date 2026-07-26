@@ -35,14 +35,16 @@ The working tree includes:
 
 The broker now parses `--network-transport nio|auto|epoll` and constructs event-loop/channel classes through `NettyTransportFactory`. NIO remains the default. AUTO falls back to NIO when epoll is unavailable. Explicit EPOLL fails clearly when native support is unavailable.
 
-### V4 Documentation Only
+### V4 Historical Scope Note
 
-V4 code was not implemented. The design and implementation documents were created here:
+This 2026-07-21 verification report only covered the V3.0.1 through V3.2 working-tree scope that existed at the time. It should not be read as a current statement about V4 implementation status: V4 operator-readiness code was implemented later on the current branch.
 
-- `docs/superpowers/specs/2026-07-20-v4-experimental-lsm-state-store-design.md`
-- `docs/superpowers/plans/2026-07-20-v4-experimental-lsm-state-store-implementation.md`
+For the current V4 behavior and verification status, use the top-level `README.md`, `docs/README.md`, `docs/roadmap.md`, the V4 design/plan documents, and the latest validation results recorded after this report:
 
-Both documents keep the experimental LSM state store outside the default broker message-log write path.
+- `docs/designs/v4-operator-readiness-design.md`
+- `docs/plans/v4-operator-readiness-implementation.md`
+
+Those current documents supersede this report for V4-specific implementation details while preserving this report as the historical V3.0.1-V3.2 test record.
 
 ## Environment-Gated Item
 

@@ -24,6 +24,24 @@ public final class ApiKeys {
     public static final short DISCOVER_CONTROLLER = 17;
     public static final short LEADER_READY = 18;
     public static final short RUNTIME_METRICS = 19;
+    public static final short OPS_STATUS = 20;
+    public static final short GROUP_STATUS = 21;
+    public static final short LIST_TOPICS = 22;
+    public static final short DESCRIBE_TOPIC = 23;
+    public static final short DELETE_TOPIC = 24;
+    public static final short INCREASE_PARTITIONS = 25;
+    public static final short FAILOVER_AUDIT = 26;
+    public static final short AUTH_STATUS = 27;
+    public static final short CONFIGURE_TOPIC_RELIABILITY = 28;
+    public static final short MARK_BROKER_OFFLINE_ADMIN = 29;
+    public static final short CREATE_TOPIC_ADMIN = 30;
+    public static final short PRODUCE_V2 = 31;
+    public static final short REPLICA_FETCH_V2 = 32;
+    public static final short TOPIC_DELETE_ACK = 33;
+    public static final short FETCH_V2 = 34;
+    public static final short METADATA_V2 = 35;
+    public static final short RUNTIME_METRICS_V2 = 36;
+    public static final short UPDATE_REPLICA_STATE_V2 = 37;
 
     private ApiKeys() {
     }

@@ -35,6 +35,22 @@ class CheckpointStoreTest {
     }
 
     @Test
+    void saveAndLoadScheduledDeliveries(@TempDir Path dir) {
+        CheckpointStore store = new CheckpointStore(
+                dir,
+                Clock.fixed(Instant.ofEpochMilli(1234), ZoneOffset.UTC));
+
+        store.save(store.checkpoint(
+                42,
+                Map.of("orders-0", 7L),
+                Map.of("orders-0", Map.of(3L, 9_999L))));
+
+        RecoveryCheckpoint loaded = store.load().orElseThrow();
+        assertEquals(9_999L, loaded.scheduledDeliveries.get("orders-0").get(3L));
+        assertEquals(1234, loaded.createdAtEpochMs);
+    }
+
+    @Test
     void corruptCheckpointFallsBackToEmpty(@TempDir Path dir) throws Exception {
         Path checkpoint = dir.resolve("checkpoint").resolve("recovery-checkpoint.json");
         Files.createDirectories(checkpoint.getParent());
@@ -76,6 +92,12 @@ class CheckpointStoreTest {
                 () -> store.save(new RecoveryCheckpoint(1, invalidHighWatermarkMap("", 1L), 1)));
         assertThrows(IllegalArgumentException.class,
                 () -> store.save(new RecoveryCheckpoint(1, invalidHighWatermarkMap("orders-0", -1L), 1)));
+        assertThrows(IllegalArgumentException.class,
+                () -> store.save(new RecoveryCheckpoint(
+                        1,
+                        Map.of("orders-0", 1L),
+                        Map.of("orders-0", Map.of(0L, 0L)),
+                        1)));
     }
 
     @Test

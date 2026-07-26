@@ -1,6 +1,7 @@
 package com.minimq.broker;
 
 import com.minimq.common.error.ErrorCode;
+import com.minimq.broker.auth.OperatorAuthorizer;
 import com.minimq.storage.LogMaintenanceMetrics;
 import com.minimq.storage.LogMaintenanceReport;
 import com.minimq.storage.LogManager;
@@ -42,6 +43,28 @@ class MaintenanceAdminServiceTest {
             assertEquals(ErrorCode.UNAUTHORIZED, metrics.errorCode());
             assertNull(report.body());
             assertEquals(0, manager.totalCalls());
+        }
+    }
+
+    @Test
+    void scopedCredentialsSeparateMaintenanceAndStatusAccess() throws Exception {
+        OperatorAuthorizer authorizer = OperatorAuthorizer.fromConfig(BrokerConfig.parse(new String[] {
+                "--operator-credential", "status-token=STATUS",
+                "--operator-credential", "maintenance-token=MAINTENANCE",
+                "--admin-token", TOKEN
+        }));
+        try (TrackingPartitionManager manager = manager("scoped");
+             MaintenanceAdminService service = new MaintenanceAdminService(authorizer, manager)) {
+            var forbiddenReport = service.report("status-token").toCompletableFuture().get(2, TimeUnit.SECONDS);
+            var forbiddenRun = service.run("status-token").toCompletableFuture().get(2, TimeUnit.SECONDS);
+            var metrics = service.metrics("status-token");
+            var report = service.report("maintenance-token").toCompletableFuture().get(2, TimeUnit.SECONDS);
+
+            assertEquals(ErrorCode.FORBIDDEN, forbiddenReport.errorCode());
+            assertEquals(ErrorCode.FORBIDDEN, forbiddenRun.errorCode());
+            assertEquals(ErrorCode.NONE, metrics.errorCode());
+            assertEquals(ErrorCode.NONE, report.errorCode());
+            assertEquals(2, manager.totalCalls());
         }
     }
 

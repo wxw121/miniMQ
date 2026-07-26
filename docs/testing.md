@@ -367,7 +367,7 @@ Focused commands / 定向命令：
 
 ```powershell
 mvn -q -gs .mvn/settings.xml -s .mvn/settings.xml -pl mq-broker -am '-Dtest=ReplicationIntegrationTest#clientFetchAfterFailoverWithoutWaitingForFollowerFetch' '-Dsurefire.failIfNoSpecifiedTests=false' '-Djacoco.skip=true' test
-mvn -q -gs .mvn/settings.xml -s .mvn/settings.xml -pl mq-broker -am '-Dtest=BrokerRuntimeMetricsTest,BrokerRuntimeMetricsIntegrationTest,CircuitBreakerTest,RequestThrottlerTest,BrokerAvailabilityGuardTest,ReplicaLeoReporterTest,NettyTransportFactoryTest,BrokerConfigTest,BrokerShutdownTest' '-Dsurefire.failIfNoSpecifiedTests=false' '-Djacoco.skip=true' test
+mvn -q -gs .mvn/settings.xml -s .mvn/settings.xml -pl mq-broker -am '-Dtest=BrokerRuntimeMetricsTest,BrokerRuntimeMetricsIntegrationTest,CircuitBreakerTest,RequestThrottlerTest,BrokerAvailabilityGuardTest,ReplicaStateReporterTest,NettyTransportFactoryTest,BrokerConfigTest,BrokerShutdownTest' '-Dsurefire.failIfNoSpecifiedTests=false' '-Djacoco.skip=true' test
 mvn -q -gs .mvn/settings.xml -s .mvn/settings.xml -pl mq-broker -am '-Djacoco.skip=true' test
 ```
 

@@ -6,19 +6,26 @@ import com.minimq.broker.FetchTransferMetrics;
 import com.minimq.broker.MetadataSync;
 import com.minimq.broker.MaintenanceAdminService;
 import com.minimq.broker.PartitionManager;
+import com.minimq.broker.audit.FailoverAuditLog;
 import com.minimq.broker.controller.ClusterController;
 import com.minimq.broker.controller.GroupCoordinator;
 import com.minimq.broker.metadata.ClusterMetadata;
 import com.minimq.broker.metrics.BrokerRuntimeMetrics;
 import com.minimq.broker.metrics.BrokerRuntimeMetricsSnapshot;
+import com.minimq.broker.metrics.RuntimeMetricsV2Service;
 import com.minimq.broker.resilience.RequestThrottler;
 import com.minimq.broker.resilience.ThrottleResult;
 import com.minimq.broker.replication.ReplicaStateManager;
-import com.minimq.broker.replication.ReplicaLeoReporter;
+import com.minimq.broker.replication.ReplicaStateReporter;
 import com.minimq.broker.replication.LeaderActivationService;
 import com.minimq.broker.replication.LeaderEpochStateStore;
 import com.minimq.broker.ControllerClient;
 import com.minimq.broker.ControllerRole;
+import com.minimq.broker.auth.OperatorAuthorizer;
+import com.minimq.broker.auth.OperatorScope;
+import com.minimq.broker.admin.TopicAdminService;
+import com.minimq.broker.status.BrokerStatusService;
+import com.minimq.broker.status.GroupStatusService;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.common.model.Record;
 import com.minimq.protocol.ApiKeys;
@@ -29,6 +36,7 @@ import com.minimq.protocol.message.ProtocolMessages;
 import com.minimq.protocol.message.ProtocolMessages.*;
 import com.minimq.storage.LogMaintenanceMetrics;
 import com.minimq.storage.LogMaintenanceReport;
+import com.minimq.storage.LogManager;
 import com.minimq.storage.MaintenanceSegmentReport;
 import com.minimq.storage.PartitionLog;
 import org.slf4j.Logger;
@@ -40,8 +48,8 @@ import io.netty.channel.SimpleChannelInboundHandler;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletionStage;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Broker 请求处理器，将网络帧解码成业务请求，并按 API 类型路由到存储或控制器。
@@ -53,7 +61,7 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     private final GroupCoordinator groupCoordinator;
     private final PartitionManager partitionManager;
     private final ReplicaStateManager replicaStateManager;
-    private final ReplicaLeoReporter replicaLeoReporter;
+    private final ReplicaStateReporter replicaStateReporter;
     private final FetchResponseWriter fetchResponseWriter;
     private final MaintenanceAdminService maintenanceAdminService;
     private final BrokerAvailabilityGuard availabilityGuard;
@@ -61,6 +69,12 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     private final ControllerRole controllerRole;
     private final BrokerRuntimeMetrics runtimeMetrics;
     private final RequestThrottler requestThrottler;
+    private final OperatorAuthorizer operatorAuthorizer;
+    private final BrokerStatusService brokerStatusService;
+    private final GroupStatusService groupStatusService;
+    private final TopicAdminService topicAdminService;
+    private final RuntimeMetricsV2Service runtimeMetricsV2Service;
+    private final FailoverAuditLog auditLog;
 
     public MqRequestHandler(
             BrokerConfig config,
@@ -91,7 +105,7 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 partitionManager,
                 new ReplicaStateManager(),
                 new FetchTransferMetrics(),
-                new ReplicaLeoReporter(config, clusterController, availabilityGuard),
+                new ReplicaStateReporter(config, clusterController, availabilityGuard),
                 availabilityGuard,
                 maintenanceAdminService);
     }
@@ -103,7 +117,7 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             PartitionManager partitionManager,
             ReplicaStateManager replicaStateManager,
             FetchTransferMetrics fetchTransferMetrics,
-            ReplicaLeoReporter replicaLeoReporter,
+            ReplicaStateReporter replicaStateReporter,
             MaintenanceAdminService maintenanceAdminService) {
         this(
                 config,
@@ -112,7 +126,7 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 partitionManager,
                 replicaStateManager,
                 fetchTransferMetrics,
-                replicaLeoReporter,
+                replicaStateReporter,
                 activeGuard(),
                 maintenanceAdminService);
     }
@@ -124,11 +138,11 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             PartitionManager partitionManager,
             ReplicaStateManager replicaStateManager,
             FetchTransferMetrics fetchTransferMetrics,
-            ReplicaLeoReporter replicaLeoReporter,
+            ReplicaStateReporter replicaStateReporter,
             BrokerAvailabilityGuard availabilityGuard,
             MaintenanceAdminService maintenanceAdminService) {
         this(config, clusterController, groupCoordinator, partitionManager, replicaStateManager,
-                fetchTransferMetrics, replicaLeoReporter, availabilityGuard,
+                fetchTransferMetrics, replicaStateReporter, availabilityGuard,
                 maintenanceAdminService, ControllerRole.legacy(config));
     }
 
@@ -139,12 +153,12 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             PartitionManager partitionManager,
             ReplicaStateManager replicaStateManager,
             FetchTransferMetrics fetchTransferMetrics,
-            ReplicaLeoReporter replicaLeoReporter,
+            ReplicaStateReporter replicaStateReporter,
             BrokerAvailabilityGuard availabilityGuard,
             MaintenanceAdminService maintenanceAdminService,
             ControllerRole controllerRole) {
         this(config, clusterController, groupCoordinator, partitionManager, replicaStateManager,
-                fetchTransferMetrics, replicaLeoReporter, availabilityGuard,
+                fetchTransferMetrics, replicaStateReporter, availabilityGuard,
                 maintenanceAdminService, controllerRole,
                 new BrokerRuntimeMetrics(), new RequestThrottler(config.maxInFlightRequests()));
     }
@@ -156,14 +170,100 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             PartitionManager partitionManager,
             ReplicaStateManager replicaStateManager,
             FetchTransferMetrics fetchTransferMetrics,
-            ReplicaLeoReporter replicaLeoReporter,
+            ReplicaStateReporter replicaStateReporter,
             BrokerAvailabilityGuard availabilityGuard,
             MaintenanceAdminService maintenanceAdminService,
             ControllerRole controllerRole,
             BrokerRuntimeMetrics runtimeMetrics,
             RequestThrottler requestThrottler) {
+        this(config, clusterController, groupCoordinator, partitionManager, replicaStateManager,
+                fetchTransferMetrics, replicaStateReporter, availabilityGuard,
+                maintenanceAdminService, controllerRole,
+                OperatorAuthorizer.fromConfig(config), runtimeMetrics, requestThrottler);
+    }
+
+    public MqRequestHandler(
+            BrokerConfig config,
+            ClusterController clusterController,
+            GroupCoordinator groupCoordinator,
+            PartitionManager partitionManager,
+            ReplicaStateManager replicaStateManager,
+            FetchTransferMetrics fetchTransferMetrics,
+            ReplicaStateReporter replicaStateReporter,
+            BrokerAvailabilityGuard availabilityGuard,
+            MaintenanceAdminService maintenanceAdminService,
+            ControllerRole controllerRole,
+            OperatorAuthorizer operatorAuthorizer,
+            BrokerRuntimeMetrics runtimeMetrics,
+            RequestThrottler requestThrottler) {
+        this(
+                config,
+                clusterController,
+                groupCoordinator,
+                partitionManager,
+                replicaStateManager,
+                fetchTransferMetrics,
+                replicaStateReporter,
+                availabilityGuard,
+                maintenanceAdminService,
+                controllerRole,
+                operatorAuthorizer,
+                runtimeMetrics,
+                requestThrottler,
+                null);
+    }
+
+    public MqRequestHandler(
+            BrokerConfig config,
+            ClusterController clusterController,
+            GroupCoordinator groupCoordinator,
+            PartitionManager partitionManager,
+            ReplicaStateManager replicaStateManager,
+            FetchTransferMetrics fetchTransferMetrics,
+            ReplicaStateReporter replicaStateReporter,
+            BrokerAvailabilityGuard availabilityGuard,
+            MaintenanceAdminService maintenanceAdminService,
+            ControllerRole controllerRole,
+            OperatorAuthorizer operatorAuthorizer,
+            BrokerRuntimeMetrics runtimeMetrics,
+            RequestThrottler requestThrottler,
+            BrokerStatusService brokerStatusService) {
+        this(
+                config,
+                clusterController,
+                groupCoordinator,
+                partitionManager,
+                replicaStateManager,
+                fetchTransferMetrics,
+                replicaStateReporter,
+                availabilityGuard,
+                maintenanceAdminService,
+                controllerRole,
+                operatorAuthorizer,
+                runtimeMetrics,
+                requestThrottler,
+                brokerStatusService,
+                null);
+    }
+
+    public MqRequestHandler(
+            BrokerConfig config,
+            ClusterController clusterController,
+            GroupCoordinator groupCoordinator,
+            PartitionManager partitionManager,
+            ReplicaStateManager replicaStateManager,
+            FetchTransferMetrics fetchTransferMetrics,
+            ReplicaStateReporter replicaStateReporter,
+            BrokerAvailabilityGuard availabilityGuard,
+            MaintenanceAdminService maintenanceAdminService,
+            ControllerRole controllerRole,
+            OperatorAuthorizer operatorAuthorizer,
+            BrokerRuntimeMetrics runtimeMetrics,
+            RequestThrottler requestThrottler,
+            BrokerStatusService brokerStatusService,
+            FailoverAuditLog auditLog) {
         this.config = config;
-        this.replicaLeoReporter = replicaLeoReporter;
+        this.replicaStateReporter = replicaStateReporter;
         this.clusterController = clusterController;
         this.groupCoordinator = groupCoordinator;
         this.partitionManager = partitionManager;
@@ -174,9 +274,29 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         this.controllerRole = controllerRole;
         this.runtimeMetrics = runtimeMetrics;
         this.requestThrottler = requestThrottler;
+        this.operatorAuthorizer = operatorAuthorizer;
+        this.auditLog = auditLog != null
+                ? auditLog
+                : new FailoverAuditLog(config.brokerId(), System::currentTimeMillis);
+        this.brokerStatusService = brokerStatusService != null
+                ? brokerStatusService
+                : new BrokerStatusService(
+                        config,
+                        clusterController,
+                        availabilityGuard,
+                        controllerRole,
+                        System::currentTimeMillis,
+                        System.currentTimeMillis());
+        this.groupStatusService = new GroupStatusService(clusterController, System::currentTimeMillis);
+        this.topicAdminService = new TopicAdminService(clusterController);
+        this.runtimeMetricsV2Service = new RuntimeMetricsV2Service(
+                runtimeMetrics,
+                System::currentTimeMillis,
+                this.auditLog::overwrittenCount);
         this.leaderActivationService = new LeaderActivationService(
                 partitionManager,
-                new LeaderEpochStateStore(config.dataDir().resolve("leader-epochs")));
+                new LeaderEpochStateStore(config.dataDir().resolve("leader-epochs")),
+                this.auditLog);
     }
 
     @Override
@@ -199,6 +319,13 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 recordCompletion(header, errorCode, startedNanos);
                 return;
             }
+            errorCode = authorizeBeforeDecode(header.apiKey(), payload);
+            if (errorCode != ErrorCode.NONE) {
+                writeResponse(ctx, header.correlationId(), errorCode, null);
+                recordCompletion(header, errorCode, startedNanos);
+                throttle.release();
+                return;
+            }
             Object requestBody = ProtocolSerdes.decodeRequestBody(header.apiKey(), payload);
             switch (header.apiKey()) {
                 case ApiKeys.DISCOVER_CONTROLLER -> responseBody = discoverController();
@@ -211,7 +338,13 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 }
                 case ApiKeys.METADATA -> {
                     ensureController();
-                    responseBody = clusterController.metadata((MetadataRequest) requestBody);
+                    MetadataRequest request = (MetadataRequest) requestBody;
+                    if (!request.topicName().isEmpty()
+                            && clusterController.getTopicTombstone(request.topicName()) != null) {
+                        errorCode = ErrorCode.UNKNOWN_TOPIC;
+                    } else {
+                        responseBody = clusterController.metadata(request);
+                    }
                 }
                 case ApiKeys.REGISTER_BROKER -> {
                     ensureController();
@@ -234,6 +367,15 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                         responseBody = new MarkBrokerOfflineResponse();
                     }
                 }
+                case ApiKeys.MARK_BROKER_OFFLINE_ADMIN -> {
+                    ensureController();
+                    MarkBrokerOfflineAdminRequest request = (MarkBrokerOfflineAdminRequest) requestBody;
+                    errorCode = clusterController.markBrokerOffline(request.brokerId());
+                    if (errorCode == ErrorCode.NONE) {
+                        responseBody = new MarkBrokerOfflineAdminResponse(
+                                request.brokerId(), clusterController.snapshot().metadataVersion);
+                    }
+                }
                 case ApiKeys.UPDATE_REPLICA_LEO -> {
                     ensureController();
                     UpdateReplicaLeoRequest request = (UpdateReplicaLeoRequest) requestBody;
@@ -253,6 +395,36 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                     errorCode = clusterController.leaderReady((LeaderReadyRequest) requestBody);
                     if (errorCode == ErrorCode.NONE) {
                         responseBody = new LeaderReadyResponse();
+                    }
+                }
+                case ApiKeys.UPDATE_REPLICA_STATE_V2 -> {
+                    ensureController();
+                    UpdateReplicaStateV2Request request = (UpdateReplicaStateV2Request) requestBody;
+                    errorCode = clusterController.updateReplicaStateV2(
+                            request.topicName(),
+                            request.partitionId(),
+                            request.replicaBrokerId(),
+                            request.brokerEpoch(),
+                            request.controllerEpoch(),
+                            request.leaderEpoch(),
+                            request.physicalLogEndOffset(),
+                            request.visibleLogEndOffset(),
+                            request.nextVisibleAtEpochMs());
+                    if (errorCode == ErrorCode.NONE) {
+                        responseBody = new UpdateReplicaStateV2Response();
+                    }
+                }
+                case ApiKeys.TOPIC_DELETE_ACK -> {
+                    ensureController();
+                    TopicDeleteAckRequest request = (TopicDeleteAckRequest) requestBody;
+                    errorCode = clusterController.acknowledgeTopicDeletion(
+                            request.topicName(),
+                            request.tombstoneVersion(),
+                            request.brokerId(),
+                            request.brokerEpoch(),
+                            request.controllerEpoch());
+                    if (errorCode == ErrorCode.NONE) {
+                        responseBody = new TopicDeleteAckResponse();
                     }
                 }
                 case ApiKeys.PRODUCE -> {
@@ -282,15 +454,42 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                     if (errorCode == ErrorCode.NONE) {
                         PartitionLog partitionLog =
                                 partitionManager.getOrCreate(request.topicName(), request.partitionId());
-                        long effectiveHighWatermark = effectiveHighWatermark(
+                        long replicationHighWatermark = effectiveHighWatermark(
                                 request.topicName(), request.partitionId(), partitionLog);
+                        long visibleHighWatermark = partitionManager.visibleHighWatermark(
+                                request.topicName(), request.partitionId());
+                        long fetchHighWatermark = Math.min(replicationHighWatermark, visibleHighWatermark);
                         MqResponseHeader fetchHeader =
                                 new MqResponseHeader(header.correlationId(), ErrorCode.NONE);
                         fetchResponseWriter.write(
-                                ctx, fetchHeader, request, partitionLog, effectiveHighWatermark);
+                                ctx, fetchHeader, request, partitionLog, fetchHighWatermark, replicationHighWatermark);
                         recordCompletion(header, ErrorCode.NONE, startedNanos);
                         throttle.release();
                         return;
+                    }
+                }
+                case ApiKeys.PRODUCE_V2 -> {
+                    ProduceV2Request request = (ProduceV2Request) requestBody;
+                    errorCode = requireWritableDataPlane();
+                    if (errorCode == ErrorCode.NONE) {
+                        errorCode = topicDeletedError(request.topicName());
+                    }
+                    if (errorCode == ErrorCode.NONE) {
+                        errorCode = ensureLeader(request.topicName(), request.partitionId());
+                    }
+                    if (errorCode == ErrorCode.NONE) {
+                        errorCode = clusterController.validateLeaderEpoch(
+                                request.topicName(), request.partitionId(), request.leaderEpoch());
+                    }
+                    if (errorCode == ErrorCode.NONE) {
+                        errorCode = validateProduceV2(request);
+                    }
+                    if (errorCode == ErrorCode.NONE) {
+                        try {
+                            responseBody = handleProduceV2(request);
+                        } catch (LogManager.ScheduledCapacityExceededException e) {
+                            errorCode = ErrorCode.THROTTLED;
+                        }
                     }
                 }
                 case ApiKeys.REPLICA_FETCH -> {
@@ -347,6 +546,23 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                         return;
                     }
                 }
+                case ApiKeys.REPLICA_FETCH_V2 -> {
+                    ReplicaFetchV2Request request = (ReplicaFetchV2Request) requestBody;
+                    errorCode = requireReadableDataPlane();
+                    if (errorCode == ErrorCode.NONE) {
+                        errorCode = topicDeletedError(request.topicName());
+                    }
+                    if (errorCode == ErrorCode.NONE) {
+                        errorCode = handleReplicaFetchV2(request);
+                    }
+                    if (errorCode == ErrorCode.NONE) {
+                        errorCode = clusterController.validateLeaderEpoch(
+                                request.topicName(), request.partitionId(), request.leaderEpoch());
+                    }
+                    if (errorCode == ErrorCode.NONE) {
+                        responseBody = buildReplicaFetchV2Response(request);
+                    }
+                }
                 case ApiKeys.MAINTENANCE_METRICS -> {
                     MaintenanceMetricsRequest request = (MaintenanceMetricsRequest) requestBody;
                     MaintenanceAdminService.Result<LogMaintenanceMetrics> result =
@@ -363,10 +579,133 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                         responseBody = toRuntimeMetricsResponse(runtimeMetrics.snapshot());
                     }
                 }
+                case ApiKeys.RUNTIME_METRICS_V2 -> {
+                    RuntimeMetricsV2Request request = (RuntimeMetricsV2Request) requestBody;
+                    responseBody = runtimeMetricsV2Service.snapshot(
+                            request.counterLimit(),
+                            request.latencyLimit(),
+                            request.lagLimit(),
+                            groupStatusService.lagMetricsSnapshot());
+                }
+                case ApiKeys.OPS_STATUS -> {
+                    OpsStatusRequest request = (OpsStatusRequest) requestBody;
+                    responseBody = brokerStatusService.status(
+                            request.brokerLimit(), request.partitionLimit());
+                }
+                case ApiKeys.GROUP_STATUS -> {
+                    ensureController();
+                    GroupStatusRequest request = (GroupStatusRequest) requestBody;
+                    GroupStatusService.Result result = groupStatusService.status(
+                            request.groupId(),
+                            request.topicFilter(),
+                            request.memberLimit(),
+                            request.partitionLimit());
+                    errorCode = result.errorCode();
+                    if (errorCode == ErrorCode.NONE) {
+                        responseBody = result.response();
+                    }
+                }
+                case ApiKeys.FAILOVER_AUDIT -> {
+                    FailoverAuditRequest request = (FailoverAuditRequest) requestBody;
+                    List<FailoverAuditLog.AuditEvent> events = auditLog.newestFirst(request.limit());
+                    List<AuditEventInfo> eventInfos = events.stream()
+                            .map(MqRequestHandler::toAuditEventInfo)
+                            .toList();
+                    int total = auditLog.size();
+                    responseBody = new FailoverAuditResponse(
+                            auditLog.brokerId(),
+                            auditLog.startedAtEpochMs(),
+                            auditLog.overwrittenCount(),
+                            new V4BoundedList<>(total, total > eventInfos.size(), eventInfos));
+                }
+                case ApiKeys.LIST_TOPICS -> {
+                    ensureController();
+                    TopicAdminService.Result<ListTopicsResponse> result =
+                            topicAdminService.list((ListTopicsRequest) requestBody);
+                    errorCode = result.errorCode();
+                    responseBody = result.response();
+                }
+                case ApiKeys.DESCRIBE_TOPIC -> {
+                    ensureController();
+                    TopicAdminService.Result<DescribeTopicResponse> result =
+                            topicAdminService.describe((DescribeTopicRequest) requestBody);
+                    errorCode = result.errorCode();
+                    responseBody = result.response();
+                }
+                case ApiKeys.DELETE_TOPIC -> {
+                    ensureController();
+                    TopicAdminService.Result<DeleteTopicResponse> result =
+                            topicAdminService.delete((DeleteTopicRequest) requestBody);
+                    errorCode = result.errorCode();
+                    responseBody = result.response();
+                }
+                case ApiKeys.INCREASE_PARTITIONS -> {
+                    ensureController();
+                    TopicAdminService.Result<IncreasePartitionsResponse> result =
+                            topicAdminService.increase((IncreasePartitionsRequest) requestBody);
+                    errorCode = result.errorCode();
+                    responseBody = result.response();
+                }
+                case ApiKeys.CONFIGURE_TOPIC_RELIABILITY -> {
+                    ensureController();
+                    TopicAdminService.Result<ConfigureTopicReliabilityResponse> result =
+                            topicAdminService.configureReliability(
+                                    (ConfigureTopicReliabilityRequest) requestBody);
+                    errorCode = result.errorCode();
+                    responseBody = result.response();
+                }
+                case ApiKeys.CREATE_TOPIC_ADMIN -> {
+                    ensureController();
+                    TopicAdminService.Result<CreateTopicAdminResponse> result =
+                            topicAdminService.create((CreateTopicAdminRequest) requestBody);
+                    errorCode = result.errorCode();
+                    responseBody = result.response();
+                }
+                case ApiKeys.FETCH_V2 -> {
+                    FetchV2Request request = (FetchV2Request) requestBody;
+                    errorCode = requireReadableDataPlane();
+                    if (errorCode == ErrorCode.NONE) {
+                        errorCode = topicDeletedError(request.topicName());
+                    }
+                    if (errorCode == ErrorCode.NONE) {
+                        errorCode = ensureLeader(request.topicName(), request.partitionId());
+                    }
+                    if (errorCode == ErrorCode.NONE) {
+                        errorCode = clusterController.validateLeaderEpoch(
+                                request.topicName(), request.partitionId(), request.leaderEpoch());
+                    }
+                    if (errorCode == ErrorCode.NONE) {
+                        responseBody = buildFetchV2Response(request);
+                    }
+                }
+                case ApiKeys.METADATA_V2 -> {
+                    ensureController();
+                    MetadataV2Request request = (MetadataV2Request) requestBody;
+                    if (request.topicFilter() != null
+                            && clusterController.getTopicTombstone(request.topicFilter()) != null) {
+                        errorCode = ErrorCode.UNKNOWN_TOPIC;
+                    } else {
+                        responseBody = buildMetadataV2Response(request);
+                    }
+                }
+                case ApiKeys.AUTH_STATUS -> {
+                    AuthStatusRequest request = (AuthStatusRequest) requestBody;
+                    OperatorAuthorizer.Decision decision =
+                            operatorAuthorizer.authenticateForAuthStatus(request.credential());
+                    errorCode = authorizationErrorCode(decision);
+                    if (errorCode == ErrorCode.NONE) {
+                        List<String> scopes = scopeNames(decision.scopes());
+                        responseBody = new AuthStatusResponse(
+                                config.brokerId(),
+                                new V4BoundedList<>(scopes.size(), false, scopes));
+                    }
+                }
                 default -> errorCode = ErrorCode.INVALID_REQUEST;
             }
         } catch (NotControllerException ex) {
             errorCode = ErrorCode.NOT_CONTROLLER;
+        } catch (LogManager.ScheduledCapacityExceededException ex) {
+            errorCode = ErrorCode.THROTTLED;
         } catch (IllegalArgumentException | IllegalStateException | IndexOutOfBoundsException ex) {
             errorCode = ErrorCode.INVALID_REQUEST;
         } catch (Exception ex) {
@@ -380,6 +719,83 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         if (throttle != null) {
             throttle.release();
         }
+    }
+
+    private ErrorCode authorizeBeforeDecode(short apiKey, ByteBuf payload) {
+        if (apiKey == ApiKeys.CREATE_TOPIC && !config.allowLegacyUnauthenticatedCreate()) {
+            return ErrorCode.UNAUTHORIZED;
+        }
+        if (isLegacyInternalApi(apiKey) && !config.allowLegacyInternalApi()) {
+            return ErrorCode.UNAUTHORIZED;
+        }
+        if (apiKey == ApiKeys.AUTH_STATUS) {
+            return authorizationErrorCode(
+                    operatorAuthorizer.authenticateForAuthStatus(
+                            ProtocolSerdes.peekRequestCredential(apiKey, payload)));
+        }
+        OperatorScope requiredScope = requiredOperatorScope(apiKey);
+        if (requiredScope != null) {
+            return authorizationErrorCode(
+                    operatorAuthorizer.authorize(
+                            ProtocolSerdes.peekRequestCredential(apiKey, payload),
+                            requiredScope));
+        }
+        if (isClusterCredentialApi(apiKey)) {
+            return authorizeClusterCredential(ProtocolSerdes.peekRequestCredential(apiKey, payload));
+        }
+        return ErrorCode.NONE;
+    }
+
+    private ErrorCode authorizeClusterCredential(String suppliedCredential) {
+        return OperatorAuthorizer.constantTimeEqualsUtf8(config.clusterToken(), suppliedCredential)
+                ? ErrorCode.NONE
+                : ErrorCode.UNAUTHORIZED;
+    }
+
+    private static boolean isLegacyInternalApi(short apiKey) {
+        return apiKey == ApiKeys.REPLICA_FETCH
+                || apiKey == ApiKeys.MARK_BROKER_OFFLINE
+                || apiKey == ApiKeys.UPDATE_REPLICA_LEO;
+    }
+
+    private static boolean isClusterCredentialApi(short apiKey) {
+        return apiKey == ApiKeys.REPLICA_FETCH_V2
+                || apiKey == ApiKeys.TOPIC_DELETE_ACK
+                || apiKey == ApiKeys.UPDATE_REPLICA_STATE_V2;
+    }
+
+    private static OperatorScope requiredOperatorScope(short apiKey) {
+        return switch (apiKey) {
+            case ApiKeys.OPS_STATUS,
+                    ApiKeys.GROUP_STATUS,
+                    ApiKeys.FAILOVER_AUDIT,
+                    ApiKeys.RUNTIME_METRICS_V2 -> OperatorScope.STATUS;
+            case ApiKeys.LIST_TOPICS,
+                    ApiKeys.DESCRIBE_TOPIC,
+                    ApiKeys.DELETE_TOPIC,
+                    ApiKeys.INCREASE_PARTITIONS,
+                    ApiKeys.CONFIGURE_TOPIC_RELIABILITY,
+                    ApiKeys.CREATE_TOPIC_ADMIN -> OperatorScope.TOPIC_ADMIN;
+            case ApiKeys.MARK_BROKER_OFFLINE_ADMIN -> OperatorScope.BROKER_OFFLINE;
+            default -> null;
+        };
+    }
+
+    private static ErrorCode authorizationErrorCode(OperatorAuthorizer.Decision decision) {
+        if (!decision.authenticated()) {
+            return ErrorCode.UNAUTHORIZED;
+        }
+        return decision.authorized() ? ErrorCode.NONE : ErrorCode.FORBIDDEN;
+    }
+
+    private static List<String> scopeNames(Set<OperatorScope> scopes) {
+        List<String> names = new ArrayList<>();
+        for (OperatorScope scope : OperatorScope.values()) {
+            if (scopes.contains(scope)) {
+                names.add(scope.name());
+            }
+        }
+        return names;
     }
 
     private void writeAsyncMaintenanceReport(
@@ -408,9 +824,8 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     private void recordCompletion(MqRequestHeader header, ErrorCode errorCode, long startedNanos) {
         runtimeMetrics.recordResponse(errorCode);
         if (header != null) {
-            runtimeMetrics.recordLatency(
-                    header.apiKey(),
-                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos));
+            runtimeMetrics.recordLatencyNanos(
+                    header.apiKey(), System.nanoTime() - startedNanos);
         }
     }
 
@@ -516,6 +931,19 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 .toList();
     }
 
+    private static AuditEventInfo toAuditEventInfo(FailoverAuditLog.AuditEvent event) {
+        return new AuditEventInfo(
+                event.sequence(),
+                event.timestampEpochMs(),
+                event.eventType().name(),
+                event.brokerId(),
+                event.topicName(),
+                event.partitionId(),
+                event.oldValue(),
+                event.newValue(),
+                event.detail());
+    }
+
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         log.error("Channel pipeline error", cause);
@@ -524,21 +952,193 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
     private ProduceResponse handleProduce(ProduceRequest request) {
         long baseOffset = -1;
+        long payloadBytes = 0L;
         for (ProduceRecord record : request.records()) {
+            payloadBytes = Math.addExact(
+                    payloadBytes,
+                    (record.key() == null ? 0L : record.key().length)
+                            + (record.value() == null ? 0L : record.value().length));
             baseOffset = partitionManager.append(request.topicName(), request.partitionId(), record.key(), record.value());
         }
+        runtimeMetrics.recordProduceBytes(payloadBytes);
         PartitionLog partitionLog = partitionManager.getOrCreate(request.topicName(), request.partitionId());
         replicaStateManager.updateReplicaLeo(
                 request.topicName(),
                 request.partitionId(),
                 config.brokerId(),
                 partitionLog.highWatermark());
-        reportReplicaLeo(
+        reportReplicaState(
                 request.topicName(),
                 request.partitionId(),
                 config.brokerId(),
                 partitionLog.highWatermark());
         return new ProduceResponse(request.topicName(), request.partitionId(), baseOffset);
+    }
+
+    private ErrorCode validateProduceV2(ProduceV2Request request) {
+        if (request.records().truncated()
+                || request.records().total() != request.records().items().size()) {
+            return ErrorCode.INVALID_REQUEST;
+        }
+        return ErrorCode.NONE;
+    }
+
+    private ProduceV2Response handleProduceV2(ProduceV2Request request) {
+        long payloadBytes = 0L;
+        List<LogManager.AppendRecord> records = new ArrayList<>(request.records().items().size());
+        for (ScheduledProduceRecord record : request.records().items()) {
+            payloadBytes = Math.addExact(
+                    payloadBytes,
+                    (record.key() == null ? 0L : record.key().length)
+                            + (record.value() == null ? 0L : record.value().length));
+            records.add(new LogManager.AppendRecord(
+                    record.key(), record.value(), record.deliverAtEpochMs()));
+        }
+        long baseOffset = partitionManager.appendBatch(
+                request.topicName(), request.partitionId(), records);
+        runtimeMetrics.recordProduceBytes(payloadBytes);
+        long physicalHighWatermark = partitionManager.highWatermark(request.topicName(), request.partitionId());
+        long visibleHighWatermark = partitionManager.visibleHighWatermark(request.topicName(), request.partitionId());
+        long nextVisibleAtEpochMs = partitionManager.nextVisibleAtEpochMs(request.topicName(), request.partitionId());
+        replicaStateManager.updateReplicaLeo(
+                request.topicName(),
+                request.partitionId(),
+                config.brokerId(),
+                physicalHighWatermark);
+        reportReplicaState(
+                request.topicName(),
+                request.partitionId(),
+                config.brokerId(),
+                physicalHighWatermark,
+                visibleHighWatermark,
+                nextVisibleAtEpochMs);
+        return new ProduceV2Response(request.topicName(), request.partitionId(), baseOffset);
+    }
+
+    private ErrorCode topicDeletedError(String topicName) {
+        return clusterController.getTopicTombstone(topicName) != null
+                ? ErrorCode.UNKNOWN_TOPIC : ErrorCode.NONE;
+    }
+
+    private ErrorCode handleReplicaFetchV2(ReplicaFetchV2Request request) {
+        ErrorCode leaderError = ensureLeader(request.topicName(), request.partitionId());
+        if (leaderError != ErrorCode.NONE) {
+            return leaderError;
+        }
+        if (request.replicaBrokerId() == config.brokerId()) {
+            return ErrorCode.INVALID_REQUEST;
+        }
+        if (!clusterController.isReplica(
+                request.topicName(), request.partitionId(), request.replicaBrokerId())) {
+            return ErrorCode.INVALID_REQUEST;
+        }
+        return ErrorCode.NONE;
+    }
+
+    private ReplicaFetchV2Response buildReplicaFetchV2Response(ReplicaFetchV2Request request) {
+        PartitionLog partitionLog = partitionManager.getOrCreate(request.topicName(), request.partitionId());
+        long physicalHighWatermark = partitionLog.highWatermark();
+        long visibleHighWatermark = partitionManager.visibleHighWatermark(
+                request.topicName(), request.partitionId());
+        long nextVisibleAtEpochMs = partitionManager.nextVisibleAtEpochMs(
+                request.topicName(), request.partitionId());
+        List<Record> records = partitionLog.read(request.fetchOffset(), request.maxBytes());
+        List<ScheduledReplicaRecord> encoded = new ArrayList<>(records.size());
+        for (Record record : records) {
+            if (record.offset() >= physicalHighWatermark) {
+                break;
+            }
+            encoded.add(new ScheduledReplicaRecord(
+                    record.offset(),
+                    record.key(),
+                    record.value(),
+                    partitionManager.deliveryAtEpochMs(
+                            request.topicName(), request.partitionId(), record.offset())));
+        }
+        return new ReplicaFetchV2Response(
+                request.topicName(),
+                request.partitionId(),
+                physicalHighWatermark,
+                visibleHighWatermark,
+                nextVisibleAtEpochMs,
+                request.leaderEpoch(),
+                physicalHighWatermark,
+                new V4BoundedList<>(encoded.size(), false, encoded));
+    }
+
+    private FetchV2Response buildFetchV2Response(FetchV2Request request) {
+        PartitionLog partitionLog = partitionManager.getOrCreate(request.topicName(), request.partitionId());
+        long physicalHighWatermark = partitionLog.highWatermark();
+        long localVisibleHighWatermark = partitionManager.visibleHighWatermark(
+                request.topicName(), request.partitionId());
+        long localNextVisibleAtEpochMs = partitionManager.nextVisibleAtEpochMs(
+                request.topicName(), request.partitionId());
+        long replicationHighWatermark = effectiveHighWatermark(
+                request.topicName(), request.partitionId(), partitionLog);
+        long fetchHighWatermark = Math.min(replicationHighWatermark, localVisibleHighWatermark);
+        long replicatedLimit = Math.min(physicalHighWatermark, replicationHighWatermark);
+        long nextVisibleAtEpochMs = localVisibleHighWatermark < replicatedLimit
+                ? localNextVisibleAtEpochMs
+                : -1L;
+        List<Record> records = partitionLog.read(request.fetchOffset(), request.maxBytes());
+        List<FetchedRecord> encoded = new ArrayList<>(records.size());
+        for (Record record : records) {
+            if (record.offset() >= fetchHighWatermark) {
+                break;
+            }
+            encoded.add(new FetchedRecord(record.offset(), record.key(), record.value()));
+        }
+        return new FetchV2Response(
+                request.topicName(),
+                request.partitionId(),
+                physicalHighWatermark,
+                fetchHighWatermark,
+                nextVisibleAtEpochMs,
+                new V4BoundedList<>(encoded.size(), false, encoded));
+    }
+
+    private MetadataV2Response buildMetadataV2Response(MetadataV2Request request) {
+        ClusterMetadata snapshot = clusterController.snapshot();
+        List<OpsBrokerInfo> brokers = snapshot.brokers.values().stream()
+                .sorted(java.util.Comparator.comparingInt(broker -> broker.brokerId))
+                .map(broker -> new OpsBrokerInfo(
+                        broker.brokerId,
+                        broker.host,
+                        broker.port,
+                        broker.online ? "ACTIVE" : "OFFLINE",
+                        broker.brokerEpoch,
+                        0L))
+                .toList();
+        List<TopicSummary> topics = snapshot.topics.values().stream()
+                .filter(topic -> request.topicFilter() == null
+                        || request.topicFilter().equals(topic.topicName))
+                .sorted(java.util.Comparator.comparing(topic -> topic.topicName))
+                .map(topic -> new TopicSummary(
+                        topic.topicName,
+                        topic.partitions.size(),
+                        topic.partitions.isEmpty()
+                                ? 0 : topic.partitions.get(0).replicaBrokerIds.size(),
+                        snapshot.retryTopicBySource.get(topic.topicName),
+                        snapshot.deadLetterTopicBySource.get(topic.topicName)))
+                .toList();
+        ControllerMetadata controller = controllerRole.currentLeader() == null
+                ? null
+                : new ControllerMetadata(
+                        controllerRole.currentLeader().brokerId(),
+                        controllerRole.currentLeader().host(),
+                        controllerRole.currentLeader().port(),
+                        snapshot.controllerEpoch);
+        return new MetadataV2Response(
+                boundedList(brokers, request.topicLimit()),
+                boundedList(topics, request.topicLimit()),
+                controller,
+                snapshot.metadataVersion,
+                snapshot.metadataFormatVersion);
+    }
+
+    private static <T> V4BoundedList<T> boundedList(List<T> values, int limit) {
+        int count = Math.min(values.size(), limit);
+        return new V4BoundedList<>(values.size(), count < values.size(), values.subList(0, count));
     }
 
     private ErrorCode handleReplicaFetch(ReplicaFetchRequest request) {
@@ -573,7 +1173,7 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 request.partitionId(),
                 request.replicaBrokerId(),
                 request.fetchOffset());
-        reportReplicaLeo(
+        reportReplicaState(
                 request.topicName(),
                 request.partitionId(),
                 request.replicaBrokerId(),
@@ -693,20 +1293,43 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
     private void noteLeadership(String topicName, int partitionId) {
         long highWatermark = partitionManager.highWatermark(topicName, partitionId);
+        long visibleHighWatermark = partitionManager.visibleHighWatermark(topicName, partitionId);
+        long nextVisibleAtEpochMs = partitionManager.nextVisibleAtEpochMs(topicName, partitionId);
         replicaStateManager.noteLeadership(
                 topicName,
                 partitionId,
                 config.brokerId(),
                 highWatermark);
-        reportReplicaLeo(topicName, partitionId, config.brokerId(), highWatermark);
+        reportReplicaState(
+                topicName,
+                partitionId,
+                config.brokerId(),
+                highWatermark,
+                visibleHighWatermark,
+                nextVisibleAtEpochMs);
     }
 
-    private void reportReplicaLeo(String topicName, int partitionId, int brokerId, long logEndOffset) {
-        ErrorCode error = replicaLeoReporter.report(
-                topicName, partitionId, brokerId, logEndOffset);
+    private void reportReplicaState(String topicName, int partitionId, int brokerId, long logEndOffset) {
+        reportReplicaState(topicName, partitionId, brokerId, logEndOffset, logEndOffset, -1L);
+    }
+
+    private void reportReplicaState(
+            String topicName,
+            int partitionId,
+            int brokerId,
+            long physicalLogEndOffset,
+            long visibleLogEndOffset,
+            long nextVisibleAtEpochMs) {
+        ErrorCode error = replicaStateReporter.report(
+                topicName,
+                partitionId,
+                brokerId,
+                physicalLogEndOffset,
+                visibleLogEndOffset,
+                nextVisibleAtEpochMs);
         if (error != ErrorCode.NONE) {
-            log.debug("Deferred replica LEO update topic={} partition={} broker={} offset={} error={}",
-                    topicName, partitionId, brokerId, logEndOffset, error);
+            log.debug("Deferred replica state update topic={} partition={} broker={} physical={} visible={} error={}",
+                    topicName, partitionId, brokerId, physicalLogEndOffset, visibleLogEndOffset, error);
         }
     }
 

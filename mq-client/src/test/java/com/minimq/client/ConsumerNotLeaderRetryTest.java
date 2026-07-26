@@ -8,14 +8,15 @@ import com.minimq.protocol.ApiKeys;
 import com.minimq.protocol.codec.MqDecoder;
 import com.minimq.protocol.message.MqResponseHeader;
 import com.minimq.protocol.message.ProtocolMessages.BrokerMetadata;
-import com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest;
-import com.minimq.protocol.message.ProtocolMessages.FetchRequest;
-import com.minimq.protocol.message.ProtocolMessages.FetchResponse;
+import com.minimq.protocol.message.ProtocolMessages.CreateTopicAdminRequest;
+import com.minimq.protocol.message.ProtocolMessages.FetchV2Request;
+import com.minimq.protocol.message.ProtocolMessages.FetchV2Response;
 import com.minimq.protocol.message.ProtocolMessages.FetchedRecord;
 import com.minimq.protocol.message.ProtocolMessages.MetadataRequest;
 import com.minimq.protocol.message.ProtocolMessages.MetadataResponse;
 import com.minimq.protocol.message.ProtocolMessages.PartitionMetadata;
 import com.minimq.protocol.message.ProtocolMessages.TopicMetadata;
+import com.minimq.protocol.message.ProtocolMessages.V4BoundedList;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -40,7 +41,8 @@ class ConsumerNotLeaderRetryTest {
                      controller.bootstrapServers(), "retry-group", "consumer-v13")) {
             admin.connect("127.0.0.1", controller.port());
             admin.ensureSuccess(admin.send(
-                    ApiKeys.CREATE_TOPIC, new CreateTopicRequest("orders", 1)));
+                    ApiKeys.CREATE_TOPIC_ADMIN,
+                    new CreateTopicAdminRequest(BrokerTestHarness.ADMIN_TOKEN, "orders", 1, 1)));
             MetadataResponse freshMetadata = (MetadataResponse) admin.send(
                     ApiKeys.METADATA, new MetadataRequest("orders"))
                     .body();
@@ -53,15 +55,12 @@ class ConsumerNotLeaderRetryTest {
                     null));
             consumer.enqueueFetchResponse(new MqDecoder.DecodedResponse(
                     new MqResponseHeader(2, ErrorCode.NONE),
-                    new FetchResponse("orders", 0, 1, List.of(new FetchedRecord(
-                            0,
-                            "k".getBytes(StandardCharsets.UTF_8),
-                            "v".getBytes(StandardCharsets.UTF_8))))));
+                    fetchV2Response(0)));
 
             List<ConsumerRecord> records = consumer.poll(Duration.ofMillis(10));
 
             assertEquals(1, records.size());
-            assertEquals("v", new String(records.get(0).value(), StandardCharsets.UTF_8));
+            assertEquals("v0", new String(records.get(0).value(), StandardCharsets.UTF_8));
             assertEquals(2, consumer.fetchAttempts());
             assertEquals(1, consumer.metadataFetchesDuringPoll());
             assertEquals(1, consumer.invalidatedBrokerClients());
@@ -77,7 +76,8 @@ class ConsumerNotLeaderRetryTest {
                      controller.bootstrapServers(), "fenced-group", "consumer-fenced")) {
             admin.connect("127.0.0.1", controller.port());
             admin.ensureSuccess(admin.send(
-                    ApiKeys.CREATE_TOPIC, new CreateTopicRequest("orders", 1)));
+                    ApiKeys.CREATE_TOPIC_ADMIN,
+                    new CreateTopicAdminRequest(BrokerTestHarness.ADMIN_TOKEN, "orders", 1, 1)));
             MetadataResponse freshMetadata = (MetadataResponse) admin.send(
                     ApiKeys.METADATA, new MetadataRequest("orders"))
                     .body();
@@ -109,7 +109,8 @@ class ConsumerNotLeaderRetryTest {
                      controller.bootstrapServers(), "cache-group", "consumer-cache-v13")) {
             admin.connect("127.0.0.1", controller.port());
             admin.ensureSuccess(admin.send(
-                    ApiKeys.CREATE_TOPIC, new CreateTopicRequest("orders", 1)));
+                    ApiKeys.CREATE_TOPIC_ADMIN,
+                    new CreateTopicAdminRequest(BrokerTestHarness.ADMIN_TOKEN, "orders", 1, 1)));
             MetadataResponse freshMetadata = (MetadataResponse) admin.send(
                     ApiKeys.METADATA, new MetadataRequest("orders"))
                     .body();
@@ -145,7 +146,8 @@ class ConsumerNotLeaderRetryTest {
                      controller.bootstrapServers(), "budget-group", "consumer-budget-v13")) {
             admin.connect("127.0.0.1", controller.port());
             admin.ensureSuccess(admin.send(
-                    ApiKeys.CREATE_TOPIC, new CreateTopicRequest("orders", 1)));
+                    ApiKeys.CREATE_TOPIC_ADMIN,
+                    new CreateTopicAdminRequest(BrokerTestHarness.ADMIN_TOKEN, "orders", 1, 1)));
             MetadataResponse freshMetadata = (MetadataResponse) admin.send(
                     ApiKeys.METADATA, new MetadataRequest("orders"))
                     .body();
@@ -183,7 +185,8 @@ class ConsumerNotLeaderRetryTest {
                      controller.bootstrapServers(), "fenced-budget-group", "consumer-fenced-budget")) {
             admin.connect("127.0.0.1", controller.port());
             admin.ensureSuccess(admin.send(
-                    ApiKeys.CREATE_TOPIC, new CreateTopicRequest("orders", 1)));
+                    ApiKeys.CREATE_TOPIC_ADMIN,
+                    new CreateTopicAdminRequest(BrokerTestHarness.ADMIN_TOKEN, "orders", 1, 1)));
             MetadataResponse freshMetadata = (MetadataResponse) admin.send(
                     ApiKeys.METADATA, new MetadataRequest("orders"))
                     .body();
@@ -222,7 +225,8 @@ class ConsumerNotLeaderRetryTest {
                      controller.bootstrapServers(), "multi-group", "consumer-multi-v13")) {
             admin.connect("127.0.0.1", controller.port());
             admin.ensureSuccess(admin.send(
-                    ApiKeys.CREATE_TOPIC, new CreateTopicRequest("orders", 2)));
+                    ApiKeys.CREATE_TOPIC_ADMIN,
+                    new CreateTopicAdminRequest(BrokerTestHarness.ADMIN_TOKEN, "orders", 2, 1)));
 
             MetadataResponse staleMetadata = metadataWithLeaders(0, 0);
             MetadataResponse freshMetadata = metadataWithLeaders(1, 2);
@@ -255,7 +259,8 @@ class ConsumerNotLeaderRetryTest {
                      controller.bootstrapServers(), "expired-metadata-group", "consumer-expired-metadata")) {
             admin.connect("127.0.0.1", controller.port());
             admin.ensureSuccess(admin.send(
-                    ApiKeys.CREATE_TOPIC, new CreateTopicRequest("orders", 1)));
+                    ApiKeys.CREATE_TOPIC_ADMIN,
+                    new CreateTopicAdminRequest(BrokerTestHarness.ADMIN_TOKEN, "orders", 1, 1)));
             MetadataResponse freshMetadata = (MetadataResponse) admin.send(
                     ApiKeys.METADATA, new MetadataRequest("orders"))
                     .body();
@@ -281,6 +286,45 @@ class ConsumerNotLeaderRetryTest {
         }
     }
 
+    @Test
+    void pollUsesFetchV2NextVisibleTimestampBeforeRetryingSameOffset() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("consumer-delayed-fetch-v2");
+        try (BrokerTestHarness controller = BrokerTestHarness.startController(dataDir);
+             NetworkClient admin = new NetworkClient("admin");
+             TestableConsumer consumer = new TestableConsumer(
+                     controller.bootstrapServers(), "delayed-group", "consumer-delayed-v2")) {
+            admin.connect("127.0.0.1", controller.port());
+            admin.ensureSuccess(admin.send(
+                    ApiKeys.CREATE_TOPIC_ADMIN,
+                    new CreateTopicAdminRequest(BrokerTestHarness.ADMIN_TOKEN, "orders", 1, 1)));
+            MetadataResponse freshMetadata = (MetadataResponse) admin.send(
+                    ApiKeys.METADATA, new MetadataRequest("orders"))
+                    .body();
+
+            consumer.subscribe("orders");
+            consumer.enqueueMetadata(freshMetadata);
+            consumer.countMetadataFetchesDuringPoll();
+            long nextVisibleAtEpochMs = consumer.currentTimeMillis() + 25;
+            consumer.enqueueFetchResponse(new MqDecoder.DecodedResponse(
+                    new MqResponseHeader(1, ErrorCode.NONE),
+                    new FetchV2Response(
+                            "orders",
+                            0,
+                            1,
+                            0,
+                            nextVisibleAtEpochMs,
+                            new V4BoundedList<>(0, false, List.of()))));
+            consumer.enqueueFetchResponse(successResponse(0));
+
+            List<ConsumerRecord> records = consumer.poll(Duration.ofMillis(50));
+
+            assertEquals(1, records.size());
+            assertEquals(List.of(0L, 0L), consumer.fetchOffsets());
+            assertEquals(List.of(25L), consumer.pollSleeps());
+            assertEquals(2, consumer.fetchAttempts());
+        }
+    }
+
     private static MetadataResponse metadataWithLeaders(int partition0Leader, int partition1Leader) {
         return new MetadataResponse(
                 List.of(
@@ -297,7 +341,17 @@ class ConsumerNotLeaderRetryTest {
     private static MqDecoder.DecodedResponse successResponse(long offset) {
         return new MqDecoder.DecodedResponse(
                 new MqResponseHeader((int) offset, ErrorCode.NONE),
-                new FetchResponse("orders", 0, offset + 1, List.of(new FetchedRecord(
+                fetchV2Response(offset));
+    }
+
+    private static FetchV2Response fetchV2Response(long offset) {
+        return new FetchV2Response(
+                "orders",
+                0,
+                offset + 1,
+                offset + 1,
+                -1L,
+                new V4BoundedList<>(1, false, List.of(new FetchedRecord(
                         offset,
                         ("k" + offset).getBytes(StandardCharsets.UTF_8),
                         ("v" + offset).getBytes(StandardCharsets.UTF_8)))));
@@ -308,6 +362,8 @@ class ConsumerNotLeaderRetryTest {
         private final Queue<MqDecoder.DecodedResponse> fetchResponses = new ArrayDeque<>();
         private final List<Integer> fetchLeaderBrokerIds = new ArrayList<>();
         private final List<Long> fetchOffsets = new ArrayList<>();
+        private final List<Long> pollSleeps = new ArrayList<>();
+        private long currentTimeMillis = 1_000_000L;
         private int metadataFetchesDuringPoll;
         private int fetchAttempts;
         private int invalidatedBrokerClients;
@@ -349,6 +405,10 @@ class ConsumerNotLeaderRetryTest {
             return fetchOffsets;
         }
 
+        private List<Long> pollSleeps() {
+            return pollSleeps;
+        }
+
         @Override
         protected MetadataResponse fetchMetadata(String topicName) throws InterruptedException {
             if (countMetadataFetchesDuringPoll) {
@@ -361,13 +421,24 @@ class ConsumerNotLeaderRetryTest {
         }
 
         @Override
-        protected MqDecoder.DecodedResponse sendFetch(
+        protected MqDecoder.DecodedResponse sendFetchV2(
                 BrokerMetadata leader,
-                FetchRequest request) {
+                FetchV2Request request) {
             fetchAttempts++;
             fetchLeaderBrokerIds.add(leader.brokerId());
             fetchOffsets.add(request.fetchOffset());
             return fetchResponses.remove();
+        }
+
+        @Override
+        protected long currentTimeMillis() {
+            return currentTimeMillis;
+        }
+
+        @Override
+        protected void sleepForPoll(long sleepMs) {
+            pollSleeps.add(sleepMs);
+            currentTimeMillis += sleepMs;
         }
 
         @Override

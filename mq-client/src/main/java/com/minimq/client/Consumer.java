@@ -23,10 +23,11 @@ import java.util.concurrent.TimeUnit;
  * 同步消费者客户端，负责加入消费组、拉取分配分区、维护本地 offset 并提交消费进度。
  */
 public class Consumer implements AutoCloseable {
+    public static final long DEFAULT_METADATA_CACHE_MAX_AGE_MS = 30_000L;
     private final ControllerAwareNetworkClient controllerClient;
     private final String groupId;
     private final Map<Integer, NetworkClient> brokerClients = new HashMap<>();
-    private final Map<String, MetadataResponse> metadataCache = new HashMap<>();
+    private final Map<String, CachedMetadata> metadataCache = new HashMap<>();
     private String topic;
     private String memberId = "";
     private int generationId;
@@ -94,32 +95,54 @@ public class Consumer implements AutoCloseable {
     public List<ConsumerRecord> poll(Duration timeout) throws InterruptedException {
         List<ConsumerRecord> result = new ArrayList<>();
         MetadataResponse metadata = cachedMetadata(topic);
-
-        for (int partition : assignedPartitions) {
-            metadata = fetchPartition(partition, metadata, result);
-        }
-        if (result.isEmpty()) {
-            Thread.sleep(timeout.toMillis());
-        }
+        long timeoutMs = Math.max(0L, timeout.toMillis());
+        long deadlineMs = currentTimeMillis() + timeoutMs;
+        do {
+            long nextVisibleAtEpochMs = -1L;
+            for (int partition : assignedPartitions) {
+                FetchPartitionResult fetched = fetchPartition(partition, metadata, result);
+                metadata = fetched.metadata();
+                if (fetched.nextVisibleAtEpochMs() >= 0
+                        && (nextVisibleAtEpochMs < 0
+                        || fetched.nextVisibleAtEpochMs() < nextVisibleAtEpochMs)) {
+                    nextVisibleAtEpochMs = fetched.nextVisibleAtEpochMs();
+                }
+            }
+            if (!result.isEmpty() || timeoutMs == 0L) {
+                return result;
+            }
+            long now = currentTimeMillis();
+            long remainingMs = deadlineMs - now;
+            if (remainingMs <= 0L) {
+                return result;
+            }
+            long sleepMs = remainingMs;
+            if (nextVisibleAtEpochMs >= 0L) {
+                sleepMs = Math.min(remainingMs, Math.max(1L, nextVisibleAtEpochMs - now));
+            }
+            sleepForPoll(sleepMs);
+        } while (result.isEmpty());
         return result;
     }
 
     private MetadataResponse cachedMetadata(String topicName) throws InterruptedException {
-        MetadataResponse cached = metadataCache.get(topicName);
-        if (cached != null) {
-            return cached;
+        CachedMetadata cached = metadataCache.get(topicName);
+        if (cached != null
+                && currentTimeMillis() - cached.cachedAtEpochMs() <= DEFAULT_METADATA_CACHE_MAX_AGE_MS) {
+            return cached.response();
         }
+        metadataCache.remove(topicName);
         return refreshMetadata(topicName);
     }
 
     private MetadataResponse refreshMetadata(String topicName) throws InterruptedException {
         MetadataResponse metadata = fetchMetadata(topicName);
-        MetadataResponse current = metadataCache.get(topicName);
-        if (current == null || metadata.metadataVersion() >= current.metadataVersion()) {
-            metadataCache.put(topicName, metadata);
+        CachedMetadata current = metadataCache.get(topicName);
+        if (current == null || metadata.metadataVersion() >= current.response().metadataVersion()) {
+            metadataCache.put(topicName, new CachedMetadata(metadata, currentTimeMillis()));
             return metadata;
         }
-        return current;
+        return current.response();
     }
 
     private void invalidateMetadata(String topicName) {
@@ -133,7 +156,7 @@ public class Consumer implements AutoCloseable {
         return (MetadataResponse) metadataResponse.body();
     }
 
-    private MetadataResponse fetchPartition(
+    private FetchPartitionResult fetchPartition(
             int partition,
             MetadataResponse initialMetadata,
             List<ConsumerRecord> result) throws InterruptedException {
@@ -141,9 +164,9 @@ public class Consumer implements AutoCloseable {
         for (int attempt = 0; attempt < 2; attempt++) {
             PartitionRoute route = routeWithRefresh(partition, metadata, attempt);
             long offset = offsets.getOrDefault(partition, 0L);
-            MqDecoder.DecodedResponse fetchResponse = sendFetch(
+            MqDecoder.DecodedResponse fetchResponse = sendFetchV2(
                     route.leader(),
-                    new FetchRequest(topic, partition, route.leaderEpoch(), offset, 1024 * 1024));
+                    new FetchV2Request(topic, partition, route.leaderEpoch(), offset, 1024 * 1024));
             MqResponseHeader header = fetchResponse.header();
             if (isStaleLeaderError(header.errorCode()) && attempt == 0) {
                 invalidateMetadata(topic);
@@ -155,21 +178,23 @@ public class Consumer implements AutoCloseable {
                     + " partition=" + partition
                     + " broker=" + route.leader().brokerId()
                     + " attempt=" + (attempt + 1) + "/2");
-            FetchResponse fetch = (FetchResponse) fetchResponse.body();
-            for (FetchedRecord record : fetch.records()) {
+            FetchV2Response fetch = (FetchV2Response) fetchResponse.body();
+            for (FetchedRecord record : fetch.records().items()) {
                 result.add(new ConsumerRecord(topic, partition, record.offset(), record.key(), record.value()));
                 offsets.put(partition, record.offset() + 1);
             }
-            return metadata;
+            return new FetchPartitionResult(metadata, fetch.nextVisibleAtEpochMs());
         }
-        return metadata;
+        return new FetchPartitionResult(metadata, -1L);
     }
 
     private static boolean isStaleLeaderError(ErrorCode errorCode) {
         return errorCode == ErrorCode.NOT_LEADER
                 || errorCode == ErrorCode.BROKER_FENCED
                 || errorCode == ErrorCode.STALE_LEADER_EPOCH
-                || errorCode == ErrorCode.LEADER_NOT_READY;
+                || errorCode == ErrorCode.LEADER_NOT_READY
+                || errorCode == ErrorCode.UNKNOWN_TOPIC
+                || errorCode == ErrorCode.UNKNOWN_PARTITION;
     }
 
     private PartitionRoute routeWithRefresh(
@@ -232,11 +257,25 @@ public class Consumer implements AutoCloseable {
         return brokerClient(leader).send(ApiKeys.FETCH, request);
     }
 
+    protected MqDecoder.DecodedResponse sendFetchV2(
+            BrokerMetadata leader,
+            FetchV2Request request) throws InterruptedException {
+        return brokerClient(leader).send(ApiKeys.FETCH_V2, request);
+    }
+
     protected void invalidateBrokerClient(int brokerId) throws InterruptedException {
         NetworkClient staleClient = brokerClients.remove(brokerId);
         if (staleClient != null) {
             staleClient.close();
         }
+    }
+
+    protected long currentTimeMillis() {
+        return System.currentTimeMillis();
+    }
+
+    protected void sleepForPoll(long sleepMs) throws InterruptedException {
+        Thread.sleep(sleepMs);
     }
 
     // 简化版心跳只维持成员活跃状态，后续版本可在这里承载 rebalance 触发逻辑。
@@ -263,5 +302,11 @@ public class Consumer implements AutoCloseable {
     }
 
     private record PartitionRoute(long leaderEpoch, BrokerMetadata leader) {
+    }
+
+    private record CachedMetadata(MetadataResponse response, long cachedAtEpochMs) {
+    }
+
+    private record FetchPartitionResult(MetadataResponse metadata, long nextVisibleAtEpochMs) {
     }
 }

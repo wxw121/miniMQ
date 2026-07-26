@@ -5,9 +5,9 @@
 
 ## 1. Design Goals / 设计目标
 
-MiniMQ aims to be small enough to read, but realistic enough to explain the essential moving parts of a partitioned message queue. The project intentionally avoids hiding behavior behind frameworks. Protocol serialization is explicit. Storage layout is explicit. Group assignment is visible in code. This makes the project suitable for teaching, interview discussion, and agent-driven iteration.
+MiniMQ aims to be small enough to read, but realistic enough to explain the essential moving parts of a partitioned message queue. The project intentionally avoids hiding behavior behind frameworks. Protocol serialization is explicit. Storage layout is explicit. Group assignment is visible in code. This makes the project suitable for learning, design discussion, and contributor iteration.
 
-MiniMQ 的目标是“小到能读完，大到能讲清消息队列核心机制”。项目有意避免把关键行为藏在框架里：协议序列化是手写的，存储格式是显式的，消费组分配逻辑也直接体现在代码里。因此它适合作为学习项目、面试作品、以及新 agent 继续迭代的上下文载体。
+MiniMQ 的目标是“小到能读完，大到能讲清消息队列核心机制”。项目有意避免把关键行为藏在框架里：协议序列化是手写的，存储格式是显式的，消费组分配逻辑也直接体现在代码里。因此它适合作为学习项目、设计讨论材料以及后续贡献者继续迭代的上下文载体。
 
 The design optimizes for clarity, determinism, and testability. V2.3 adds a replication foundation with ISR-aware client FETCH visibility, while automatic broker failure detection and producer acknowledgement policies remain future work.
 
@@ -542,7 +542,7 @@ V3.1 adds small runtime protection primitives around the existing broker request
 
 - `BrokerRuntimeMetrics` records request counts by API key, response counts by `ErrorCode`, per-API latency totals/counts, and throttled request counts. `BrokerServer.runtimeMetrics()` exposes immutable snapshots for tests and future operator endpoints.
 - `RequestThrottler` enforces `--max-in-flight-requests` at `MqRequestHandler.channelRead0`. The default value is `0`, which disables throttling and preserves existing behavior; rejected requests return `THROTTLED`.
-- `CircuitBreaker` protects repeated Controller update failures in `ReplicaLeoReporter`. When the breaker is open, the reporter returns `CONTROLLER_NOT_READY` instead of repeatedly hitting an unhealthy Controller path.
+- `CircuitBreaker` protects repeated Controller update failures in `ReplicaStateReporter`. When the breaker is open, the reporter returns `CONTROLLER_NOT_READY` instead of repeatedly hitting an unhealthy Controller path.
 - `BrokerAvailabilityGuard.State.STORAGE_DEGRADED` rejects `PRODUCE` and destructive maintenance runs with `MAINTENANCE_BUSY`, while allowing `FETCH`, metadata, discovery, and maintenance metrics/reporting for diagnosis.
 
 The V3.1 scope is intentionally in-process. External metrics export, dashboards, alerting, and persistent runtime telemetry remain follow-up work.

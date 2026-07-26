@@ -1,12 +1,18 @@
 package com.minimq.broker;
 
+import com.minimq.broker.auth.OperatorScope;
 import com.minimq.broker.netty.NetworkTransportMode;
 import com.minimq.storage.FlushPolicy;
+import com.minimq.storage.LogManagerConfig;
 import com.minimq.storage.SegmentedLogConfig;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Broker 启动配置，集中保存 brokerId、监听地址、数据目录和 Controller 模式。
@@ -46,7 +52,150 @@ public record BrokerConfig(
         long leaderActivationTimeoutMs,
         boolean initializeEmptyCluster,
         boolean initializeClusterFromLocal,
-        String adminToken) {
+        List<OperatorCredential> operatorCredentials,
+        String clusterToken,
+        boolean allowLegacyUnauthenticatedCreate,
+        boolean allowLegacyInternalApi,
+        String adminToken,
+        long topicDeleteTimeoutMs,
+        int maxScheduledRecords) {
+
+    public record OperatorCredential(String token, Set<OperatorScope> scopes) {
+        public OperatorCredential {
+            if (token == null || token.isBlank()) {
+                throw new IllegalArgumentException("operator credential token must not be blank");
+            }
+            if (scopes == null || scopes.isEmpty()) {
+                throw new IllegalArgumentException("operator credential scopes must not be empty");
+            }
+            scopes = Set.copyOf(scopes);
+        }
+    }
+
+    /** Source compatibility for callers that construct the pre-capacity V4 record directly. */
+    public BrokerConfig(
+            int brokerId,
+            String host,
+            int port,
+            Path dataDir,
+            boolean controller,
+            String controllerHost,
+            int controllerPort,
+            boolean recoverCorruptMetadata,
+            FlushPolicy flushPolicy,
+            int checkpointEveryNAppends,
+            long segmentMaxBytes,
+            int sparseIndexIntervalRecords,
+            long retentionMs,
+            long retentionBytes,
+            boolean compactionEnabled,
+            int compactionMaxSegments,
+            long compactionMaxBytes,
+            int maintenanceWindowStartHour,
+            int maintenanceWindowEndHour,
+            int maintenanceEveryNAppends,
+            FetchTransferMode fetchTransferMode,
+            long fetchTransferTimeoutMs,
+            NetworkTransportMode networkTransportMode,
+            int maxInFlightRequests,
+            long brokerHeartbeatIntervalMs,
+            long brokerSelfFenceTimeoutMs,
+            long controllerBrokerLeaseTimeoutMs,
+            String clusterId,
+            List<String> etcdEndpoints,
+            int controllerSessionTtlSeconds,
+            long controllerFailoverGraceMs,
+            long leaderActivationTimeoutMs,
+            boolean initializeEmptyCluster,
+            boolean initializeClusterFromLocal,
+            List<OperatorCredential> operatorCredentials,
+            String clusterToken,
+            boolean allowLegacyUnauthenticatedCreate,
+            boolean allowLegacyInternalApi,
+            String adminToken,
+            long topicDeleteTimeoutMs) {
+        this(
+                brokerId, host, port, dataDir, controller, controllerHost, controllerPort,
+                recoverCorruptMetadata, flushPolicy, checkpointEveryNAppends, segmentMaxBytes,
+                sparseIndexIntervalRecords, retentionMs, retentionBytes, compactionEnabled,
+                compactionMaxSegments, compactionMaxBytes, maintenanceWindowStartHour,
+                maintenanceWindowEndHour, maintenanceEveryNAppends, fetchTransferMode,
+                fetchTransferTimeoutMs, networkTransportMode, maxInFlightRequests,
+                brokerHeartbeatIntervalMs, brokerSelfFenceTimeoutMs, controllerBrokerLeaseTimeoutMs,
+                clusterId, etcdEndpoints, controllerSessionTtlSeconds, controllerFailoverGraceMs,
+                leaderActivationTimeoutMs, initializeEmptyCluster, initializeClusterFromLocal,
+                operatorCredentials, clusterToken, allowLegacyUnauthenticatedCreate,
+                allowLegacyInternalApi, adminToken, topicDeleteTimeoutMs,
+                DEFAULT_MAX_SCHEDULED_RECORDS);
+    }
+
+    /** Source compatibility for callers that construct the pre-V4 record directly. */
+    public BrokerConfig(
+            int brokerId,
+            String host,
+            int port,
+            Path dataDir,
+            boolean controller,
+            String controllerHost,
+            int controllerPort,
+            boolean recoverCorruptMetadata,
+            FlushPolicy flushPolicy,
+            int checkpointEveryNAppends,
+            long segmentMaxBytes,
+            int sparseIndexIntervalRecords,
+            long retentionMs,
+            long retentionBytes,
+            boolean compactionEnabled,
+            int compactionMaxSegments,
+            long compactionMaxBytes,
+            int maintenanceWindowStartHour,
+            int maintenanceWindowEndHour,
+            int maintenanceEveryNAppends,
+            FetchTransferMode fetchTransferMode,
+            long fetchTransferTimeoutMs,
+            NetworkTransportMode networkTransportMode,
+            int maxInFlightRequests,
+            long brokerHeartbeatIntervalMs,
+            long brokerSelfFenceTimeoutMs,
+            long controllerBrokerLeaseTimeoutMs,
+            String clusterId,
+            List<String> etcdEndpoints,
+            int controllerSessionTtlSeconds,
+            long controllerFailoverGraceMs,
+            long leaderActivationTimeoutMs,
+            boolean initializeEmptyCluster,
+            boolean initializeClusterFromLocal,
+            List<OperatorCredential> operatorCredentials,
+            String clusterToken,
+            boolean allowLegacyUnauthenticatedCreate,
+            boolean allowLegacyInternalApi,
+            String adminToken) {
+        this(
+                brokerId, host, port, dataDir, controller, controllerHost, controllerPort,
+                recoverCorruptMetadata, flushPolicy, checkpointEveryNAppends, segmentMaxBytes,
+                sparseIndexIntervalRecords, retentionMs, retentionBytes, compactionEnabled,
+                compactionMaxSegments, compactionMaxBytes, maintenanceWindowStartHour,
+                maintenanceWindowEndHour, maintenanceEveryNAppends, fetchTransferMode,
+                fetchTransferTimeoutMs, networkTransportMode, maxInFlightRequests,
+                brokerHeartbeatIntervalMs, brokerSelfFenceTimeoutMs, controllerBrokerLeaseTimeoutMs,
+                clusterId, etcdEndpoints, controllerSessionTtlSeconds, controllerFailoverGraceMs,
+                leaderActivationTimeoutMs, initializeEmptyCluster, initializeClusterFromLocal,
+                operatorCredentials, clusterToken, allowLegacyUnauthenticatedCreate,
+                allowLegacyInternalApi, adminToken, DEFAULT_TOPIC_DELETE_TIMEOUT_MS);
+    }
+
+    public BrokerConfig {
+        operatorCredentials = operatorCredentials == null ? List.of() : List.copyOf(operatorCredentials);
+        if (clusterToken == null || clusterToken.isBlank()) {
+            clusterToken = adminToken;
+        }
+        if (topicDeleteTimeoutMs <= 0) {
+            throw new IllegalArgumentException("topicDeleteTimeoutMs must be positive");
+        }
+        if (maxScheduledRecords < 0) {
+            throw new IllegalArgumentException("maxScheduledRecords must be non-negative");
+        }
+    }
 
     public boolean usesLegacyControllerMode() {
         return controller || !"localhost".equals(controllerHost) || controllerPort != 9092;
@@ -64,7 +213,10 @@ public record BrokerConfig(
                 brokerHeartbeatIntervalMs, brokerSelfFenceTimeoutMs,
                 controllerBrokerLeaseTimeoutMs, clusterId, etcdEndpoints,
                 controllerSessionTtlSeconds, controllerFailoverGraceMs, leaderActivationTimeoutMs,
-                initializeEmptyCluster, initializeClusterFromLocal, adminToken);
+                initializeEmptyCluster, initializeClusterFromLocal,
+                operatorCredentials, clusterToken,
+                allowLegacyUnauthenticatedCreate, allowLegacyInternalApi, adminToken,
+                topicDeleteTimeoutMs, maxScheduledRecords);
     }
 
     public static final int DEFAULT_COMPACTION_MAX_SEGMENTS = 4;
@@ -81,6 +233,11 @@ public record BrokerConfig(
     public static final int DEFAULT_CONTROLLER_SESSION_TTL_SECONDS = 15;
     public static final long DEFAULT_CONTROLLER_FAILOVER_GRACE_MS = 10_000L;
     public static final long DEFAULT_LEADER_ACTIVATION_TIMEOUT_MS = 5_000L;
+    public static final long DEFAULT_TOPIC_DELETE_TIMEOUT_MS = 10_000L;
+    public static final int DEFAULT_MAX_SCHEDULED_RECORDS =
+            LogManagerConfig.DEFAULT_MAX_SCHEDULED_RECORDS;
+    public static final int MAX_OPERATOR_CREDENTIALS = 1_000;
+    public static final int MAX_OPERATOR_CREDENTIAL_BYTES = 256;
 
     public BrokerConfig(
             int brokerId,
@@ -117,7 +274,22 @@ public record BrokerConfig(
                 DEFAULT_FETCH_TRANSFER_TIMEOUT_MS,
                 DEFAULT_NETWORK_TRANSPORT_MODE,
                 DEFAULT_MAX_IN_FLIGHT_REQUESTS,
-                adminToken);
+                DEFAULT_BROKER_HEARTBEAT_INTERVAL_MS,
+                DEFAULT_BROKER_SELF_FENCE_TIMEOUT_MS,
+                DEFAULT_CONTROLLER_BROKER_LEASE_TIMEOUT_MS,
+                DEFAULT_CLUSTER_ID,
+                DEFAULT_ETCD_ENDPOINTS,
+                DEFAULT_CONTROLLER_SESSION_TTL_SECONDS,
+                DEFAULT_CONTROLLER_FAILOVER_GRACE_MS,
+                DEFAULT_LEADER_ACTIVATION_TIMEOUT_MS,
+                false,
+                false,
+                List.of(),
+                adminToken,
+                false,
+                false,
+                adminToken,
+                DEFAULT_TOPIC_DELETE_TIMEOUT_MS);
     }
 
     public BrokerConfig(
@@ -181,7 +353,12 @@ public record BrokerConfig(
                 DEFAULT_LEADER_ACTIVATION_TIMEOUT_MS,
                 false,
                 false,
-                adminToken);
+                List.of(),
+                adminToken,
+                false,
+                false,
+                adminToken,
+                DEFAULT_TOPIC_DELETE_TIMEOUT_MS);
     }
 
     public static BrokerConfig parse(String[] args) {
@@ -219,8 +396,14 @@ public record BrokerConfig(
         int controllerSessionTtlSeconds = DEFAULT_CONTROLLER_SESSION_TTL_SECONDS;
         long controllerFailoverGraceMs = DEFAULT_CONTROLLER_FAILOVER_GRACE_MS;
         long leaderActivationTimeoutMs = DEFAULT_LEADER_ACTIVATION_TIMEOUT_MS;
+        long topicDeleteTimeoutMs = DEFAULT_TOPIC_DELETE_TIMEOUT_MS;
+        int maxScheduledRecords = DEFAULT_MAX_SCHEDULED_RECORDS;
         boolean initializeEmptyCluster = false;
         boolean initializeClusterFromLocal = false;
+        List<OperatorCredential> operatorCredentials = new ArrayList<>();
+        String clusterToken = null;
+        boolean allowLegacyUnauthenticatedCreate = false;
+        boolean allowLegacyInternalApi = false;
         String adminToken = null;
 
         for (int i = 0; i < args.length; i++) {
@@ -244,6 +427,14 @@ public record BrokerConfig(
                         parsePositiveLong(
                                 value(args, ++i, "--leader-activation-timeout-ms"),
                                 "--leader-activation-timeout-ms");
+                case "--topic-delete-timeout-ms" -> topicDeleteTimeoutMs =
+                        parsePositiveLong(
+                                value(args, ++i, "--topic-delete-timeout-ms"),
+                                "--topic-delete-timeout-ms");
+                case "--max-scheduled-records" -> maxScheduledRecords =
+                        parseNonNegativeInt(
+                                value(args, ++i, "--max-scheduled-records"),
+                                "--max-scheduled-records");
                 case "--initialize-empty-cluster" -> initializeEmptyCluster = true;
                 case "--initialize-cluster-from-local" -> initializeClusterFromLocal = true;
                 case "--recover-corrupt-metadata" -> recoverCorruptMetadata = true;
@@ -307,7 +498,14 @@ public record BrokerConfig(
                         parsePositiveLong(
                                 value(args, ++i, "--controller-broker-lease-timeout-ms"),
                                 "--controller-broker-lease-timeout-ms");
-                case "--admin-token" -> adminToken = value(args, ++i, "--admin-token");
+                case "--operator-credential" -> operatorCredentials.add(
+                        parseOperatorCredential(value(args, ++i, "--operator-credential")));
+                case "--cluster-token" -> clusterToken = parseToken(
+                        value(args, ++i, "--cluster-token"), "--cluster-token");
+                case "--allow-legacy-unauthenticated-create" -> allowLegacyUnauthenticatedCreate = true;
+                case "--allow-legacy-internal-api" -> allowLegacyInternalApi = true;
+                case "--admin-token" -> adminToken = parseToken(
+                        value(args, ++i, "--admin-token"), "--admin-token");
                 default -> throw new IllegalArgumentException("Unknown argument: " + args[i]);
             }
         }
@@ -327,6 +525,10 @@ public record BrokerConfig(
                 controllerSessionTtlSeconds);
         if (adminToken == null || adminToken.isBlank()) {
             throw new IllegalArgumentException("--admin-token is required and must not be blank");
+        }
+        validateOperatorCredentials(operatorCredentials, adminToken);
+        if (clusterToken == null) {
+            clusterToken = adminToken;
         }
         return new BrokerConfig(
                 brokerId,
@@ -363,7 +565,76 @@ public record BrokerConfig(
                 leaderActivationTimeoutMs,
                 initializeEmptyCluster,
                 initializeClusterFromLocal,
-                adminToken);
+                List.copyOf(operatorCredentials),
+                clusterToken,
+                allowLegacyUnauthenticatedCreate,
+                allowLegacyInternalApi,
+                adminToken,
+                topicDeleteTimeoutMs,
+                maxScheduledRecords);
+    }
+
+    private static OperatorCredential parseOperatorCredential(String value) {
+        int firstEquals = value.indexOf('=');
+        if (firstEquals <= 0 || firstEquals != value.lastIndexOf('=')) {
+            throw new IllegalArgumentException(
+                    "--operator-credential must use token=scope,scope");
+        }
+        String token = parseToken(value.substring(0, firstEquals), "--operator-credential token");
+        String scopesText = value.substring(firstEquals + 1);
+        if (scopesText.isBlank()) {
+            throw new IllegalArgumentException("--operator-credential scopes must not be blank");
+        }
+        Set<OperatorScope> scopes = EnumSet.noneOf(OperatorScope.class);
+        for (String rawScope : scopesText.split(",", -1)) {
+            String normalized = rawScope.trim();
+            if (normalized.isEmpty()) {
+                throw new IllegalArgumentException("--operator-credential scopes must not contain blanks");
+            }
+            if (!rawScope.equals(normalized)) {
+                throw new IllegalArgumentException("--operator-credential scopes must not contain surrounding whitespace");
+            }
+            OperatorScope scope = OperatorScope.parse(normalized);
+            if (!scopes.add(scope)) {
+                throw new IllegalArgumentException("Duplicate operator scope: " + normalized);
+            }
+        }
+        return new OperatorCredential(token, scopes);
+    }
+
+    private static String parseToken(String value, String name) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(name + " must not be blank");
+        }
+        if (value.indexOf('=') >= 0 || value.indexOf('\n') >= 0
+                || value.indexOf('\r') >= 0 || value.indexOf('\0') >= 0) {
+            throw new IllegalArgumentException(name + " contains an invalid delimiter");
+        }
+        int bytes = value.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        if (bytes < 1 || bytes > MAX_OPERATOR_CREDENTIAL_BYTES) {
+            throw new IllegalArgumentException(
+                    name + " must encode to 1.." + MAX_OPERATOR_CREDENTIAL_BYTES + " bytes");
+        }
+        return value;
+    }
+
+    private static void validateOperatorCredentials(
+            List<OperatorCredential> operatorCredentials,
+            String adminToken) {
+        if (operatorCredentials.size() > MAX_OPERATOR_CREDENTIALS) {
+            throw new IllegalArgumentException(
+                    "operator credentials must not exceed " + MAX_OPERATOR_CREDENTIALS);
+        }
+        Set<String> tokens = new HashSet<>();
+        for (OperatorCredential credential : operatorCredentials) {
+            if (!tokens.add(credential.token())) {
+                throw new IllegalArgumentException("Duplicate operator credential");
+            }
+            if (credential.token().equals(adminToken)) {
+                throw new IllegalArgumentException(
+                        "operator credential must not duplicate --admin-token");
+            }
+        }
     }
 
     private static List<String> parseEtcdEndpoints(String value) {

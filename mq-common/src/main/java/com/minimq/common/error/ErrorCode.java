@@ -20,7 +20,10 @@ public enum ErrorCode {
     STALE_LEADER_EPOCH(13),
     LEADER_NOT_READY(14),
     CONTROLLER_NOT_READY(15),
-    THROTTLED(16);
+    THROTTLED(16),
+    FORBIDDEN(17),
+    UNKNOWN_BROKER(18),
+    STALE_TOMBSTONE(19);
 
     public final short code;
 

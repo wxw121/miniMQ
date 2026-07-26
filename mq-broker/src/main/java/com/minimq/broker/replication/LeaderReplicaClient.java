@@ -8,6 +8,8 @@ import com.minimq.protocol.codec.MqEncoder;
 import com.minimq.protocol.message.MqRequestHeader;
 import com.minimq.protocol.message.ProtocolMessages.ReplicaFetchRequest;
 import com.minimq.protocol.message.ProtocolMessages.ReplicaFetchResponse;
+import com.minimq.protocol.message.ProtocolMessages.ReplicaFetchV2Request;
+import com.minimq.protocol.message.ProtocolMessages.ReplicaFetchV2Response;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
@@ -95,6 +97,46 @@ final class LeaderReplicaClient implements AutoCloseable {
                 throw new ReplicaFetchException(decoded.header().errorCode());
             }
             return (ReplicaFetchResponse) decoded.body();
+        } finally {
+            payload.release();
+        }
+    }
+
+    ReplicaFetchV2Response replicaFetchV2(
+            String clusterCredential,
+            String topicName,
+            int partitionId,
+            int replicaBrokerId,
+            long brokerEpoch,
+            long controllerEpoch,
+            long leaderEpoch,
+            long fetchOffset,
+            int maxBytes) throws InterruptedException {
+        MqRequestHeader header = new MqRequestHeader(
+                ApiKeys.REPLICA_FETCH_V2,
+                CORR.getAndIncrement(),
+                "replica-fetcher-v2");
+        ReplicaFetchV2Request request = new ReplicaFetchV2Request(
+                clusterCredential,
+                topicName,
+                partitionId,
+                replicaBrokerId,
+                brokerEpoch,
+                controllerEpoch,
+                leaderEpoch,
+                fetchOffset,
+                maxBytes);
+        channel.writeAndFlush(ProtocolSerdes.encodeRequest(header, request));
+        ByteBuf payload = responses.poll(5, TimeUnit.SECONDS);
+        if (payload == null) {
+            throw new IllegalStateException("Timeout waiting for replica fetch v2 response");
+        }
+        try {
+            MqDecoder.DecodedResponse decoded = MqDecoder.decodeResponse(payload, ApiKeys.REPLICA_FETCH_V2);
+            if (decoded.header().errorCode() != ErrorCode.NONE) {
+                throw new ReplicaFetchException(decoded.header().errorCode());
+            }
+            return (ReplicaFetchV2Response) decoded.body();
         } finally {
             payload.release();
         }

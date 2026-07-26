@@ -1,28 +1,36 @@
-﻿param(
+param(
     [int]$WebPort = 18082,
     [int]$BrokerPort = 19092,
     [string]$DataDir = ".run/data-live",
+    [string]$AdminToken = "web-dev-admin",
     [switch]$SkipBuild
 )
 
 $ErrorActionPreference = "Stop"
 
-$repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $repoRoot
+$pom = [xml](Get-Content -Raw (Join-Path $repoRoot "pom.xml"))
+$version = $pom.project.version
 
 if (-not $SkipBuild) {
     mvn -q -gs .mvn/settings.xml -s .mvn/settings.xml -pl mq-demo -am package -DskipTests
 }
 
-$jar = Resolve-Path "mq-demo/target/mq-demo-1.2.0-SNAPSHOT.jar"
+$jarPath = Join-Path $repoRoot "mq-demo/target/mq-demo-$version.jar"
+if (-not (Test-Path -LiteralPath $jarPath)) {
+    throw "Demo jar not found at $jarPath. Build with: mvn -pl mq-demo -am package -gs .mvn/settings.xml -s .mvn/settings.xml"
+}
+$jar = (Resolve-Path -LiteralPath $jarPath).Path
 $javaArgs = @(
     "-Dorg.slf4j.simpleLogger.defaultLogLevel=info",
     "-Dorg.slf4j.simpleLogger.log.io.netty=warn",
     "-Dminimq.web.port=$WebPort",
     "-Dminimq.broker.port=$BrokerPort",
     "-Dminimq.data.dir=$DataDir",
+    "-Dminimq.admin.token=$AdminToken",
     "-cp",
-    $jar.Path,
+    $jar,
     "com.minimq.demo.web.MiniMqWebDevMain"
 )
 
@@ -32,4 +40,3 @@ Write-Host "Broker: 127.0.0.1:$BrokerPort"
 Write-Host "Keep this terminal open while testing. Press Ctrl+C to stop."
 
 & java @javaArgs
-

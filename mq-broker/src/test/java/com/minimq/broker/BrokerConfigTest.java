@@ -1,11 +1,14 @@
 package com.minimq.broker;
 
+import com.minimq.broker.auth.OperatorScope;
 import org.junit.jupiter.api.Test;
 
 import com.minimq.storage.FlushPolicy;
 
+import java.util.ArrayList;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -44,9 +47,15 @@ class BrokerConfigTest {
                 "--fetch-transfer-timeout-ms", "2500",
                 "--network-transport", "auto",
                 "--max-in-flight-requests", "128",
+                "--max-scheduled-records", "42",
                 "--broker-heartbeat-interval-ms", "100",
                 "--broker-self-fence-timeout-ms", "300",
                 "--controller-broker-lease-timeout-ms", "500",
+                "--operator-credential", "status-token=STATUS",
+                "--operator-credential", "topic-token=TOPIC_ADMIN,MAINTENANCE",
+                "--cluster-token", "cluster-secret",
+                "--allow-legacy-unauthenticated-create",
+                "--allow-legacy-internal-api",
                 "--admin-token", "ops-secret"
         });
 
@@ -78,9 +87,19 @@ class BrokerConfigTest {
         assertEquals(2_500, config.fetchTransferTimeoutMs());
         assertEquals(com.minimq.broker.netty.NetworkTransportMode.AUTO, config.networkTransportMode());
         assertEquals(128, config.maxInFlightRequests());
+        assertEquals(42, config.maxScheduledRecords());
         assertEquals(100, config.brokerHeartbeatIntervalMs());
         assertEquals(300, config.brokerSelfFenceTimeoutMs());
         assertEquals(500, config.controllerBrokerLeaseTimeoutMs());
+        assertEquals(2, config.operatorCredentials().size());
+        assertEquals("status-token", config.operatorCredentials().get(0).token());
+        assertEquals(Set.of(OperatorScope.STATUS), config.operatorCredentials().get(0).scopes());
+        assertEquals("topic-token", config.operatorCredentials().get(1).token());
+        assertEquals(Set.of(OperatorScope.TOPIC_ADMIN, OperatorScope.MAINTENANCE),
+                config.operatorCredentials().get(1).scopes());
+        assertEquals("cluster-secret", config.clusterToken());
+        assertTrue(config.allowLegacyUnauthenticatedCreate());
+        assertTrue(config.allowLegacyInternalApi());
         assertEquals("ops-secret", config.adminToken());
     }
 
@@ -92,6 +111,7 @@ class BrokerConfigTest {
         assertEquals(30_000, config.fetchTransferTimeoutMs());
         assertEquals(com.minimq.broker.netty.NetworkTransportMode.NIO, config.networkTransportMode());
         assertEquals(0, config.maxInFlightRequests());
+        assertEquals(BrokerConfig.DEFAULT_MAX_SCHEDULED_RECORDS, config.maxScheduledRecords());
         assertEquals(1_000, config.brokerHeartbeatIntervalMs());
         assertEquals(3_000, config.brokerSelfFenceTimeoutMs());
         assertEquals(5_000, config.controllerBrokerLeaseTimeoutMs());
@@ -102,8 +122,107 @@ class BrokerConfigTest {
         assertThrows(IllegalArgumentException.class, () -> BrokerConfig.parse(new String[0]));
         assertThrows(IllegalArgumentException.class,
                 () -> BrokerConfig.parse(new String[] {"--admin-token", "   "}));
+        assertThrows(IllegalArgumentException.class,
+                () -> BrokerConfig.parse(new String[] {"--admin-token", "ops=secret"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> BrokerConfig.parse(new String[] {"--admin-token", "ops\nsecret"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> BrokerConfig.parse(new String[] {"--admin-token", "ops\rsecret"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> BrokerConfig.parse(new String[] {"--admin-token", "ops\u0000secret"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> BrokerConfig.parse(new String[] {"--admin-token", "a".repeat(257)}));
         assertEquals("ops-secret", BrokerConfig.parse(
                 new String[] {"--admin-token", "ops-secret"}).adminToken());
+    }
+
+    @Test
+    void defaultsClusterTokenToAdminTokenForCompatibility() {
+        BrokerConfig config = BrokerConfig.parse(new String[] {"--admin-token", "ops-secret"});
+        assertEquals("ops-secret", config.clusterToken());
+    }
+
+    @Test
+    void parsesRepeatedOperatorCredentials() {
+        BrokerConfig config = BrokerConfig.parse(new String[] {
+                "--operator-credential", "status-token=STATUS",
+                "--operator-credential", "ops-token=MAINTENANCE,BROKER_OFFLINE",
+                "--admin-token", "ops-secret"
+        });
+
+        assertEquals(2, config.operatorCredentials().size());
+        assertEquals("status-token", config.operatorCredentials().get(0).token());
+        assertEquals(Set.of(OperatorScope.STATUS), config.operatorCredentials().get(0).scopes());
+        assertEquals("ops-token", config.operatorCredentials().get(1).token());
+        assertEquals(Set.of(OperatorScope.MAINTENANCE, OperatorScope.BROKER_OFFLINE),
+                config.operatorCredentials().get(1).scopes());
+    }
+
+    @Test
+    void rejectsInvalidOperatorCredentialConfiguration() {
+        assertInvalidLeaseArgs("--operator-credential", "=STATUS");
+        assertInvalidLeaseArgs("--operator-credential", "   =STATUS");
+        assertInvalidLeaseArgs("--operator-credential", "token=");
+        assertInvalidLeaseArgs("--operator-credential", "token");
+        assertInvalidLeaseArgs("--operator-credential", "token=STATUS=MAINTENANCE");
+        assertInvalidLeaseArgs("--operator-credential", "token=STATUS,,MAINTENANCE");
+        assertInvalidLeaseArgs("--operator-credential", "token=UNKNOWN");
+        assertInvalidLeaseArgs("--operator-credential", "token=STATUS,STATUS");
+        assertInvalidLeaseArgs("--operator-credential", "token= STATUS");
+        assertInvalidLeaseArgs("--operator-credential", "token=STATUS ");
+        assertInvalidLeaseArgs("--operator-credential", "token=STATUS, MAINTENANCE");
+        assertInvalidLeaseArgs("--operator-credential", "token\n=STATUS");
+        assertInvalidLeaseArgs("--operator-credential", "token\r=STATUS");
+        assertInvalidLeaseArgs("--operator-credential", "token\u0000=STATUS");
+        assertInvalidLeaseArgs("--operator-credential", "a".repeat(257) + "=STATUS");
+        assertInvalidLeaseArgs(
+                "--operator-credential", "duplicate=STATUS",
+                "--operator-credential", "duplicate=MAINTENANCE");
+        assertInvalidLeaseArgs("--operator-credential", "ops-secret=STATUS");
+    }
+
+    @Test
+    void acceptsOneThousandOperatorCredentialsAndRejectsMore() {
+        List<String> args = new ArrayList<>();
+        for (int i = 0; i < 1_000; i++) {
+            args.add("--operator-credential");
+            args.add("token-" + i + "=STATUS");
+        }
+        args.add("--admin-token");
+        args.add("ops-secret");
+
+        BrokerConfig config = BrokerConfig.parse(args.toArray(String[]::new));
+        assertEquals(1_000, config.operatorCredentials().size());
+
+        args.add(args.size() - 2, "--operator-credential");
+        args.add(args.size() - 2, "token-1000=STATUS");
+        assertThrows(IllegalArgumentException.class, () -> BrokerConfig.parse(args.toArray(String[]::new)));
+    }
+
+    @Test
+    void parsesAndValidatesClusterToken() {
+        assertEquals("cluster-secret", BrokerConfig.parse(new String[] {
+                "--cluster-token", "cluster-secret",
+                "--admin-token", "ops-secret"
+        }).clusterToken());
+
+        assertInvalidLeaseArgs("--cluster-token", "   ");
+        assertInvalidLeaseArgs("--cluster-token", "cluster=secret");
+        assertInvalidLeaseArgs("--cluster-token", "cluster\nsecret");
+        assertInvalidLeaseArgs("--cluster-token", "cluster\u0000secret");
+        assertInvalidLeaseArgs("--cluster-token", "a".repeat(257));
+    }
+
+    @Test
+    void parsesLegacyCompatibilityFlags() {
+        BrokerConfig config = BrokerConfig.parse(new String[] {
+                "--allow-legacy-unauthenticated-create",
+                "--allow-legacy-internal-api",
+                "--admin-token", "ops-secret"
+        });
+
+        assertTrue(config.allowLegacyUnauthenticatedCreate());
+        assertTrue(config.allowLegacyInternalApi());
     }
 
     @Test
@@ -153,6 +272,8 @@ class BrokerConfigTest {
                 () -> BrokerConfig.parse(new String[] {"--network-transport", "kqueue"}));
         assertThrows(IllegalArgumentException.class,
                 () -> BrokerConfig.parse(new String[] {"--max-in-flight-requests", "-1"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> BrokerConfig.parse(new String[] {"--max-scheduled-records", "-1"}));
     }
 
     @Test

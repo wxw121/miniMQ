@@ -8,6 +8,7 @@ import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.zip.CRC32;
 
@@ -44,6 +45,95 @@ class WriteAheadLogTest {
             assertArrayEquals("key".getBytes(), record.key());
             assertArrayEquals("value".getBytes(), record.value());
         }
+    }
+
+    @Test
+    void appendAndReadScheduledDataAppendRecord(@TempDir Path dir) throws IOException {
+        Path walPath = dir.resolve("wal").resolve("minimq.wal");
+        long deliverAtEpochMs = 1_234_567L;
+        try (WriteAheadLog wal = new WriteAheadLog(walPath)) {
+            wal.append(WalRecord.dataAppend(
+                    "orders",
+                    0,
+                    12,
+                    "key".getBytes(),
+                    "value".getBytes(),
+                    deliverAtEpochMs));
+        }
+
+        try (WriteAheadLog reopened = new WriteAheadLog(walPath)) {
+            List<WalRecord> records = reopened.readAll();
+
+            assertEquals(1, records.size());
+            WalRecord record = records.get(0);
+            assertEquals(WalRecordType.SCHEDULED_DATA_APPEND, record.type());
+            assertEquals(deliverAtEpochMs, record.deliverAtEpochMs());
+            assertArrayEquals("key".getBytes(), record.key());
+            assertArrayEquals("value".getBytes(), record.value());
+        }
+    }
+
+    @Test
+    void dataAppendEncodingDoesNotPersistDeliveryTimestamp(@TempDir Path dir) throws IOException {
+        Path walPath = dir.resolve("wal").resolve("minimq.wal");
+        try (WriteAheadLog wal = new WriteAheadLog(walPath)) {
+            wal.append(new WalRecord(
+                    WalRecordType.DATA_APPEND,
+                    "orders",
+                    0,
+                    12,
+                    "key".getBytes(),
+                    "value".getBytes(),
+                    1_234_567L));
+        }
+
+        try (WriteAheadLog reopened = new WriteAheadLog(walPath)) {
+            WalRecord record = reopened.readAll().get(0);
+
+            assertEquals(WalRecordType.DATA_APPEND, record.type());
+            assertEquals(0L, record.deliverAtEpochMs());
+        }
+    }
+
+    @Test
+    void readsLegacyDataAppendWithTrailingDeliveryTimestamp(@TempDir Path dir) throws IOException {
+        Path walPath = dir.resolve("wal").resolve("minimq.wal");
+        long deliverAtEpochMs = 1_234_567L;
+        writeLegacyDataAppendWithDelivery(
+                walPath,
+                "orders",
+                0,
+                12,
+                "key".getBytes(),
+                "value".getBytes(),
+                deliverAtEpochMs);
+
+        try (WriteAheadLog reopened = new WriteAheadLog(walPath)) {
+            WalRecord record = reopened.readAll().get(0);
+
+            assertEquals(WalRecordType.DATA_APPEND, record.type());
+            assertEquals(deliverAtEpochMs, record.deliverAtEpochMs());
+            assertArrayEquals("key".getBytes(), record.key());
+            assertArrayEquals("value".getBytes(), record.value());
+        }
+    }
+
+    @Test
+    void rejectsTrailingDeliveryTimestampOnNonDataAppendRecord(@TempDir Path dir) throws IOException {
+        Path walPath = dir.resolve("wal").resolve("minimq.wal");
+        writeRecordWithTrailingDelivery(
+                walPath,
+                WalRecordType.TRUNCATE_BEGIN,
+                "orders",
+                0,
+                12,
+                new byte[0],
+                new byte[0],
+                1_234_567L);
+
+        IOException failure = assertThrows(IOException.class, () -> new WriteAheadLog(walPath));
+
+        assertTrue(failure.getMessage().contains("trailing body bytes"));
     }
 
     @Test
@@ -198,5 +288,65 @@ class WriteAheadLogTest {
         CRC32 crc = new CRC32();
         crc.update(bytes, 0, bytes.length - Integer.BYTES);
         ByteBuffer.wrap(bytes).putInt(bytes.length - Integer.BYTES, (int) crc.getValue());
+    }
+
+    private void writeLegacyDataAppendWithDelivery(
+            Path walPath,
+            String topic,
+            int partitionId,
+            long offset,
+            byte[] key,
+            byte[] value,
+            long deliverAtEpochMs) throws IOException {
+        writeRecordWithTrailingDelivery(
+                walPath,
+                WalRecordType.DATA_APPEND,
+                topic,
+                partitionId,
+                offset,
+                key,
+                value,
+                deliverAtEpochMs);
+    }
+
+    private void writeRecordWithTrailingDelivery(
+            Path walPath,
+            WalRecordType type,
+            String topic,
+            int partitionId,
+            long offset,
+            byte[] key,
+            byte[] value,
+            long deliverAtEpochMs) throws IOException {
+        Files.createDirectories(walPath.getParent());
+        byte[] topicBytes = topic.getBytes(StandardCharsets.UTF_8);
+        int headerBytes = Short.BYTES + Byte.BYTES + Byte.BYTES + Integer.BYTES;
+        int bodyLength = Short.BYTES + topicBytes.length
+                + Integer.BYTES
+                + Long.BYTES
+                + Integer.BYTES + key.length
+                + Integer.BYTES + value.length
+                + Long.BYTES;
+        ByteBuffer frame = ByteBuffer.allocate(headerBytes + bodyLength + Integer.BYTES);
+        frame.putShort(WriteAheadLog.MAGIC);
+        frame.put(WriteAheadLog.VERSION);
+        frame.put(type.id());
+        frame.putInt(bodyLength);
+        frame.putShort((short) topicBytes.length);
+        frame.put(topicBytes);
+        frame.putInt(partitionId);
+        frame.putLong(offset);
+        putBytes(frame, key);
+        putBytes(frame, value);
+        frame.putLong(deliverAtEpochMs);
+        CRC32 crc = new CRC32();
+        crc.update(frame.array(), 0, frame.position());
+        frame.putInt((int) crc.getValue());
+        Files.write(walPath, frame.array());
+    }
+
+    private void putBytes(ByteBuffer frame, byte[] payload) {
+        frame.putInt(payload.length);
+        frame.put(payload);
     }
 }

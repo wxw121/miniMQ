@@ -8,7 +8,7 @@ import com.minimq.client.model.ConsumerRecord;
 import com.minimq.client.model.ProducerRecord;
 import com.minimq.protocol.ApiKeys;
 import com.minimq.protocol.codec.MqDecoder;
-import com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest;
+import com.minimq.protocol.message.ProtocolMessages.CreateTopicAdminRequest;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -45,7 +45,9 @@ class MiniMqE2ETest {
 
                 admin.connect("localhost", broker0.port());
                 admin.ensureSuccess(admin.send(
-                        ApiKeys.CREATE_TOPIC, new CreateTopicRequest("orders", 3)));
+                        ApiKeys.CREATE_TOPIC_ADMIN,
+                        new CreateTopicAdminRequest(
+                                BrokerTestHarness.ADMIN_TOKEN, "orders", 3, 1)));
 
                 producer.start();
                 consumer1.subscribe("orders");

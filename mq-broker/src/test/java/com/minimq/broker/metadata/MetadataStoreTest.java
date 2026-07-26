@@ -360,6 +360,60 @@ class MetadataStoreTest {
     }
 
     @Test
+    void newMetadataDefaultsToFormat4WithUnknownWatermarkSnapshot() {
+        ClusterMetadata metadata = new ClusterMetadata();
+        ClusterMetadata.PartitionEntry partition = new ClusterMetadata.PartitionEntry();
+
+        assertEquals(4, metadata.metadataFormatVersion);
+        assertEquals(-1L, partition.lastCompleteWatermark.physicalHighWatermark);
+        assertEquals(-1L, partition.lastCompleteWatermark.visibleHighWatermark);
+        assertEquals(-1L, partition.lastCompleteWatermark.nextVisibleAtEpochMs);
+        assertEquals(-1L, partition.lastCompleteWatermark.controllerEpoch);
+        assertEquals(-1L, partition.lastCompleteWatermark.leaderEpoch);
+    }
+
+    @Test
+    void saveAndLoadPreservesReplicaProgressAndWatermarkSnapshot(@TempDir Path dir) {
+        ClusterMetadata metadata = new ClusterMetadata();
+        metadata.controllerEpoch = 3L;
+        ClusterMetadata.TopicEntry topic = new ClusterMetadata.TopicEntry();
+        topic.topicName = "orders";
+        ClusterMetadata.PartitionEntry partition = new ClusterMetadata.PartitionEntry();
+        partition.partitionId = 0;
+        partition.leaderBrokerId = 0;
+        partition.replicaBrokerIds = List.of(0, 1);
+        partition.isrBrokerIds = List.of(0, 1);
+        partition.replicaLogEndOffsets.put(0, 12L);
+        partition.replicaLogEndOffsets.put(1, 9L);
+        partition.replicaProgress.put(0, replicaProgress(0, 12L, 10L, 1_000L, 4L, 3L, 2L));
+        partition.replicaProgress.put(1, replicaProgress(1, 9L, 9L, -1L, 5L, 3L, 2L));
+        partition.lastCompleteWatermark = new ClusterMetadata.WatermarkSnapshot();
+        partition.lastCompleteWatermark.physicalHighWatermark = 9L;
+        partition.lastCompleteWatermark.visibleHighWatermark = 8L;
+        partition.lastCompleteWatermark.nextVisibleAtEpochMs = 1_000L;
+        partition.lastCompleteWatermark.controllerEpoch = 3L;
+        partition.lastCompleteWatermark.leaderEpoch = 2L;
+        topic.partitions.add(partition);
+        metadata.topics.put(topic.topicName, topic);
+
+        MetadataStore store = new MetadataStore(dir);
+        store.save(metadata);
+        ClusterMetadata.PartitionEntry loaded =
+                store.load().topics.get("orders").partitions.get(0);
+
+        assertEquals(4, store.load().metadataFormatVersion);
+        assertEquals(12L, loaded.replicaProgress.get(0).physicalLogEndOffset);
+        assertEquals(10L, loaded.replicaProgress.get(0).visibleLogEndOffset);
+        assertEquals(1_000L, loaded.replicaProgress.get(0).nextVisibleAtEpochMs);
+        assertEquals(4L, loaded.replicaProgress.get(0).brokerEpoch);
+        assertEquals(3L, loaded.replicaProgress.get(0).controllerEpoch);
+        assertEquals(2L, loaded.replicaProgress.get(0).leaderEpoch);
+        assertEquals(9L, loaded.lastCompleteWatermark.physicalHighWatermark);
+        assertEquals(8L, loaded.lastCompleteWatermark.visibleHighWatermark);
+        assertEquals(1_000L, loaded.lastCompleteWatermark.nextVisibleAtEpochMs);
+    }
+
+    @Test
     void saveAndLoadPreservesBrokerEpochAndFrozenPartition(@TempDir Path dir) {
         ClusterMetadata metadata = new ClusterMetadata();
         ClusterMetadata.BrokerEntry broker = new ClusterMetadata.BrokerEntry();
@@ -455,12 +509,19 @@ class MetadataStoreTest {
         ClusterMetadata migrated = new MetadataStore(dir).load();
         ClusterMetadata.PartitionEntry partition = migrated.topics.get("orders").partitions.get(0);
 
-        assertEquals(3, migrated.metadataFormatVersion);
+        assertEquals(4, migrated.metadataFormatVersion);
         assertEquals(0L, migrated.controllerEpoch);
         assertEquals(0L, migrated.metadataVersion);
         assertEquals(0L, partition.leaderEpoch);
         assertEquals(0L, partition.leaderEpochStartOffset);
         assertTrue(partition.leaderReady);
+        assertEquals(7L, partition.replicaProgress.get(0).physicalLogEndOffset);
+        assertEquals(-1L, partition.replicaProgress.get(0).visibleLogEndOffset);
+        assertEquals(-1L, partition.replicaProgress.get(0).nextVisibleAtEpochMs);
+        assertEquals(0L, partition.replicaProgress.get(0).brokerEpoch);
+        assertEquals(0L, partition.replicaProgress.get(0).controllerEpoch);
+        assertEquals(0L, partition.replicaProgress.get(0).leaderEpoch);
+        assertEquals(-1L, partition.lastCompleteWatermark.visibleHighWatermark);
     }
 
     @Test
@@ -529,6 +590,25 @@ class MetadataStoreTest {
                 () -> new MetadataStore(dir).load());
 
         assertTrue(failure.getCause().getMessage().contains(expectedCause), failure.getCause().getMessage());
+    }
+
+    private static ClusterMetadata.ReplicaProgressEntry replicaProgress(
+            int brokerId,
+            long physicalLogEndOffset,
+            long visibleLogEndOffset,
+            long nextVisibleAtEpochMs,
+            long brokerEpoch,
+            long controllerEpoch,
+            long leaderEpoch) {
+        ClusterMetadata.ReplicaProgressEntry progress = new ClusterMetadata.ReplicaProgressEntry();
+        progress.brokerId = brokerId;
+        progress.physicalLogEndOffset = physicalLogEndOffset;
+        progress.visibleLogEndOffset = visibleLogEndOffset;
+        progress.nextVisibleAtEpochMs = nextVisibleAtEpochMs;
+        progress.brokerEpoch = brokerEpoch;
+        progress.controllerEpoch = controllerEpoch;
+        progress.leaderEpoch = leaderEpoch;
+        return progress;
     }
 
     private static String groupJson(String groupId, String groupBody) {

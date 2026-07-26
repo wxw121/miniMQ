@@ -1,11 +1,11 @@
 package com.minimq.broker;
 
+import com.minimq.broker.auth.OperatorAuthorizer;
+import com.minimq.broker.auth.OperatorScope;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.storage.LogMaintenanceMetrics;
 import com.minimq.storage.LogMaintenanceReport;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
@@ -24,7 +24,7 @@ import java.util.function.Supplier;
 public final class MaintenanceAdminService implements AutoCloseable {
     public static final String THREAD_NAME_PREFIX = "minimq-maintenance-admin-";
 
-    private final byte[] adminTokenBytes;
+    private final OperatorAuthorizer authorizer;
     private final PartitionManager partitionManager;
     private final ThreadPoolExecutor executor;
     private final AtomicBoolean runInFlight = new AtomicBoolean();
@@ -34,7 +34,19 @@ public final class MaintenanceAdminService implements AutoCloseable {
         if (adminToken == null || adminToken.isBlank()) {
             throw new IllegalArgumentException("adminToken is required and must not be blank");
         }
-        this.adminTokenBytes = adminToken.getBytes(StandardCharsets.UTF_8);
+        this.authorizer = OperatorAuthorizer.forAdminToken(adminToken);
+        this.partitionManager = Objects.requireNonNull(partitionManager, "partitionManager");
+        this.executor = new ThreadPoolExecutor(
+                1,
+                1,
+                0L,
+                TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(1),
+                maintenanceThreadFactory());
+    }
+
+    public MaintenanceAdminService(OperatorAuthorizer authorizer, PartitionManager partitionManager) {
+        this.authorizer = Objects.requireNonNull(authorizer, "authorizer");
         this.partitionManager = Objects.requireNonNull(partitionManager, "partitionManager");
         this.executor = new ThreadPoolExecutor(
                 1,
@@ -46,16 +58,18 @@ public final class MaintenanceAdminService implements AutoCloseable {
     }
 
     public CompletionStage<Result<LogMaintenanceReport>> report(String suppliedToken) {
-        if (!authorized(suppliedToken)) {
-            return completedError(ErrorCode.UNAUTHORIZED);
+        ErrorCode authorization = authorize(suppliedToken, OperatorScope.MAINTENANCE);
+        if (authorization != ErrorCode.NONE) {
+            return completedError(authorization);
         }
         return submit(partitionManager::dryRunMaintenance, () -> {
         });
     }
 
     public CompletionStage<Result<LogMaintenanceReport>> run(String suppliedToken) {
-        if (!authorized(suppliedToken)) {
-            return completedError(ErrorCode.UNAUTHORIZED);
+        ErrorCode authorization = authorize(suppliedToken, OperatorScope.MAINTENANCE);
+        if (authorization != ErrorCode.NONE) {
+            return completedError(authorization);
         }
         if (!runInFlight.compareAndSet(false, true)) {
             return completedError(ErrorCode.MAINTENANCE_BUSY);
@@ -64,8 +78,9 @@ public final class MaintenanceAdminService implements AutoCloseable {
     }
 
     public Result<LogMaintenanceMetrics> metrics(String suppliedToken) {
-        if (!authorized(suppliedToken)) {
-            return Result.error(ErrorCode.UNAUTHORIZED);
+        ErrorCode authorization = authorize(suppliedToken, OperatorScope.STATUS);
+        if (authorization != ErrorCode.NONE) {
+            return Result.error(authorization);
         }
         if (closed.get()) {
             return Result.error(ErrorCode.MAINTENANCE_BUSY);
@@ -74,7 +89,15 @@ public final class MaintenanceAdminService implements AutoCloseable {
     }
 
     public ErrorCode authorize(String suppliedToken) {
-        return authorized(suppliedToken) ? ErrorCode.NONE : ErrorCode.UNAUTHORIZED;
+        return authorize(suppliedToken, OperatorScope.STATUS);
+    }
+
+    public ErrorCode authorize(String suppliedToken, OperatorScope requiredScope) {
+        OperatorAuthorizer.Decision decision = authorizer.authorize(suppliedToken, requiredScope);
+        if (!decision.authenticated()) {
+            return ErrorCode.UNAUTHORIZED;
+        }
+        return decision.authorized() ? ErrorCode.NONE : ErrorCode.FORBIDDEN;
     }
 
     private <T> CompletionStage<Result<T>> submit(Supplier<T> operation, Runnable releaseAdmission) {
@@ -101,13 +124,6 @@ public final class MaintenanceAdminService implements AutoCloseable {
             future.complete(Result.error(ErrorCode.MAINTENANCE_BUSY));
         }
         return future;
-    }
-
-    private boolean authorized(String suppliedToken) {
-        byte[] suppliedBytes = suppliedToken == null
-                ? new byte[0]
-                : suppliedToken.getBytes(StandardCharsets.UTF_8);
-        return MessageDigest.isEqual(adminTokenBytes, suppliedBytes);
     }
 
     private static ThreadFactory maintenanceThreadFactory() {

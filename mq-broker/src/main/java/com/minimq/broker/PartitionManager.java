@@ -5,6 +5,8 @@ import com.minimq.storage.LogMaintenanceReport;
 import com.minimq.storage.LogManager;
 import com.minimq.storage.PartitionLog;
 
+import java.util.List;
+
 /**
  * 分区日志管理门面，按 TopicPartition 懒加载并复用本地 PartitionLog。
  */
@@ -23,12 +25,37 @@ public class PartitionManager {
         return logManager.append(topic, partitionId, key, value);
     }
 
+    public long append(String topic, int partitionId, byte[] key, byte[] value, long deliverAtEpochMs) {
+        return logManager.append(topic, partitionId, key, value, deliverAtEpochMs);
+    }
+
+    public long appendBatch(String topic, int partitionId, List<LogManager.AppendRecord> records) {
+        return logManager.appendBatch(topic, partitionId, records);
+    }
+
     public void replicateAt(String topic, int partitionId, long offset, byte[] key, byte[] value) {
         logManager.replicateAt(topic, partitionId, offset, key, value);
     }
 
+    public void replicateAt(
+            String topic, int partitionId, long offset, byte[] key, byte[] value, long deliverAtEpochMs) {
+        logManager.replicateAt(topic, partitionId, offset, key, value, deliverAtEpochMs);
+    }
+
     public long highWatermark(String topic, int partitionId) {
         return logManager.getOrCreate(topic, partitionId).highWatermark();
+    }
+
+    public long visibleHighWatermark(String topic, int partitionId) {
+        return logManager.visibleHighWatermark(topic, partitionId);
+    }
+
+    public long nextVisibleAtEpochMs(String topic, int partitionId) {
+        return logManager.nextVisibleAtEpochMs(topic, partitionId);
+    }
+
+    public long deliveryAtEpochMs(String topic, int partitionId, long offset) {
+        return logManager.deliveryAtEpochMs(topic, partitionId, offset);
     }
 
     public void truncateTo(String topic, int partitionId, long offset) {
@@ -37,6 +64,10 @@ public class PartitionManager {
 
     public void checkpoint() {
         logManager.checkpoint();
+    }
+
+    public void deleteTopic(String topic, long tombstoneVersion) {
+        logManager.deleteTopic(topic, tombstoneVersion);
     }
 
     public LogMaintenanceReport dryRunMaintenance() {

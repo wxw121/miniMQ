@@ -165,10 +165,12 @@ class ReplicationIntegrationTest {
             assertEquals(ErrorCode.NONE, offline.header().errorCode());
 
             int electedLeader = partition(metadata(admin, "orders"), "orders", 0).leaderBrokerId();
+            BrokerTestHarness electedLeaderHarness = electedLeader == 1 ? broker1 : broker2;
+            waitForLocalLeader(electedLeaderHarness, "orders", 0, electedLeader);
+            waitForLeaderReady(admin, "orders", 0, electedLeader);
             TestNetworkClient newLeaderClient = new TestNetworkClient();
             newLeaderClient.connect("127.0.0.1", electedLeader == 1 ? broker1.port() : broker2.port());
             produce(newLeaderClient, "orders", 0, "after-failover");
-            BrokerTestHarness electedLeaderHarness = electedLeader == 1 ? broker1 : broker2;
             assertEquals(2L, electedLeaderHarness.localHighWatermark("orders", 0),
                     "promoted Leader did not append the post-failover record");
             BrokerTestHarness survivingFollower = electedLeader == 1 ? broker2 : broker1;
@@ -177,15 +179,12 @@ class ReplicationIntegrationTest {
             waitForFollowerReplication(survivingFollower, "orders", 0, 2);
             waitForControllerLeo(admin, "orders", 0, survivingFollowerId, 2L);
 
-            MqDecoder.DecodedResponse fetchResponse = newLeaderClient.send(
-                    ApiKeys.FETCH, new FetchRequest(
-                            "orders", 0,
-                            partition(metadata(admin, "orders"), "orders", 0).leaderEpoch(),
-                            0, 1024 * 1024));
-            assertEquals(ErrorCode.NONE, fetchResponse.header().errorCode());
-            FetchResponse fetch = (FetchResponse) fetchResponse.body();
-            assertTrue(fetch.records().size() >= 2);
-            assertTrue(fetch.highWatermark() >= 2);
+            FetchResponse fetch = waitForFetchRecords(
+                    newLeaderClient, admin, "orders", 0, 0, 2, 2L);
+            assertTrue(fetch.records().size() >= 2,
+                    "promoted Leader fetch did not expose both records");
+            assertTrue(fetch.highWatermark() >= 2,
+                    "promoted Leader fetch high watermark did not include replicated record");
         }
     }
 
@@ -507,6 +506,45 @@ class ReplicationIntegrationTest {
                 + ", leaderReady=" + observed.leaderReady()
                 + ", leaderEpoch=" + observed.leaderEpoch()
                 + ", leaderEpochStartOffset=" + observed.leaderEpochStartOffset());
+        return observed;
+    }
+
+    private static FetchResponse waitForFetchRecords(
+            TestNetworkClient fetchClient,
+            TestNetworkClient admin,
+            String topic,
+            int partitionId,
+            long fetchOffset,
+            int expectedRecords,
+            long expectedHighWatermark)
+            throws InterruptedException {
+        ErrorCode lastError = ErrorCode.NONE;
+        FetchResponse observed = null;
+        for (int attempt = 0; attempt < 100; attempt++) {
+            PartitionMetadata partition = partition(metadata(admin, topic), topic, partitionId);
+            MqDecoder.DecodedResponse response = fetchClient.send(
+                    ApiKeys.FETCH, new FetchRequest(
+                            topic, partitionId, partition.leaderEpoch(), fetchOffset, 1024 * 1024));
+            lastError = response.header().errorCode();
+            if (lastError == ErrorCode.NONE) {
+                observed = (FetchResponse) response.body();
+                if (observed.records().size() >= expectedRecords
+                        && observed.highWatermark() >= expectedHighWatermark) {
+                    return observed;
+                }
+            }
+            Thread.sleep(50);
+        }
+        assertEquals(ErrorCode.NONE, lastError,
+                "fetch on promoted Leader did not succeed while waiting for records");
+        assertTrue(observed != null && observed.records().size() >= expectedRecords,
+                "fetch on promoted Leader returned "
+                        + (observed == null ? 0 : observed.records().size())
+                        + " records; expected at least " + expectedRecords);
+        assertTrue(observed != null && observed.highWatermark() >= expectedHighWatermark,
+                "fetch on promoted Leader high watermark="
+                        + (observed == null ? -1 : observed.highWatermark())
+                        + "; expected at least " + expectedHighWatermark);
         return observed;
     }
 }

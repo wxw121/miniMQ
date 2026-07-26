@@ -54,51 +54,57 @@ final class FetchResponseWriter {
 
     boolean write(ChannelHandlerContext ctx, MqResponseHeader header,
                   FetchRequest request, PartitionLog log, long effectiveHighWatermark) {
+        return write(ctx, header, request, log, effectiveHighWatermark, effectiveHighWatermark);
+    }
+
+    boolean write(ChannelHandlerContext ctx, MqResponseHeader header,
+                  FetchRequest request, PartitionLog log, long fetchHighWatermark, long responseHighWatermark) {
         if (mode == FetchTransferMode.HEAP) {
             metrics.recordHeapMode();
-            writeHeap(ctx, header, request, log, effectiveHighWatermark);
+            writeHeap(ctx, header, request, log, fetchHighWatermark, responseHighWatermark);
             return true;
         }
         if (!(log instanceof TransferablePartitionLog transferable)) {
             metrics.recordUnsupportedLog();
-            writeHeap(ctx, header, request, log, effectiveHighWatermark);
+            writeHeap(ctx, header, request, log, fetchHighWatermark, responseHighWatermark);
             return true;
         }
         if (ctx.pipeline().get(SslHandler.class) != null) {
             metrics.recordTlsFallback();
-            writeHeap(ctx, header, request, log, effectiveHighWatermark);
+            writeHeap(ctx, header, request, log, fetchHighWatermark, responseHighWatermark);
             return true;
         }
         if (!fileRegionSupported.test(ctx.channel())) {
             metrics.recordUnsupportedPipeline();
-            writeHeap(ctx, header, request, log, effectiveHighWatermark);
+            writeHeap(ctx, header, request, log, fetchHighWatermark, responseHighWatermark);
             return true;
         }
-        writeSendfile(ctx, header, request, transferable, effectiveHighWatermark);
+        writeSendfile(ctx, header, request, transferable, fetchHighWatermark, responseHighWatermark);
         return true;
     }
 
     private void writeHeap(ChannelHandlerContext ctx, MqResponseHeader header,
-                           FetchRequest request, PartitionLog log, long effectiveHighWatermark) {
+                           FetchRequest request, PartitionLog log,
+                           long fetchHighWatermark, long responseHighWatermark) {
         List<Record> records = log.read(request.fetchOffset(), request.maxBytes());
         List<FetchedRecord> fetched = new ArrayList<>(records.size());
         for (Record record : records) {
-            if (record.offset() >= effectiveHighWatermark) {
+            if (record.offset() >= fetchHighWatermark) {
                 break;
             }
             fetched.add(new FetchedRecord(record.offset(), record.key(), record.value()));
         }
         FetchResponse response = new FetchResponse(
-                request.topicName(), request.partitionId(), effectiveHighWatermark, fetched);
+                request.topicName(), request.partitionId(), responseHighWatermark, fetched);
         ByteBuf frame = ProtocolSerdes.encodeResponse(header, response);
         ctx.writeAndFlush(frame);
     }
 
     private void writeSendfile(ChannelHandlerContext ctx, MqResponseHeader header,
                                FetchRequest request, TransferablePartitionLog transferable,
-                               long effectiveHighWatermark) {
+                               long fetchHighWatermark, long responseHighWatermark) {
         FetchPlan plan = transferable.planFetch(
-                request.fetchOffset(), request.maxBytes(), effectiveHighWatermark);
+                request.fetchOffset(), request.maxBytes(), fetchHighWatermark);
         TransferCleanup cleanup = new TransferCleanup(plan);
         List<DefaultFileRegion> regions = new ArrayList<>();
         boolean prefixQueued = false;
@@ -117,7 +123,6 @@ final class FetchResponseWriter {
                 }
             }
 
-            long responseHighWatermark = Math.min(plan.highWatermark(), effectiveHighWatermark);
             ByteBuf prefix = ProtocolSerdes.encodeFetchResponsePrefix(
                     header,
                     request.topicName(),
