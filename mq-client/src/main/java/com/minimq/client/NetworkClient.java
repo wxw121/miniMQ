@@ -30,12 +30,13 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public class NetworkClient implements AutoCloseable {
     public static final Duration DEFAULT_REQUEST_TIMEOUT = Duration.ofSeconds(10);
+    private static final long CANDIDATE_ABORT_TIMEOUT_MS = 250L;
     private final String clientId;
     private final RetryPolicy retryPolicy;
     private final Duration requestTimeout;
     private final AtomicInteger correlationId = new AtomicInteger(1);
     private final EventLoopGroup group = new NioEventLoopGroup(1);
-    private final Map<Integer, ArrayBlockingQueue<ByteBuf>> pending = new ConcurrentHashMap<>();
+    private final Map<Integer, PendingResponseSlot> pending = new ConcurrentHashMap<>();
     private final AtomicInteger connectionAttempts = new AtomicInteger();
     private Channel channel;
 
@@ -55,26 +56,60 @@ public class NetworkClient implements AutoCloseable {
 
     // 连接失败时按固定退避策略重试，避免 Broker 尚未启动时客户端立即失败。
     public void connect(String host, int port) throws InterruptedException {
+        connect(host, port, requestTimeout);
+    }
+
+    public void connect(String host, int port, Duration timeout) throws InterruptedException {
+        Duration effectiveTimeout = effectiveRequestTimeout(timeout);
+        long deadlineNanos = deadlineNanosFromNow(effectiveTimeout);
         Throwable lastFailure = null;
+        int attempts = 0;
         for (int attempt = 1; attempt <= retryPolicy.maxAttempts(); attempt++) {
+            long remainingNanos = deadlineNanos - System.nanoTime();
+            if (remainingNanos <= 0) {
+                break;
+            }
+
+            attempts++;
             connectionAttempts.incrementAndGet();
             ChannelFuture connectFuture = createBootstrap().connect(host, port);
-            connectFuture.await();
+            boolean completed;
+            try {
+                completed = connectFuture.await(remainingNanos, TimeUnit.NANOSECONDS);
+            } catch (InterruptedException interrupted) {
+                abortConnect(connectFuture);
+                throw interrupted;
+            }
+            if (!completed) {
+                lastFailure = new MiniMqRequestTimeoutException("CONNECT", effectiveTimeout);
+                abortConnect(connectFuture);
+                break;
+            }
             if (connectFuture.isSuccess()) {
                 channel = connectFuture.channel();
                 return;
             }
 
             lastFailure = connectFuture.cause();
-            if (connectFuture.channel() != null) {
-                connectFuture.channel().close();
-            }
+            abortConnect(connectFuture);
             if (attempt < retryPolicy.maxAttempts()) {
-                Thread.sleep(retryPolicy.backoffMillis());
+                long backoffNanos = TimeUnit.MILLISECONDS.toNanos(retryPolicy.backoffMillis());
+                remainingNanos = deadlineNanos - System.nanoTime();
+                if (backoffNanos >= remainingNanos) {
+                    break;
+                }
+                TimeUnit.NANOSECONDS.sleep(backoffNanos);
             }
         }
         throw new MiniMqConnectionException("Failed to connect to " + host + ":" + port
-                + " after " + retryPolicy.maxAttempts() + " attempts", lastFailure);
+                + " after " + attempts + " attempts", lastFailure);
+    }
+
+    private static void abortConnect(ChannelFuture connectFuture) {
+        connectFuture.cancel(false);
+        if (connectFuture.channel() != null) {
+            connectFuture.channel().close();
+        }
     }
 
     public int connectionAttempts() {
@@ -93,12 +128,9 @@ public class NetworkClient implements AutoCloseable {
                             @Override
                             protected void channelRead0(ChannelHandlerContext ctx, ByteBuf msg) {
                                 int corrId = msg.getInt(msg.readerIndex());
-                                ArrayBlockingQueue<ByteBuf> queue = pending.get(corrId);
-                                if (queue != null) {
-                                    ByteBuf response = msg.retain();
-                                    if (!queue.offer(response)) {
-                                        response.release();
-                                    }
+                                PendingResponseSlot slot = pending.get(corrId);
+                                if (slot != null) {
+                                    slot.offerRetained(msg);
                                 }
                             }
                         }, new MqEncoder());
@@ -109,23 +141,30 @@ public class NetworkClient implements AutoCloseable {
 
     // correlationId 与阻塞队列一一对应，用来把异步响应重新匹配回同步 send 调用。
     public MqDecoder.DecodedResponse send(short apiKey, Object body) throws InterruptedException {
+        return send(apiKey, body, requestTimeout);
+    }
+
+    public MqDecoder.DecodedResponse send(
+            short apiKey, Object body, Duration timeout) throws InterruptedException {
         if (channel == null || !channel.isActive()) {
             throw new MiniMqConnectionException("Client is not connected", null);
         }
+        Duration effectiveTimeout = effectiveRequestTimeout(timeout);
         int corr = correlationId.getAndIncrement();
-        ArrayBlockingQueue<ByteBuf> queue = new ArrayBlockingQueue<>(1);
-        pending.put(corr, queue);
+        PendingResponseSlot slot = new PendingResponseSlot();
+        pending.put(corr, slot);
         ByteBuf payload = null;
         try {
             MqRequestHeader header = new MqRequestHeader(apiKey, corr, clientId);
             channel.writeAndFlush(ProtocolSerdes.encodeRequest(header, body));
-            payload = queue.poll(requestTimeout.toMillis(), TimeUnit.MILLISECONDS);
+            payload = slot.poll(durationToNanos(effectiveTimeout), TimeUnit.NANOSECONDS);
             if (payload == null) {
-                throw new MiniMqRequestTimeoutException(apiName(apiKey), requestTimeout);
+                throw new MiniMqRequestTimeoutException(ApiKeys.nameOf(apiKey), effectiveTimeout);
             }
             return MqDecoder.decodeResponse(payload, apiKey);
         } finally {
-            pending.remove(corr);
+            pending.remove(corr, slot);
+            slot.closeAndDrain();
             if (payload != null) {
                 payload.release();
             }
@@ -145,10 +184,90 @@ public class NetworkClient implements AutoCloseable {
 
     @Override
     public void close() throws InterruptedException {
-        if (channel != null) {
-            channel.close().sync();
+        try {
+            if (channel != null) {
+                channel.close().sync();
+            }
+        } finally {
+            clearPendingResponses();
+            group.shutdownGracefully().sync();
         }
-        group.shutdownGracefully().sync();
+    }
+
+    void abortCandidate() throws InterruptedException {
+        try {
+            if (channel != null) {
+                channel.close().await(CANDIDATE_ABORT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            }
+        } finally {
+            clearPendingResponses();
+            group.shutdownGracefully(
+                            0L, CANDIDATE_ABORT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                    .await(CANDIDATE_ABORT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    void abortCandidate(Duration timeout) throws InterruptedException {
+        Duration cleanupTimeout = Objects.requireNonNull(timeout, "timeout");
+        if (cleanupTimeout.isNegative()) {
+            throw new IllegalArgumentException("timeout must not be negative");
+        }
+        long deadlineNanos = deadlineNanosFromNow(cleanupTimeout);
+        try {
+            if (channel != null) {
+                ChannelFuture closeFuture = channel.close();
+                long remainingNanos = deadlineNanos - System.nanoTime();
+                if (remainingNanos > 0L) {
+                    closeFuture.await(remainingNanos, TimeUnit.NANOSECONDS);
+                }
+            }
+        } finally {
+            clearPendingResponses();
+            long remainingNanos = Math.max(0L, deadlineNanos - System.nanoTime());
+            io.netty.util.concurrent.Future<?> shutdown = group.shutdownGracefully(
+                    0L, remainingNanos, TimeUnit.NANOSECONDS);
+            remainingNanos = deadlineNanos - System.nanoTime();
+            if (remainingNanos > 0L) {
+                shutdown.await(remainingNanos, TimeUnit.NANOSECONDS);
+            }
+        }
+    }
+
+    private void clearPendingResponses() {
+        for (Map.Entry<Integer, PendingResponseSlot> entry : pending.entrySet()) {
+            if (pending.remove(entry.getKey(), entry.getValue())) {
+                entry.getValue().closeAndDrain();
+            }
+        }
+        pending.clear();
+    }
+
+    static final class PendingResponseSlot {
+        private final ArrayBlockingQueue<ByteBuf> queue = new ArrayBlockingQueue<>(1);
+        private boolean closed;
+
+        boolean offerRetained(ByteBuf message) {
+            ByteBuf retained = message.retain();
+            synchronized (this) {
+                if (closed || !queue.offer(retained)) {
+                    retained.release();
+                    return false;
+                }
+                return true;
+            }
+        }
+
+        ByteBuf poll(long timeout, TimeUnit unit) throws InterruptedException {
+            return queue.poll(timeout, unit);
+        }
+
+        synchronized void closeAndDrain() {
+            closed = true;
+            ByteBuf payload;
+            while ((payload = queue.poll()) != null) {
+                payload.release();
+            }
+        }
     }
 
     public record RetryPolicy(int maxAttempts, long backoffMillis) {
@@ -171,25 +290,38 @@ public class NetworkClient implements AutoCloseable {
         if (timeout.isZero() || timeout.isNegative()) {
             throw new IllegalArgumentException("requestTimeout must be positive");
         }
+        durationToNanos(timeout);
         return timeout;
     }
 
-    private static String apiName(short apiKey) {
-        return switch (apiKey) {
-            case ApiKeys.CREATE_TOPIC -> "CREATE_TOPIC";
-            case ApiKeys.METADATA -> "METADATA";
-            case ApiKeys.PRODUCE -> "PRODUCE";
-            case ApiKeys.FETCH -> "FETCH";
-            case ApiKeys.JOIN_GROUP -> "JOIN_GROUP";
-            case ApiKeys.SYNC_GROUP -> "SYNC_GROUP";
-            case ApiKeys.HEARTBEAT -> "HEARTBEAT";
-            case ApiKeys.OFFSET_COMMIT -> "OFFSET_COMMIT";
-            case ApiKeys.OFFSET_FETCH -> "OFFSET_FETCH";
-            case ApiKeys.REGISTER_BROKER -> "REGISTER_BROKER";
-            case ApiKeys.MAINTENANCE_REPORT -> "MAINTENANCE_REPORT";
-            case ApiKeys.MAINTENANCE_RUN -> "MAINTENANCE_RUN";
-            case ApiKeys.MAINTENANCE_METRICS -> "MAINTENANCE_METRICS";
-            default -> "apiKey=" + apiKey;
-        };
+    private Duration effectiveRequestTimeout(Duration timeout) {
+        Duration requested = Objects.requireNonNull(timeout, "timeout");
+        if (requested.isNegative()) {
+            throw new IllegalArgumentException("timeout must not be negative");
+        }
+        durationToNanos(requested);
+        return requested.compareTo(requestTimeout) < 0 ? requested : requestTimeout;
     }
+
+    static long durationToNanos(Duration timeout) {
+        try {
+            return Objects.requireNonNull(timeout, "timeout").toNanos();
+        } catch (ArithmeticException overflow) {
+            throw new IllegalArgumentException("timeout is too large", overflow);
+        }
+    }
+
+    static long deadlineNanosFromNow(Duration timeout) {
+        return deadlineNanos(System.nanoTime(), timeout);
+    }
+
+    static long deadlineNanos(long startNanos, Duration timeout) {
+        long timeoutNanos = durationToNanos(timeout);
+        try {
+            return Math.addExact(startNanos, timeoutNanos);
+        } catch (ArithmeticException overflow) {
+            throw new IllegalArgumentException("timeout deadline is too large", overflow);
+        }
+    }
+
 }

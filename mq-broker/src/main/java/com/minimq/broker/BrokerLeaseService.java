@@ -34,6 +34,7 @@ public final class BrokerLeaseService implements AutoCloseable {
     private long brokerEpoch = -1L;
     private long lastConfirmedRequestStartNanos = Long.MIN_VALUE;
     private boolean selfFenceRecorded;
+    private boolean activationHeld;
 
     public BrokerLeaseService(
             BrokerConfig config,
@@ -136,7 +137,37 @@ public final class BrokerLeaseService implements AutoCloseable {
         if (closed.get()) {
             throw new IllegalStateException("Broker lease service is closed");
         }
-        establishLease();
+        try {
+            establishLease();
+        } catch (InterruptedException | RuntimeException | Error failure) {
+            resetClientAfterFailure(failure);
+            throw failure;
+        }
+    }
+
+    public synchronized void holdActivation() {
+        if (brokerEpoch >= 0L) {
+            throw new IllegalStateException("Broker lease is already initialized");
+        }
+        activationHeld = true;
+    }
+
+    public synchronized void activateAfterStartupBarrier() {
+        if (!activationHeld) {
+            throw new IllegalStateException("Broker activation is not held");
+        }
+        if (guard.state() == BrokerAvailabilityGuard.State.FENCED) {
+            throw new IllegalStateException("Broker was fenced before startup barrier completed");
+        }
+        if (leaseTimedOut()) {
+            fenceSelf("lease expired before startup barrier completed");
+            throw new IllegalStateException("Broker lease expired before startup barrier completed");
+        }
+        activationHeld = false;
+        guard.activate();
+        if (guard.state() != BrokerAvailabilityGuard.State.ACTIVE) {
+            throw new IllegalStateException("Broker activation blocked by storage cleanup fence");
+        }
     }
 
     public void start() {
@@ -149,6 +180,13 @@ public final class BrokerLeaseService implements AutoCloseable {
 
     synchronized void runOnce() {
         if (closed.get()) {
+            return;
+        }
+        if (guard.hasStickyStorageFence()) {
+            return;
+        }
+        if (activationHeld) {
+            renewHeldLease();
             return;
         }
         if (guard.state() != BrokerAvailabilityGuard.State.ACTIVE) {
@@ -219,7 +257,11 @@ public final class BrokerLeaseService implements AutoCloseable {
             brokerEpoch = response.brokerEpoch();
             actualLeaseTimeoutMs = response.leaseTimeoutMs();
             if (config.usesLegacyControllerMode()) {
-                MetadataSync.applyMetadata(localController, controllerClient.fetchMetadata());
+                MetadataSync.refresh(
+                        localController,
+                        controllerClient,
+                        deadlineNanos(requestStart, actualLeaseTimeoutMs),
+                        nanoTime);
             }
         }
 
@@ -239,7 +281,36 @@ public final class BrokerLeaseService implements AutoCloseable {
             throw new IllegalStateException("Broker lease expired during registration and metadata sync");
         }
         selfFenceRecorded = false;
-        guard.activate();
+        if (!activationHeld) {
+            guard.activate();
+        }
+    }
+
+    private void renewHeldLease() {
+        long requestStart = nanoTime.getAsLong();
+        if (leaseTimedOutAt(requestStart)) {
+            fenceSelf("self-fence timeout before startup heartbeat");
+            return;
+        }
+        try {
+            heartbeat(
+                    new BrokerHeartbeatRequest(config.brokerId(), brokerEpoch),
+                    remainingSelfFenceTimeoutMs(requestStart));
+            lastConfirmedRequestStartNanos = requestStart;
+            fenceIfTimedOut();
+        } catch (ControllerClient.ControllerRequestException failure) {
+            if (failure.errorCode() == ErrorCode.BROKER_FENCED) {
+                fenceSelf("controller fenced broker lease during startup");
+            } else {
+                fenceIfTimedOut();
+            }
+            resetClient(remainingSelfFenceTimeoutMs(nanoTime.getAsLong()));
+            fenceIfTimedOut();
+        } catch (Exception failure) {
+            fenceIfTimedOut();
+            resetClient(remainingSelfFenceTimeoutMs(nanoTime.getAsLong()));
+            fenceIfTimedOut();
+        }
     }
 
     private RegisterBrokerRequest registrationRequest() {
@@ -322,6 +393,17 @@ public final class BrokerLeaseService implements AutoCloseable {
         return TimeUnit.NANOSECONDS.toMillis(remainingNanos - 1L) + 1L;
     }
 
+    private static long deadlineNanos(long startNanos, long timeoutMs) {
+        if (timeoutMs <= 0L) {
+            return startNanos;
+        }
+        long timeoutNanos = TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+        if (startNanos > Long.MAX_VALUE - timeoutNanos) {
+            return Long.MAX_VALUE;
+        }
+        return startNanos + timeoutNanos;
+    }
+
     private ControllerClient controllerClient(long connectTimeoutMs) throws InterruptedException {
         if (client == null) {
             var identity = controllerRole.currentLeader();
@@ -342,6 +424,22 @@ public final class BrokerLeaseService implements AutoCloseable {
 
     private void resetClient() {
         resetClient(TimeUnit.SECONDS.toMillis(5));
+    }
+
+    private void resetClientAfterFailure(Throwable primaryFailure) {
+        if (client == null) {
+            return;
+        }
+        try {
+            client.close(TimeUnit.SECONDS.toMillis(5));
+        } catch (InterruptedException closeFailure) {
+            primaryFailure.addSuppressed(closeFailure);
+            Thread.currentThread().interrupt();
+        } catch (RuntimeException | Error closeFailure) {
+            primaryFailure.addSuppressed(closeFailure);
+        } finally {
+            client = null;
+        }
     }
 
     private void resetClient(long closeTimeoutMs) {

@@ -1,7 +1,7 @@
 # V4.0 Operator Readiness Design
 
 Date: 2026-07-21
-Status: Approved for implementation. This document is the decision-complete V4 contract.
+Status: Implemented in the working tree; final V4.0.0 release verification is tracked separately. This document is the decision-complete V4 contract.
 
 ## Goal
 
@@ -59,7 +59,7 @@ V4 appends protocol keys after `RUNTIME_METRICS = 19`; existing keys are not ren
 | 32 | `REPLICA_FETCH_V2` | one partition, bounded bytes, delivery timestamps |
 | 33 | `TOPIC_DELETE_ACK` | one tombstone version and fenced broker identity |
 | 34 | `FETCH_V2` | one partition, bounded bytes, physical and visible watermarks |
-| 35 | `METADATA_V2` | optional topic filter; topic/partition limits in `1..10000` |
+| 35 | `METADATA_V2` | optional topic filter; optional topic/tombstone start-after cursors; topic/partition limits in `1..10000` |
 | 36 | `RUNTIME_METRICS_V2` | one credential; `counterLimit`, `latencyLimit`, and `lagLimit`, each in `1..1000` |
 | 37 | `UPDATE_REPLICA_STATE_V2` | one partition and fenced broker/controller/leader identity, physical and visible LEOs, and the next visibility timestamp |
 
@@ -73,7 +73,8 @@ All response lists are deterministically sorted before truncation. Every nested 
 total and truncation flag: ops status has brokers and partitions; group status has members,
 assignments per member, and partition lag rows; topic description has partitions, replicas, and ISR;
 audit has events; runtime metrics has every counter/latency/lag family. Replica and ISR lists are
-bounded by the topic replication factor, which is capped at the registered broker count and `1000`.
+bounded by the topic replication factor. Request validation allows replication factors up to
+`10000`; placement is still capped by the registered broker count.
 Member assignments are truncated by the request's `partitionLimit`. Key 36 supplies the expanded
 runtime snapshot; key 19 keeps its V3 request and response body unchanged. Key 37 is internal-only
 and has no list payload. Serdes reject negative counts, counts above the shared protocol maximum,
@@ -87,12 +88,17 @@ byte 0 or 1; string is a two-byte unsigned length followed by UTF-8 bytes; bytes
 signed length followed by bytes, with -1 reserved for null byte arrays. V4 does not use a null string
 sentinel because the existing string helper serializes null as an empty string. Nullable or optional
 text is encoded as bool present followed by string value only when present. Optional topic filters
-use present=false for absent and present=true plus a non-empty topic name for a filter; empty string
-is never a topic filter. Retry/DLQ link updates use explicit supplied and clear booleans, so absent,
-set, and clear are distinct states.
+use present=false for absent and present=true plus a non-empty topic name for an exact filter; empty
+string is never a topic filter. Key 35 also carries optional `topicStartAfter` and
+`tombstoneStartAfter` cursors when the exact topic filter is absent. Each cursor is exclusive and
+uses the same deterministic topic-name ordering as the response lists, so a follower can page active
+topic summaries and tombstones independently without exceeding one frame's 10,000-item list bound.
+Retry/DLQ link updates use explicit supplied and clear booleans, so absent, set, and clear are
+distinct states.
 
 Bounded lists are encoded as i32 total, bool truncated, i32 count, followed by count items. Total is
-the untruncated number for that list only. Count is the encoded item count and must be 0..10000, with
+the untruncated number for that list only, after applying any exact filter or start-after cursor.
+Count is the encoded item count and must be 0..10000, with
 tighter request limits applied before allocation. Every V4 response record type is unique per API,
 including empty acknowledgement records, because the existing response writer dispatches by Java body
 type. The implementation must reject unknown response body types instead of silently writing an empty
@@ -125,7 +131,7 @@ The canonical V4 body field order is:
 | 32 | string clusterCredential, string topicName, i32 partitionId, i32 replicaBrokerId, i64 brokerEpoch, i64 controllerEpoch, i64 leaderEpoch, i64 fetchOffset, i32 maxBytes | string topicName, i32 partitionId, i64 physicalHighWatermark, i64 visibleHighWatermark, i64 nextVisibleAtEpochMs, i64 leaderEpoch, i64 leaderLogEndOffset, scheduledReplicaRecordList |
 | 33 | string clusterCredential, string topicName, i64 tombstoneVersion, i32 brokerId, i64 brokerEpoch, i64 controllerEpoch | empty TopicDeleteAckResponse body |
 | 34 | string topicName, i32 partitionId, i64 leaderEpoch, i64 fetchOffset, i32 maxBytes | string topicName, i32 partitionId, i64 physicalHighWatermark, i64 visibleHighWatermark, i64 nextVisibleAtEpochMs, fetchedRecordList |
-| 35 | bool topicFilterPresent, string topicFilter if present, i32 topicLimit, i32 partitionLimit | brokerList, topicList, bool controllerPresent, controller if present, i64 metadataVersion, i32 metadataFormatVersion |
+| 35 | bool topicFilterPresent, string topicFilter if present, bool topicStartAfterPresent, string topicStartAfter if present, bool tombstoneStartAfterPresent, string tombstoneStartAfter if present, i32 topicLimit, i32 partitionLimit | brokerList, topicList, topicTombstoneList, bool controllerPresent, controller if present, i64 metadataVersion, i32 metadataFormatVersion |
 | 36 | string credential, i32 counterLimit, i32 latencyLimit, i32 lagLimit | i64 startedAtEpochMs, i64 snapshotAtEpochMs, i64 uptimeMs, requestMetricList, responseMetricList, latencyMetricList, throttledMetricList, i64 produceBytes, i64 fetchBytes, i64 auditOverwrittenCount, lagMetricList |
 | 37 | string clusterCredential, string topicName, i32 partitionId, i32 replicaBrokerId, i64 brokerEpoch, i64 controllerEpoch, i64 leaderEpoch, i64 physicalLogEndOffset, i64 visibleLogEndOffset, i64 nextVisibleAtEpochMs | empty UpdateReplicaStateV2Response body |
 
@@ -141,7 +147,8 @@ i32 replicationFactor, bool retryTopicPresent, string retryTopic if present, boo
 string deadLetterTopic if present; topicPartition = i32 partitionId, i32 leaderId, i64 leaderEpoch,
 replicaIdList, isrIdList, string readiness, bool frozen; tombstone = string state,
 i64 tombstoneVersion, i64 deletedAtEpochMs, requiredBrokerIdList, acknowledgedBrokerIdList,
-pendingBrokerIdList; auditEvent = i64 sequence, i64 timestampEpochMs, string eventType,
+pendingBrokerIdList; topicTombstone = string topicName, tombstone; auditEvent = i64 sequence,
+i64 timestampEpochMs, string eventType,
 bool brokerIdPresent, i32 brokerId if present, bool topicNamePresent, string topicName if present,
 bool partitionIdPresent, i32 partitionId if present, string oldValue, string newValue, string detail.
 Metric items use i16 apiOrCode, i64 count; latency items use i16 apiKey, i64 count, i64 totalNanos,
@@ -160,7 +167,7 @@ unsafe migration mode. Delayed records use key 31; ordinary producers continue t
 Timestamp-preserving replication uses key 32; key 10 remains decodable but is enabled only by
 `--allow-legacy-internal-api` and can carry only records without a delivery timestamp. Key 34 adds
 visible-watermark fields without changing key 3. Key 35 exposes
-retry/DLQ links and bounded metadata without changing key 1. Key 36 adds uptime, rates, bytes,
+retry/DLQ links, active topics, topic tombstones, paged metadata cursors, and bounded metadata without changing key 1. Legacy-mode followers page key 35 and then fetch exact key 1 topic metadata when the active topic set exceeds one metadata frame. Key 36 adds uptime, rates, bytes,
 bounded lag, and truncation metadata without changing key 19. V4 Brokers use key 37 for replica
 state; key 12 remains decodable for V3 compatibility but is disabled unless
 `--allow-legacy-internal-api` is set and never establishes a visible LEO. Thus V3 and V4 clients can
@@ -309,12 +316,14 @@ The Controller changes `DELETING` to `DELETED` with a second metadata CAS only w
 broker has acknowledged the exact tombstone version; an empty required set transitions immediately.
 The tombstone remains durable in `DELETED`. Repeating delete in `DELETING` performs no new mutation,
 waits on the same tombstone for the caller's remaining timeout, and returns current state and pending
-broker ids. Repeating delete in `DELETED` immediately returns that completed tombstone. A name that
-is neither active nor tombstoned returns `UNKNOWN_TOPIC`. `describe-topic --include-deleted` returns
-the tombstone state, version, required ids, acknowledged ids, and pending ids, so completion is
-queryable without repeating a mutation; ordinary describe and list commands show active topics only.
-The tombstone version is the logical metadata version assigned by the first deletion CAS, so a
-retried request cannot allocate another version.
+broker ids. Repeating delete in `DELETED` immediately returns that completed tombstone. If the
+delete CAS or final read cannot be determined within the caller budget, the API returns
+`CONTROLLER_NOT_READY` rather than replaying an uncertain mutation. A name that is neither active
+nor tombstoned returns `UNKNOWN_TOPIC`. `describe-topic --include-deleted` returns the tombstone
+state, version, required ids, acknowledged ids, and pending ids, so completion is queryable without
+repeating a mutation; ordinary describe and list commands show active topics only. The tombstone
+version is the logical metadata version assigned by the first deletion CAS, so a retried request
+cannot allocate another version.
 
 Every Broker gates produce, fetch, and replica fetch as soon as it installs the tombstone; those
 requests and ordinary topic description return `UNKNOWN_TOPIC`, while explicit
@@ -323,12 +332,13 @@ segment/legacy files, checkpoint references,
 leader-epoch files, and delivery schedules before sending key 33 so the Controller can persist its
 broker id in the tombstone's cleanup acknowledgements.
 The delete API waits up to `--topic-delete-timeout-ms` (default 10 seconds) for acknowledgements from
-all required brokers. `TopicAdminService` implements this as a `CompletionStage` backed by one
-bounded waiter executor; the Netty event loop never sleeps. It returns the tombstone state, version,
-and pending broker ids; timeout is a successful `DELETING` response, not a rollback. Rejoining
-brokers, including brokers not in the required set, must reconcile every tombstone before becoming
-ACTIVE or serving data and may acknowledge a matching `DELETED` tombstone without changing its
-state.
+all required brokers. `TopicAdminService` implements this as a `CompletionStage` backed by separate
+bounded waiter and mutation executors; the Netty event loop never sleeps. The same deadline covers
+queueing, metadata mutation, Controller monitor entry, repository read/CAS/final-read work, and
+polling. It returns the tombstone state, version, and pending broker ids; timeout after a known
+tombstone is a successful `DELETING` response, not a rollback. Rejoining brokers, including brokers
+not in the required set, must reconcile every tombstone before becoming ACTIVE or serving data and
+may acknowledge a matching `DELETED` tombstone without changing its state.
 
 Local storage deletion appends `TOPIC_DELETE_BEGIN`, closes and removes cached partition logs and
 segment/legacy files, drops checkpoint high-watermark and delivery-schedule entries, then appends and
@@ -336,10 +346,12 @@ forces `TOPIC_DELETE_COMMIT`. The next checkpoint records a WAL position after t
 appends are not rewritten; full replay after a lost checkpoint processes them and the later commit
 removes the reconstructed topic again. Recovery that finds an unmatched begin completes the same
 idempotent cleanup and forces the matching commit before the Broker can become ACTIVE. Repeating
-begin/commit is idempotent. Deletion is applied on every broker as installed metadata is reconciled. Failed local
-cleanup leaves the Broker fenced and is retried with bounded backoff. Client
-metadata caches receive a finite maximum age, and routing errors still force an immediate refresh,
-so partition increases and deletions become observable without process restart.
+begin/commit is idempotent. Deletion is applied on every broker as installed metadata is reconciled.
+Only local cleanup failure sets the sticky storage fence and keeps the Broker out of ACTIVE while the
+bounded reconciler retries. Stale or rejected ACK attempts do not by themselves fence the Broker;
+lease heartbeat and self-fencing remain the authority for epoch isolation. Client metadata caches
+receive a finite maximum age, and routing errors still force an immediate refresh, so partition
+increases and deletions become observable without process restart.
 
 ## Reliability Extensions
 

@@ -1,6 +1,9 @@
 package com.minimq.client;
 
 import com.minimq.broker.support.BrokerTestHarness;
+import com.minimq.client.exception.MiniMqConnectionException;
+import com.minimq.client.exception.MiniMqMetadataException;
+import com.minimq.client.exception.MiniMqRequestTimeoutException;
 import com.minimq.client.exception.MiniMqServerException;
 import com.minimq.client.model.ConsumerRecord;
 import com.minimq.common.error.ErrorCode;
@@ -25,12 +28,97 @@ import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Queue;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ConsumerNotLeaderRetryTest {
+
+    @Test
+    void pollRejectsNegativeTimeout() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("consumer-negative-timeout");
+        try (BrokerTestHarness controller = BrokerTestHarness.startController(dataDir);
+             TestableConsumer consumer = new TestableConsumer(
+                     controller.bootstrapServers(), "negative-timeout-group", "negative-timeout-consumer")) {
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> consumer.poll(Duration.ofMillis(-1)));
+            assertThrows(
+                    NullPointerException.class,
+                    () -> consumer.poll(null));
+        }
+    }
+
+    @Test
+    void pollReportsMissingTopicPartitionAndLeaderFromRefreshedMetadata() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("consumer-route-validation");
+        try (BrokerTestHarness controller = BrokerTestHarness.startController(dataDir);
+             NetworkClient admin = new NetworkClient("consumer-route-admin");
+             TestableConsumer consumer = new TestableConsumer(
+                     controller.bootstrapServers(), "route-validation-group", "route-validation-consumer")) {
+            admin.connect("127.0.0.1", controller.port());
+            admin.ensureSuccess(admin.send(
+                    ApiKeys.CREATE_TOPIC_ADMIN,
+                    new CreateTopicAdminRequest(BrokerTestHarness.ADMIN_TOKEN, "orders", 1, 1)));
+            consumer.subscribe("orders");
+
+            List<MetadataResponse> invalidMetadata = List.of(
+                    new MetadataResponse(
+                            List.of(new BrokerMetadata(0, "127.0.0.1", 19090)), List.of()),
+                    new MetadataResponse(
+                            List.of(new BrokerMetadata(0, "127.0.0.1", 19090)),
+                            List.of(new TopicMetadata(
+                                    "orders", List.of(new PartitionMetadata(1, 0))))),
+                    new MetadataResponse(
+                            List.of(new BrokerMetadata(0, "127.0.0.1", 19090)),
+                            List.of(new TopicMetadata(
+                                    "orders", List.of(new PartitionMetadata(0, 7))))));
+            List<String> expectedMessages = List.of(
+                    "Topic not found: orders",
+                    "Partition 0 not found for topic orders",
+                    "Leader broker 7 not found");
+
+            for (int i = 0; i < invalidMetadata.size(); i++) {
+                consumer.advanceTime(Consumer.DEFAULT_METADATA_CACHE_MAX_AGE_MS + 1L);
+                consumer.enqueueMetadata(invalidMetadata.get(i));
+                consumer.enqueueMetadata(invalidMetadata.get(i));
+
+                MiniMqMetadataException failure = assertThrows(
+                        MiniMqMetadataException.class,
+                        () -> consumer.poll(Duration.ofMillis(10)));
+                assertEquals(expectedMessages.get(i), failure.getMessage());
+            }
+        }
+    }
+
+    @Test
+    void invalidatingBrokerConnectionsClosesAndRemovesBothConnectionVariants() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("consumer-broker-cleanup");
+        try (BrokerTestHarness controller = BrokerTestHarness.startController(dataDir);
+             Consumer consumer = new Consumer(
+                     controller.bootstrapServers(), "cleanup-group", "cleanup-consumer")) {
+            java.lang.reflect.Field clientsField = Consumer.class.getDeclaredField("brokerClients");
+            clientsField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            Map<Integer, NetworkClient> clients =
+                    (Map<Integer, NetworkClient>) clientsField.get(consumer);
+
+            TrackingBrokerClient graceful = new TrackingBrokerClient("consumer-graceful-cleanup");
+            clients.put(1, graceful);
+            consumer.invalidateBrokerClient(1);
+            assertTrue(graceful.closed);
+            assertTrue(clients.isEmpty());
+
+            TrackingBrokerClient bounded = new TrackingBrokerClient("consumer-bounded-cleanup");
+            clients.put(2, bounded);
+            consumer.invalidateBrokerClient(2, consumer.currentTimeNanos() + 1_000_000L);
+            assertTrue(bounded.aborted);
+            assertTrue(clients.isEmpty());
+        }
+    }
 
     @Test
     void pollRefreshesMetadataAndRetriesOnceAfterNotLeader() throws Exception {
@@ -217,6 +305,68 @@ class ConsumerNotLeaderRetryTest {
     }
 
     @Test
+    void pollRefreshesMetadataAndRetriesOnceAfterPreWriteConnectionFailure() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("consumer-pre-write-connection");
+        try (BrokerTestHarness controller = BrokerTestHarness.startController(dataDir);
+             NetworkClient admin = new NetworkClient("admin");
+             TestableConsumer consumer = new TestableConsumer(
+                     controller.bootstrapServers(), "connection-group", "consumer-connection")) {
+            admin.connect("127.0.0.1", controller.port());
+            admin.ensureSuccess(admin.send(
+                    ApiKeys.CREATE_TOPIC_ADMIN,
+                    new CreateTopicAdminRequest(
+                            BrokerTestHarness.ADMIN_TOKEN, "orders", 1, 1)));
+            MetadataResponse freshMetadata = (MetadataResponse) admin.send(
+                    ApiKeys.METADATA, new MetadataRequest("orders")).body();
+
+            consumer.subscribe("orders");
+            consumer.countMetadataFetchesDuringPoll();
+            consumer.enqueueMetadata(freshMetadata);
+            consumer.enqueueFetchFailure(new MiniMqConnectionException(
+                    "client is not connected", null));
+            consumer.enqueueFetchResponse(successResponse(0L));
+
+            List<ConsumerRecord> records = consumer.poll(Duration.ofMillis(50));
+
+            assertEquals(1, records.size());
+            assertEquals(2, consumer.fetchAttempts());
+            assertEquals(1, consumer.metadataFetchesDuringPoll());
+            assertEquals(1, consumer.invalidatedBrokerClients());
+            assertTrue(consumer.invalidationTimeout() != null,
+                    "Broker invalidation cleanup must use the remaining poll budget");
+        }
+    }
+
+    @Test
+    void pollInvalidatesBrokerWithoutReplayingTimedOutFetch() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("consumer-fetch-timeout-no-replay");
+        try (BrokerTestHarness controller = BrokerTestHarness.startController(dataDir);
+             NetworkClient admin = new NetworkClient("admin");
+             TestableConsumer consumer = new TestableConsumer(
+                     controller.bootstrapServers(), "timeout-group", "consumer-fetch-timeout")) {
+            admin.connect("127.0.0.1", controller.port());
+            admin.ensureSuccess(admin.send(
+                    ApiKeys.CREATE_TOPIC_ADMIN,
+                    new CreateTopicAdminRequest(
+                            BrokerTestHarness.ADMIN_TOKEN, "orders", 1, 1)));
+            consumer.subscribe("orders");
+            consumer.countMetadataFetchesDuringPoll();
+            consumer.enqueueFetchFailure(new MiniMqRequestTimeoutException(
+                    "FETCH_V2", Duration.ofMillis(25)));
+            consumer.enqueueFetchResponse(successResponse(0L));
+
+            assertThrows(
+                    MiniMqRequestTimeoutException.class,
+                    () -> consumer.poll(Duration.ofMillis(50)));
+
+            assertEquals(1, consumer.fetchAttempts());
+            assertEquals(0, consumer.metadataFetchesDuringPoll());
+            assertEquals(1, consumer.invalidatedBrokerClients());
+            assertTrue(consumer.invalidationTimeout() != null);
+        }
+    }
+
+    @Test
     void pollUsesRefreshedMetadataForLaterPartitionsInSameCall() throws Exception {
         Path dataDir = BrokerTestHarness.newDataDir("consumer-refresh-propagates");
         try (BrokerTestHarness controller = BrokerTestHarness.startController(dataDir);
@@ -325,6 +475,127 @@ class ConsumerNotLeaderRetryTest {
         }
     }
 
+    @Test
+    void pollDoesNotFetchAgainAfterSleepingToDeadlineWithoutVisibilityHint() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("consumer-poll-deadline-no-hint");
+        try (BrokerTestHarness controller = BrokerTestHarness.startController(dataDir);
+             NetworkClient admin = new NetworkClient("admin");
+             TestableConsumer consumer = new TestableConsumer(
+                     controller.bootstrapServers(), "deadline-group", "consumer-deadline")) {
+            admin.connect("127.0.0.1", controller.port());
+            admin.ensureSuccess(admin.send(
+                    ApiKeys.CREATE_TOPIC_ADMIN,
+                    new CreateTopicAdminRequest(BrokerTestHarness.ADMIN_TOKEN, "orders", 1, 1)));
+            MetadataResponse metadata = (MetadataResponse) admin.send(
+                    ApiKeys.METADATA, new MetadataRequest("orders")).body();
+            consumer.subscribe("orders");
+            consumer.enqueueMetadata(metadata);
+            consumer.enqueueFetchResponse(emptyFetchResponse(-1L));
+            consumer.enqueueFetchResponse(emptyFetchResponse(-1L));
+
+            assertEquals(List.of(), consumer.poll(Duration.ofMillis(25)));
+            assertEquals(List.of(25L), consumer.pollSleeps());
+            assertEquals(1, consumer.fetchAttempts());
+        }
+    }
+
+    @Test
+    void pollDoesNotFetchAgainWhenNextVisibilityIsBeyondDeadline() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("consumer-poll-deadline-future-hint");
+        try (BrokerTestHarness controller = BrokerTestHarness.startController(dataDir);
+             NetworkClient admin = new NetworkClient("admin");
+             TestableConsumer consumer = new TestableConsumer(
+                     controller.bootstrapServers(), "future-group", "consumer-future")) {
+            admin.connect("127.0.0.1", controller.port());
+            admin.ensureSuccess(admin.send(
+                    ApiKeys.CREATE_TOPIC_ADMIN,
+                    new CreateTopicAdminRequest(BrokerTestHarness.ADMIN_TOKEN, "orders", 1, 1)));
+            MetadataResponse metadata = (MetadataResponse) admin.send(
+                    ApiKeys.METADATA, new MetadataRequest("orders")).body();
+            consumer.subscribe("orders");
+            consumer.enqueueMetadata(metadata);
+            consumer.enqueueFetchResponse(emptyFetchResponse(consumer.currentTimeMillis() + 100L));
+            consumer.enqueueFetchResponse(emptyFetchResponse(-1L));
+
+            assertEquals(List.of(), consumer.poll(Duration.ofMillis(25)));
+            assertEquals(List.of(25L), consumer.pollSleeps());
+            assertEquals(1, consumer.fetchAttempts());
+        }
+    }
+
+    @Test
+    void pollTimeoutIncludesMetadataRefreshTime() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("consumer-poll-metadata-deadline");
+        try (BrokerTestHarness controller = BrokerTestHarness.startController(dataDir);
+             NetworkClient admin = new NetworkClient("admin");
+             TestableConsumer consumer = new TestableConsumer(
+                     controller.bootstrapServers(), "metadata-deadline-group", "consumer-metadata-deadline")) {
+            admin.connect("127.0.0.1", controller.port());
+            admin.ensureSuccess(admin.send(
+                    ApiKeys.CREATE_TOPIC_ADMIN,
+                    new CreateTopicAdminRequest(BrokerTestHarness.ADMIN_TOKEN, "orders", 1, 1)));
+            MetadataResponse metadata = (MetadataResponse) admin.send(
+                    ApiKeys.METADATA, new MetadataRequest("orders")).body();
+
+            consumer.enqueueMetadata(metadata);
+            consumer.subscribe("orders");
+            consumer.advanceTime(Consumer.DEFAULT_METADATA_CACHE_MAX_AGE_MS + 1L);
+            consumer.enqueueMetadata(metadata);
+            consumer.countMetadataFetchesDuringPoll();
+            consumer.delayNextMetadataFetch(20L);
+            consumer.enqueueFetchResponse(emptyFetchResponse(-1L));
+            long startedAtMillis = consumer.currentTimeMillis();
+
+            assertEquals(List.of(), consumer.poll(Duration.ofMillis(25)));
+
+            assertEquals(25L, consumer.currentTimeMillis() - startedAtMillis);
+            assertEquals(List.of(5L), consumer.pollSleeps());
+            assertEquals(1, consumer.metadataFetchesDuringPoll());
+            assertEquals(1, consumer.fetchAttempts());
+        }
+    }
+
+    @Test
+    void pollPassesOneMonotonicDeadlineThroughMetadataAndFetch() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("consumer-poll-shared-deadline");
+        try (BrokerTestHarness controller = BrokerTestHarness.startController(dataDir);
+             NetworkClient admin = new NetworkClient("admin");
+             TestableConsumer consumer = new TestableConsumer(
+                     controller.bootstrapServers(), "shared-deadline-group", "consumer-shared-deadline")) {
+            admin.connect("127.0.0.1", controller.port());
+            admin.ensureSuccess(admin.send(
+                    ApiKeys.CREATE_TOPIC_ADMIN,
+                    new CreateTopicAdminRequest(BrokerTestHarness.ADMIN_TOKEN, "orders", 1, 1)));
+            MetadataResponse metadata = (MetadataResponse) admin.send(
+                    ApiKeys.METADATA, new MetadataRequest("orders")).body();
+
+            consumer.enqueueMetadata(metadata);
+            consumer.subscribe("orders");
+            consumer.advanceTime(Consumer.DEFAULT_METADATA_CACHE_MAX_AGE_MS + 1L);
+            consumer.enqueueMetadata(metadata);
+            consumer.countMetadataFetchesDuringPoll();
+            consumer.delayNextMetadataFetch(10L);
+            consumer.delayNextFetch(5L);
+            consumer.enqueueFetchResponse(emptyFetchResponse(-1L));
+            long startedAtMillis = consumer.currentTimeMillis();
+
+            assertEquals(List.of(), consumer.poll(Duration.ofMillis(25)));
+
+            assertEquals(Duration.ofMillis(25), consumer.metadataTimeout());
+            assertEquals(Duration.ofMillis(15), consumer.fetchTimeout());
+            assertEquals(List.of(10L), consumer.pollSleeps());
+            assertEquals(25L, consumer.currentTimeMillis() - startedAtMillis);
+        }
+    }
+
+    private static MqDecoder.DecodedResponse emptyFetchResponse(long nextVisibleAtEpochMs) {
+        return new MqDecoder.DecodedResponse(
+                new MqResponseHeader(1, ErrorCode.NONE),
+                new FetchV2Response(
+                        "orders", 0, 0L, 0L, nextVisibleAtEpochMs,
+                        new V4BoundedList<>(0, false, List.of())));
+    }
+
     private static MetadataResponse metadataWithLeaders(int partition0Leader, int partition1Leader) {
         return new MetadataResponse(
                 List.of(
@@ -359,11 +630,16 @@ class ConsumerNotLeaderRetryTest {
 
     private static final class TestableConsumer extends Consumer {
         private final Queue<MetadataResponse> metadataResponses = new ArrayDeque<>();
-        private final Queue<MqDecoder.DecodedResponse> fetchResponses = new ArrayDeque<>();
+        private final Queue<Object> fetchResponses = new ArrayDeque<>();
         private final List<Integer> fetchLeaderBrokerIds = new ArrayList<>();
         private final List<Long> fetchOffsets = new ArrayList<>();
         private final List<Long> pollSleeps = new ArrayList<>();
         private long currentTimeMillis = 1_000_000L;
+        private long nextMetadataFetchDelayMs;
+        private long nextFetchDelayMs;
+        private Duration metadataTimeout;
+        private Duration fetchTimeout;
+        private Duration invalidationTimeout;
         private int metadataFetchesDuringPoll;
         private int fetchAttempts;
         private int invalidatedBrokerClients;
@@ -381,8 +657,36 @@ class ConsumerNotLeaderRetryTest {
             fetchResponses.add(response);
         }
 
+        private void enqueueFetchFailure(RuntimeException failure) {
+            fetchResponses.add(failure);
+        }
+
         private void countMetadataFetchesDuringPoll() {
             countMetadataFetchesDuringPoll = true;
+        }
+
+        private void advanceTime(long elapsedMs) {
+            currentTimeMillis += elapsedMs;
+        }
+
+        private void delayNextMetadataFetch(long delayMs) {
+            nextMetadataFetchDelayMs = delayMs;
+        }
+
+        private void delayNextFetch(long delayMs) {
+            nextFetchDelayMs = delayMs;
+        }
+
+        private Duration metadataTimeout() {
+            return metadataTimeout;
+        }
+
+        private Duration fetchTimeout() {
+            return fetchTimeout;
+        }
+
+        private Duration invalidationTimeout() {
+            return invalidationTimeout;
         }
 
         private int metadataFetchesDuringPoll() {
@@ -414,10 +718,20 @@ class ConsumerNotLeaderRetryTest {
             if (countMetadataFetchesDuringPoll) {
                 metadataFetchesDuringPoll++;
             }
+            if (nextMetadataFetchDelayMs > 0L) {
+                currentTimeMillis += nextMetadataFetchDelayMs;
+                nextMetadataFetchDelayMs = 0L;
+            }
             if (!metadataResponses.isEmpty()) {
                 return metadataResponses.remove();
             }
             return super.fetchMetadata(topicName);
+        }
+
+        protected MetadataResponse fetchMetadata(String topicName, long deadlineNanos)
+                throws InterruptedException {
+            metadataTimeout = remainingTimeout(deadlineNanos);
+            return fetchMetadata(topicName);
         }
 
         @Override
@@ -427,12 +741,36 @@ class ConsumerNotLeaderRetryTest {
             fetchAttempts++;
             fetchLeaderBrokerIds.add(leader.brokerId());
             fetchOffsets.add(request.fetchOffset());
-            return fetchResponses.remove();
+            if (nextFetchDelayMs > 0L) {
+                currentTimeMillis += nextFetchDelayMs;
+                nextFetchDelayMs = 0L;
+            }
+            Object outcome = fetchResponses.remove();
+            if (outcome instanceof RuntimeException failure) {
+                throw failure;
+            }
+            return (MqDecoder.DecodedResponse) outcome;
+        }
+
+        protected MqDecoder.DecodedResponse sendFetchV2(
+                BrokerMetadata leader,
+                FetchV2Request request,
+                long deadlineNanos) {
+            fetchTimeout = remainingTimeout(deadlineNanos);
+            return sendFetchV2(leader, request);
+        }
+
+        private Duration remainingTimeout(long deadlineNanos) {
+            return Duration.ofNanos(Math.max(0L, deadlineNanos - currentTimeNanos()));
         }
 
         @Override
         protected long currentTimeMillis() {
             return currentTimeMillis;
+        }
+
+        protected long currentTimeNanos() {
+            return currentTimeMillis * 1_000_000L;
         }
 
         @Override
@@ -444,6 +782,32 @@ class ConsumerNotLeaderRetryTest {
         @Override
         protected void invalidateBrokerClient(int brokerId) {
             invalidatedBrokerClients++;
+        }
+
+        protected void invalidateBrokerClient(int brokerId, long deadlineNanos) {
+            invalidationTimeout = remainingTimeout(deadlineNanos);
+            invalidateBrokerClient(brokerId);
+        }
+    }
+
+    private static final class TrackingBrokerClient extends NetworkClient {
+        private boolean closed;
+        private boolean aborted;
+
+        private TrackingBrokerClient(String clientId) {
+            super(clientId);
+        }
+
+        @Override
+        public void close() throws InterruptedException {
+            closed = true;
+            super.close();
+        }
+
+        @Override
+        void abortCandidate(Duration timeout) throws InterruptedException {
+            aborted = true;
+            super.abortCandidate(timeout);
         }
     }
 }

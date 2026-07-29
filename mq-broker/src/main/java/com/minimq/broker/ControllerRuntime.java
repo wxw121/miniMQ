@@ -17,6 +17,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.function.Function;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Owns the production etcd election, fenced repository and monotonic metadata watch. */
@@ -125,6 +128,23 @@ public final class ControllerRuntime implements ControllerRole, AutoCloseable {
     public void start() {
         watch.start();
         thread.start();
+    }
+
+    public long awaitInitialMetadata(long timeoutMs) throws InterruptedException {
+        try {
+            return watch.initialLoad().toCompletableFuture().get(timeoutMs, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException timeout) {
+            throw new IllegalStateException("Initial metadata load timed out", timeout);
+        } catch (ExecutionException failure) {
+            Throwable cause = failure.getCause();
+            if (cause instanceof RuntimeException runtimeFailure) {
+                throw runtimeFailure;
+            }
+            if (cause instanceof Error error) {
+                throw error;
+            }
+            throw new IllegalStateException("Initial metadata load failed", cause);
+        }
     }
 
     private void campaign() {

@@ -12,6 +12,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class LogManagerRecoveryTest {
 
@@ -28,6 +29,33 @@ class LogManagerRecoveryTest {
         assertEquals(2, records.size());
         assertEquals("v0", new String(records.get(0).value()));
         assertEquals("v1", new String(records.get(1).value()));
+    }
+
+    @Test
+    void portableLegacyTopicNameSurvivesAppendAndRestart(@TempDir Path dir) {
+        try (LogManager manager = new LogManager(dir)) {
+            manager.append("sales east", 0, "k".getBytes(), "legacy".getBytes());
+        }
+
+        try (LogManager recovered = new LogManager(dir)) {
+            List<Record> records = recovered.getOrCreate("sales east", 0)
+                    .read(0, 1_024);
+            assertEquals(1, records.size());
+            assertEquals("legacy", new String(records.get(0).value()));
+        }
+    }
+
+    @Test
+    void rejectsTopicNamesThatAliasOnCaseInsensitiveFileSystems(@TempDir Path dir) {
+        try (LogManager manager = new LogManager(dir)) {
+            manager.append("orders", 0, "k".getBytes(), "lower".getBytes());
+
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> manager.append("Orders", 0, "k".getBytes(), "upper".getBytes()));
+
+            assertTrue(failure.getMessage().contains("storage identity"), failure.getMessage());
+        }
     }
 
     @Test

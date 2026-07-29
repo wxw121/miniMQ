@@ -1,5 +1,6 @@
 package com.minimq.broker.metadata;
 
+import java.time.Duration;
 import java.util.Objects;
 
 /** Keeps a stable repository identity while Controller leadership changes its fenced backend. */
@@ -20,12 +21,28 @@ public final class SwitchableClusterMetadataRepository implements ClusterMetadat
     }
 
     @Override
+    public VersionedClusterMetadata read(Duration timeout) {
+        return delegate.read(timeout);
+    }
+
+    @Override
     public UpdateResult initialize(ClusterMetadata metadata) {
         return delegate.initialize(metadata);
     }
 
     @Override
+    public UpdateResult initialize(ClusterMetadata metadata, Duration timeout) {
+        return delegate.initialize(metadata, timeout);
+    }
+
+    @Override
     public UpdateResult compareAndSet(long expectedRevision, ClusterMetadata metadata) {
         return delegate.compareAndSet(expectedRevision, metadata);
+    }
+
+    @Override
+    public UpdateResult compareAndSet(
+            long expectedRevision, ClusterMetadata metadata, Duration timeout) {
+        return delegate.compareAndSet(expectedRevision, metadata, timeout);
     }
 }

@@ -697,6 +697,15 @@ class ProtocolSerdesTest {
                                 1, "localhost", 9092, "ACTIVE", 7L, 5_000L)),
                         bounded(new TopicSummary(
                                 "orders", 3, 2, "orders-retry", "orders-dlq")),
+                        bounded(new TopicTombstoneSummary(
+                                "orders-deleted",
+                                new TopicTombstoneInfo(
+                                        "DELETING",
+                                        14L,
+                                        1_000L,
+                                        bounded(1, 2),
+                                        bounded(1),
+                                        bounded(2)))),
                         new ControllerMetadata(1, "localhost", 9092, 3L),
                         13L,
                         4)),
@@ -787,6 +796,8 @@ class ProtocolSerdesTest {
                         new FetchV2Request("orders", 0, 4L, 5L, 4096)),
                 new RequestCase(ApiKeys.METADATA_V2,
                         new MetadataV2Request(null, 100, 200)),
+                new RequestCase(ApiKeys.METADATA_V2,
+                        new MetadataV2Request(null, "orders", "orders-deleted", 100, 200)),
                 new RequestCase(ApiKeys.RUNTIME_METRICS_V2,
                         new RuntimeMetricsV2Request("operator", 100, 100, 100)),
                 new RequestCase(ApiKeys.UPDATE_REPLICA_STATE_V2,

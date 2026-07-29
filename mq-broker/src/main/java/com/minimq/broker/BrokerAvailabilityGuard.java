@@ -2,8 +2,6 @@ package com.minimq.broker;
 
 import com.minimq.common.error.ErrorCode;
 
-import java.util.concurrent.atomic.AtomicReference;
-
 public final class BrokerAvailabilityGuard {
     public enum State {
         STARTING,
@@ -13,10 +11,11 @@ public final class BrokerAvailabilityGuard {
         RECOVERING
     }
 
-    private final AtomicReference<State> state = new AtomicReference<>(State.STARTING);
+    private volatile State state = State.STARTING;
+    private boolean stickyStorageFence;
 
     public State state() {
-        return state.get();
+        return state;
     }
 
     public boolean allowsDataPlane() {
@@ -44,19 +43,34 @@ public final class BrokerAvailabilityGuard {
         return state() == State.STORAGE_DEGRADED ? ErrorCode.MAINTENANCE_BUSY : ErrorCode.BROKER_FENCED;
     }
 
-    public void activate() {
-        state.set(State.ACTIVE);
+    public synchronized void activate() {
+        if (!stickyStorageFence) {
+            state = State.ACTIVE;
+        }
     }
 
-    public void fence() {
-        state.set(State.FENCED);
+    public synchronized void fence() {
+        state = State.FENCED;
     }
 
-    public void degradeStorage() {
-        state.set(State.STORAGE_DEGRADED);
+    public synchronized void fenceStorageCleanup() {
+        stickyStorageFence = true;
+        state = State.FENCED;
     }
 
-    public void startRecovering() {
-        state.set(State.RECOVERING);
+    public synchronized boolean hasStickyStorageFence() {
+        return stickyStorageFence;
+    }
+
+    public synchronized void degradeStorage() {
+        if (!stickyStorageFence) {
+            state = State.STORAGE_DEGRADED;
+        }
+    }
+
+    public synchronized void startRecovering() {
+        if (!stickyStorageFence) {
+            state = State.RECOVERING;
+        }
     }
 }

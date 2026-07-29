@@ -9,6 +9,8 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
+import java.util.function.Consumer;
 import java.util.zip.CRC32;
 
 /**
@@ -67,16 +69,21 @@ public class WriteAheadLog implements AutoCloseable {
     }
 
     public synchronized List<WalRecord> readFrom(long position) {
+        List<WalRecord> records = new ArrayList<>();
+        scanFrom(position, records::add);
+        return records;
+    }
+
+    public synchronized void scanFrom(long position, Consumer<WalRecord> visitor) {
+        Objects.requireNonNull(visitor, "visitor");
         try {
-            List<WalRecord> records = new ArrayList<>();
             if (position < 0 || position > channel.size()) {
                 throw new IOException("Invalid WAL read position " + position);
             }
             channel.position(position);
             while (channel.position() < channel.size()) {
-                records.add(readRecord(channel.position(), channel.size(), false));
+                visitor.accept(readRecord(channel.position(), channel.size(), false));
             }
-            return records;
         } catch (IOException e) {
             throw new IllegalStateException("Failed to read WAL records", e);
         }

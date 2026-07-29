@@ -84,6 +84,24 @@ class ProducerRoutingValidationTest {
         }
     }
 
+    @Test
+    void reliabilityAndDelayedHelpersRejectNegativeDeliveryTimes() throws Exception {
+        try (MetadataOnlyProducer producer = new MetadataOnlyProducer()) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> producer.sendToRetry("orders", record(0), -1L));
+            assertThrows(IllegalArgumentException.class,
+                    () -> producer.sendDelayed(record(0), -1L));
+        }
+    }
+
+    @Test
+    void reliabilityHelpersRejectBlankSourceTopicsBeforeMetadataLookup() throws Exception {
+        try (MetadataOnlyProducer producer = new MetadataOnlyProducer()) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> producer.sendToDeadLetter(" ", record(0)));
+        }
+    }
+
     private static void assertRouteFailure(
             MetadataResponse metadata,
             ProducerRecord record,

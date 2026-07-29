@@ -17,6 +17,7 @@ import com.minimq.protocol.message.ProtocolMessages.MaintenanceReportResponse;
 import com.minimq.protocol.message.ProtocolMessages.MaintenanceRunRequest;
 import com.minimq.protocol.message.ProtocolMessages.RuntimeMetricsRequest;
 import com.minimq.protocol.message.ProtocolMessages.RuntimeMetricsResponse;
+import com.minimq.protocol.message.ProtocolMessages.*;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -26,6 +27,9 @@ import java.util.List;
  * 演示用命令行客户端，串联 create-topic、produce、consume 等常见操作。
  */
 public final class DemoCli {
+    private static final Duration DEFAULT_OPERATOR_REQUEST_TIMEOUT = Duration.ofSeconds(15);
+    private static final Duration MAX_OPERATOR_REQUEST_TIMEOUT = Duration.ofMinutes(10);
+
     // main 只负责命令分发，具体操作拆到私有方法，便于 CLI 测试覆盖单个流程。
     public static void main(String[] args) throws Exception {
         if (args.length == 0) {
@@ -41,6 +45,19 @@ public final class DemoCli {
             case "maintenance-run" -> maintenanceRun(args);
             case "maintenance-metrics" -> maintenanceMetrics(args);
             case "runtime-metrics" -> runtimeMetrics(args);
+            case "ops-status" -> opsStatus(args);
+            case "group-status" -> groupStatus(args);
+            case "list-topics" -> listTopics(args);
+            case "describe-topic" -> describeTopic(args);
+            case "delete-topic" -> deleteTopic(args);
+            case "increase-partitions" -> increasePartitions(args);
+            case "failover-audit" -> failoverAudit(args);
+            case "auth-status" -> authStatus(args);
+            case "configure-topic-reliability" -> configureTopicReliability(args);
+            case "broker-offline" -> brokerOffline(args);
+            case "retry-produce" -> retryProduce(args);
+            case "dead-letter-produce" -> deadLetterProduce(args);
+            case "delayed-produce" -> delayedProduce(args);
             case "benchmark-fetch" -> FetchBenchmark.run(args, System.out);
             default -> printUsage();
         }
@@ -67,7 +84,7 @@ public final class DemoCli {
     private static void produce(String[] args) throws Exception {
         String brokers = arg(args, "--brokers", "localhost:9092");
         String topic = arg(args, "--topic", "orders");
-        String key = arg(args, "--key", null);
+        String key = optionalArg(args, "--key");
         String message = arg(args, "--message", "hello");
         try (Producer producer = new Producer(brokers, "demo-producer")) {
             producer.start();
@@ -145,16 +162,220 @@ public final class DemoCli {
 
     private static void runtimeMetrics(String[] args) throws Exception {
         String adminToken = arg(args, "--admin-token", null);
-        RuntimeMetricsResponse metrics = (RuntimeMetricsResponse) sendAdmin(
+        RuntimeMetricsV2Response metrics = (RuntimeMetricsV2Response) sendBroker(
                 args,
-                ApiKeys.RUNTIME_METRICS,
-                new RuntimeMetricsRequest(adminToken),
+                ApiKeys.RUNTIME_METRICS_V2,
+                new RuntimeMetricsV2Request(adminToken, 100, 100, 100),
                 "runtime metrics").body();
         System.out.println("Runtime metrics");
-        System.out.println("requestsByApiKey=" + metrics.requestsByApiKey());
-        System.out.println("responsesByErrorCode=" + metrics.responsesByErrorCode());
-        System.out.println("latencyByApiKey=" + metrics.latencyByApiKey());
-        System.out.println("throttledByApiKey=" + metrics.throttledByApiKey());
+        long requestCount = metrics.requestsByApiKey().items().stream()
+                .mapToLong(RuntimeMetricCount::count)
+                .sum();
+        double requestRate = metrics.uptimeMs() == 0L
+                ? 0.0
+                : requestCount * 1_000.0 / metrics.uptimeMs();
+        System.out.printf(
+                "startedAtEpochMs=%d snapshotAtEpochMs=%d uptimeMs=%d requestRatePerSecond=%.3f produceBytes=%d fetchBytes=%d auditOverwrittenCount=%d%n",
+                metrics.startedAtEpochMs(), metrics.snapshotAtEpochMs(), metrics.uptimeMs(),
+                requestRate, metrics.produceBytes(), metrics.fetchBytes(), metrics.auditOverwrittenCount());
+        System.out.println("requests=" + bounded(metrics.requestsByApiKey()));
+        System.out.println("responses=" + bounded(metrics.responsesByErrorCode()));
+        System.out.println("latencies=" + bounded(metrics.latencyByApiKey()));
+        System.out.println("throttled=" + bounded(metrics.throttledByApiKey()));
+        System.out.println("lagMetrics=" + bounded(metrics.lagMetrics()));
+    }
+
+    private static void opsStatus(String[] args) throws Exception {
+        String credential = arg(args, "--admin-token", null);
+        OpsStatusResponse status = (OpsStatusResponse) sendBroker(
+                args,
+                ApiKeys.OPS_STATUS,
+                new OpsStatusRequest(
+                        credential,
+                        Integer.parseInt(arg(args, "--broker-limit", "100")),
+                        Integer.parseInt(arg(args, "--partition-limit", "100"))),
+                "ops status").body();
+        System.out.printf(
+                "Ops status targetBrokerId=%d startedAtEpochMs=%d snapshotAtEpochMs=%d "
+                        + "role=%s brokerEpoch=%d controllerEpoch=%d metadataVersion=%d "
+                        + "metadataFormatVersion=%d transportMode=%s maintenanceState=%s%n",
+                status.targetBrokerId(), status.startedAtEpochMs(), status.snapshotAtEpochMs(),
+                status.role(), status.brokerEpoch(), status.controllerEpoch(), status.metadataVersion(),
+                status.metadataFormatVersion(), status.transportMode(), status.maintenanceState());
+        System.out.println("brokers=" + bounded(status.brokers()));
+        System.out.println("partitions=" + bounded(status.partitions()));
+    }
+
+    private static void groupStatus(String[] args) throws Exception {
+        String credential = arg(args, "--admin-token", null);
+        GroupStatusResponse status = (GroupStatusResponse) sendController(
+                args,
+                ApiKeys.GROUP_STATUS,
+                new GroupStatusRequest(
+                        credential,
+                        arg(args, "--group", null),
+                        optionalArg(args, "--topic"),
+                        Integer.parseInt(arg(args, "--member-limit", "100")),
+                        Integer.parseInt(arg(args, "--partition-limit", "100"))),
+                "group status").body();
+        System.out.printf("Group status group=%s topic=%s generation=%d%n",
+                status.groupId(), status.topicName(), status.generationId());
+        System.out.println("members=" + bounded(status.members()));
+        System.out.println("partitionLags=" + bounded(status.partitionLags()));
+    }
+
+    private static void listTopics(String[] args) throws Exception {
+        String credential = arg(args, "--admin-token", null);
+        ListTopicsResponse response = (ListTopicsResponse) sendController(
+                args, ApiKeys.LIST_TOPICS,
+                new ListTopicsRequest(credential, Integer.parseInt(arg(args, "--limit", "100"))),
+                "list topics").body();
+        System.out.println("Topics " + bounded(response.topicNames()));
+    }
+
+    private static void describeTopic(String[] args) throws Exception {
+        String credential = arg(args, "--admin-token", null);
+        DescribeTopicResponse response = (DescribeTopicResponse) sendController(
+                args, ApiKeys.DESCRIBE_TOPIC,
+                new DescribeTopicRequest(
+                        credential,
+                        arg(args, "--topic", null),
+                        Integer.parseInt(arg(args, "--partition-limit", "100")),
+                        hasFlag(args, "--include-deleted")),
+                "describe topic").body();
+        System.out.printf("Topic %s active=%s metadataVersion=%d retry=%s deadLetter=%s%n",
+                response.topicName(), response.active(), response.metadataVersion(),
+                response.retryTopic(), response.deadLetterTopic());
+        System.out.println("partitions=" + bounded(response.partitions()));
+        if (response.tombstone() != null) {
+            System.out.printf("tombstoneState=%s pendingBrokers=%s%n",
+                    response.tombstone().state(), bounded(response.tombstone().pendingBrokerIds()));
+        }
+    }
+
+    private static void deleteTopic(String[] args) throws Exception {
+        String credential = arg(args, "--admin-token", null);
+        DeleteTopicResponse response = (DeleteTopicResponse) sendController(
+                args, ApiKeys.DELETE_TOPIC,
+                new DeleteTopicRequest(credential, arg(args, "--topic", null)),
+                "delete topic").body();
+        System.out.printf("Topic deletion topic=%s state=%s tombstoneVersion=%d pendingBrokers=%s%n",
+                response.topicName(), response.tombstoneState(), response.tombstoneVersion(),
+                bounded(response.pendingBrokerIds()));
+    }
+
+    private static void increasePartitions(String[] args) throws Exception {
+        String credential = arg(args, "--admin-token", null);
+        IncreasePartitionsResponse response = (IncreasePartitionsResponse) sendController(
+                args, ApiKeys.INCREASE_PARTITIONS,
+                new IncreasePartitionsRequest(
+                        credential, arg(args, "--topic", null),
+                        Integer.parseInt(arg(args, "--target-count", null))),
+                "increase partitions").body();
+        System.out.printf("Partitions increased topic=%s previous=%d current=%d metadataVersion=%d%n",
+                response.topicName(), response.previousPartitionCount(), response.newPartitionCount(),
+                response.metadataVersion());
+    }
+
+    private static void failoverAudit(String[] args) throws Exception {
+        String credential = arg(args, "--admin-token", null);
+        FailoverAuditResponse response = (FailoverAuditResponse) sendBroker(
+                args, ApiKeys.FAILOVER_AUDIT,
+                new FailoverAuditRequest(credential, Integer.parseInt(arg(args, "--limit", "100"))),
+                "failover audit").body();
+        System.out.printf("Failover audit brokerId=%d overwritten=%d events=%s%n",
+                response.brokerId(), response.overwrittenCount(), bounded(response.events()));
+    }
+
+    private static void authStatus(String[] args) throws Exception {
+        String credential = arg(args, "--admin-token", null);
+        AuthStatusResponse response = (AuthStatusResponse) sendBroker(
+                args, ApiKeys.AUTH_STATUS, new AuthStatusRequest(credential), "auth status").body();
+        System.out.printf("Auth status targetBrokerId=%d scopes=%s%n",
+                response.targetBrokerId(), bounded(response.scopes()));
+    }
+
+    private static void configureTopicReliability(String[] args) throws Exception {
+        String credential = arg(args, "--admin-token", null);
+        String retryTopic = optionalArg(args, "--retry-topic");
+        String deadLetterTopic = optionalArg(args, "--dead-letter-topic");
+        ConfigureTopicReliabilityResponse response = (ConfigureTopicReliabilityResponse) sendController(
+                args,
+                ApiKeys.CONFIGURE_TOPIC_RELIABILITY,
+                new ConfigureTopicReliabilityRequest(
+                        credential,
+                        arg(args, "--source-topic", null),
+                        retryTopic != null,
+                        retryTopic,
+                        hasFlag(args, "--clear-retry"),
+                        deadLetterTopic != null,
+                        deadLetterTopic,
+                        hasFlag(args, "--clear-dead-letter")),
+                "configure topic reliability").body();
+        System.out.printf("Reliability configured source=%s retry=%s deadLetter=%s metadataVersion=%d%n",
+                response.sourceTopicName(), response.retryTopicName(), response.deadLetterTopicName(),
+                response.metadataVersion());
+    }
+
+    private static void brokerOffline(String[] args) throws Exception {
+        String credential = arg(args, "--admin-token", null);
+        MarkBrokerOfflineAdminResponse response = (MarkBrokerOfflineAdminResponse) sendController(
+                args, ApiKeys.MARK_BROKER_OFFLINE_ADMIN,
+                new MarkBrokerOfflineAdminRequest(
+                        credential, Integer.parseInt(arg(args, "--broker-id", null))),
+                "mark broker offline").body();
+        System.out.printf("Broker offline brokerId=%d metadataVersion=%d%n",
+                response.brokerId(), response.metadataVersion());
+    }
+
+    private static void delayedProduce(String[] args) throws Exception {
+        String brokers = arg(args, "--brokers", "localhost:9092");
+        try (Producer producer = new Producer(brokers, "demo-delayed-producer")) {
+            producer.start();
+            var result = producer.sendDelayed(recordFromArgs(args, "--topic"),
+                    Long.parseLong(arg(args, "--deliver-at-epoch-ms", null)));
+            System.out.printf("Delayed produce topic=%s partition=%d offset=%d%n",
+                    result.topic(), result.partitionId(), result.offset());
+        }
+    }
+
+    private static void retryProduce(String[] args) throws Exception {
+        String brokers = arg(args, "--brokers", "localhost:9092");
+        String source = arg(args, "--source-topic", null);
+        try (Producer producer = new Producer(brokers, "demo-retry-producer")) {
+            producer.start();
+            var result = producer.sendToRetry(
+                    source,
+                    recordFromArgs(args, "--source-topic"),
+                    Long.parseLong(arg(args, "--deliver-at-epoch-ms", null)));
+            System.out.printf("Retry produce topic=%s partition=%d offset=%d%n",
+                    result.topic(), result.partitionId(), result.offset());
+        }
+    }
+
+    private static void deadLetterProduce(String[] args) throws Exception {
+        String brokers = arg(args, "--brokers", "localhost:9092");
+        String source = arg(args, "--source-topic", null);
+        try (Producer producer = new Producer(brokers, "demo-dead-letter-producer")) {
+            producer.start();
+            var result = producer.sendToDeadLetter(source, recordFromArgs(args, "--source-topic"));
+            System.out.printf("Dead-letter produce topic=%s partition=%d offset=%d%n",
+                    result.topic(), result.partitionId(), result.offset());
+        }
+    }
+
+    private static ProducerRecord recordFromArgs(String[] args, String topicFlag) {
+        String key = optionalArg(args, "--key");
+        return new ProducerRecord(
+                arg(args, topicFlag, null),
+                null,
+                key == null ? null : key.getBytes(StandardCharsets.UTF_8),
+                arg(args, "--message", null).getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String bounded(V4BoundedList<?> values) {
+        return "total=" + values.total() + " truncated=" + values.truncated()
+                + " items=" + values.items();
     }
 
     private static MqDecoder.DecodedResponse sendAdmin(
@@ -167,6 +388,31 @@ public final class DemoCli {
         System.out.println("Maintenance target: " + hp[0] + ":" + hp[1]);
         try (NetworkClient client = new NetworkClient("demo-admin")) {
             client.connect(hp[0], Integer.parseInt(hp[1]));
+            MqDecoder.DecodedResponse response = client.send(apiKey, request);
+            client.ensureSuccess(response, operation);
+            return response;
+        }
+    }
+
+    private static MqDecoder.DecodedResponse sendBroker(
+            String[] args, short apiKey, Object request, String operation) throws InterruptedException {
+        String broker = arg(args, "--broker", null);
+        String[] hp = parseSingleHostPort(broker);
+        try (NetworkClient client = new NetworkClient("demo-operator")) {
+            client.connect(hp[0], Integer.parseInt(hp[1]));
+            MqDecoder.DecodedResponse response = client.send(apiKey, request);
+            client.ensureSuccess(response, operation);
+            return response;
+        }
+    }
+
+    private static MqDecoder.DecodedResponse sendController(
+            String[] args, short apiKey, Object request, String operation) throws InterruptedException {
+        String brokers = arg(args, "--brokers", "localhost:9092");
+        try (ControllerAwareNetworkClient client =
+                     new ControllerAwareNetworkClient(
+                             brokers, "demo-controller-operator", operatorRequestTimeout(args))) {
+            client.connect();
             MqDecoder.DecodedResponse response = client.send(apiKey, request);
             client.ensureSuccess(response, operation);
             return response;
@@ -217,6 +463,47 @@ public final class DemoCli {
         return defaultValue;
     }
 
+    static String optionalArg(String[] args, String name) {
+        for (int i = 0; i < args.length; i++) {
+            if (args[i].equals(name)) {
+                if (i == args.length - 1 || args[i + 1].startsWith("--")) {
+                    throw new IllegalArgumentException("Missing " + name);
+                }
+                return args[i + 1];
+            }
+        }
+        return null;
+    }
+
+    static boolean hasFlag(String[] args, String name) {
+        for (String value : args) {
+            if (value.equals(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static Duration operatorRequestTimeout(String[] args) {
+        String configured = arg(
+                args,
+                "--request-timeout-ms",
+                Long.toString(DEFAULT_OPERATOR_REQUEST_TIMEOUT.toMillis()));
+        long timeoutMs;
+        try {
+            timeoutMs = Long.parseLong(configured);
+        } catch (NumberFormatException ex) {
+            throw new IllegalArgumentException(
+                    "--request-timeout-ms must be a whole number of milliseconds", ex);
+        }
+        if (timeoutMs <= 0 || timeoutMs > MAX_OPERATOR_REQUEST_TIMEOUT.toMillis()) {
+            throw new IllegalArgumentException(
+                    "--request-timeout-ms must be between 1 and "
+                            + MAX_OPERATOR_REQUEST_TIMEOUT.toMillis());
+        }
+        return Duration.ofMillis(timeoutMs);
+    }
+
     static String[] parseFirstHostPort(String brokers) {
         String[] hp = brokers.split(",", 2)[0].split(":", 2);
         if (hp.length != 2 || hp[0].isBlank() || hp[1].isBlank()) {
@@ -257,6 +544,19 @@ public final class DemoCli {
                   java -jar mq-demo.jar maintenance-run --broker localhost:9092 --admin-token <secret>
                   java -jar mq-demo.jar maintenance-metrics --broker localhost:9092 --admin-token <secret>
                   java -jar mq-demo.jar runtime-metrics --broker localhost:9092 --admin-token <secret>
+                  java -jar mq-demo.jar ops-status --broker localhost:9092 --admin-token <secret>
+                  java -jar mq-demo.jar group-status --brokers localhost:9092 --admin-token <secret> --group demo-group [--topic orders]
+                  java -jar mq-demo.jar list-topics --brokers localhost:9092 --admin-token <secret> [--limit 100]
+                  java -jar mq-demo.jar describe-topic --brokers localhost:9092 --admin-token <secret> --topic orders [--include-deleted]
+                  java -jar mq-demo.jar delete-topic --brokers localhost:9092 --admin-token <secret> --topic orders [--request-timeout-ms 15000]
+                  java -jar mq-demo.jar increase-partitions --brokers localhost:9092 --admin-token <secret> --topic orders --target-count 6
+                  java -jar mq-demo.jar failover-audit --broker localhost:9092 --admin-token <secret> [--limit 100]
+                  java -jar mq-demo.jar auth-status --broker localhost:9092 --admin-token <secret>
+                  java -jar mq-demo.jar configure-topic-reliability --brokers localhost:9092 --admin-token <secret> --source-topic orders [--retry-topic orders-retry] [--dead-letter-topic orders-dlq]
+                  java -jar mq-demo.jar broker-offline --brokers localhost:9092 --admin-token <secret> --broker-id 2
+                  java -jar mq-demo.jar retry-produce --brokers localhost:9092 --source-topic orders --message retry --deliver-at-epoch-ms 0
+                  java -jar mq-demo.jar dead-letter-produce --brokers localhost:9092 --source-topic orders --message failed
+                  java -jar mq-demo.jar delayed-produce --brokers localhost:9092 --topic orders --message later --deliver-at-epoch-ms 0
                   java -jar mq-demo.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576 --network-transport nio
                 """);
     }

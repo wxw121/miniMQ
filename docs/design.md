@@ -9,9 +9,9 @@ MiniMQ aims to be small enough to read, but realistic enough to explain the esse
 
 MiniMQ 的目标是“小到能读完，大到能讲清消息队列核心机制”。项目有意避免把关键行为藏在框架里：协议序列化是手写的，存储格式是显式的，消费组分配逻辑也直接体现在代码里。因此它适合作为学习项目、设计讨论材料以及后续贡献者继续迭代的上下文载体。
 
-The design optimizes for clarity, determinism, and testability. V2.3 adds a replication foundation with ISR-aware client FETCH visibility, while automatic broker failure detection and producer acknowledgement policies remain future work.
+The design optimizes for clarity, determinism, and testability. V4 adds etcd-fenced Controller HA, exact Leader epochs, automatic Broker failure detection, physical/visible replica watermarks, scoped operator APIs, crash-safe Topic deletion, explicit retry/DLQ links, and required delayed-message delivery. Producer acknowledgement policies, transactions, and exactly-once semantics remain future work.
 
-当前设计优先考虑清晰性、确定性和可测试性。V2.3 增加了带 ISR 感知客户端 FETCH 可见性的副本基础能力，自动 Broker 故障检测与 Producer 确认策略仍属于后续工作。
+当前设计优先考虑清晰性、确定性和可测试性。V4 已增加 etcd fencing 的 Controller HA、精确 Leader epoch、Broker 自动故障检测、物理/可见副本水位、细粒度运维 API、崩溃安全 Topic 删除、显式 retry/DLQ 关联和必需的延迟投递。Producer 确认策略、事务与 exactly-once 语义仍属于后续工作。
 
 ## 2. Protocol Design / 协议设计
 
@@ -86,6 +86,24 @@ If `errorCode != NONE`, response body is omitted. This rule keeps error response
 | 17 | `DISCOVER_CONTROLLER` | Control / 控制面 | Discover the active Controller through any bootstrap Broker. / 通过任意 bootstrap Broker 发现当前 Controller。 |
 | 18 | `LEADER_READY` | Control / 控制面 | Confirm a promoted leader has recovered and can serve data. / 确认提升后的 Leader 已恢复并可服务数据面。 |
 | 19 | `RUNTIME_METRICS` | Admin / 管理面 | Read authenticated runtime request, response, latency, and throttling counters. / 鉴权读取运行时请求、响应、延迟与限流指标。 |
+| 20 | `OPS_STATUS` | Admin / 管理面 | Read one Broker's bounded operational snapshot. / 读取单个 Broker 的有界运维快照。 |
+| 21 | `GROUP_STATUS` | Control / 控制面 | Read bounded group membership, offsets, watermarks, and lag. / 读取有界消费组成员、位点、水位与 lag。 |
+| 22 | `LIST_TOPICS` | Control / 控制面 | List active Topic names with total/truncated metadata. / 列出 active Topic 名称及 total/truncated 元数据。 |
+| 23 | `DESCRIBE_TOPIC` | Control / 控制面 | Describe partitions, reliability links, and optional tombstone state. / 描述分区、可靠性关联和可选 tombstone 状态。 |
+| 24 | `DELETE_TOPIC` | Control / 控制面 | Start or observe durable Topic deletion. / 启动或观察持久化 Topic 删除。 |
+| 25 | `INCREASE_PARTITIONS` | Control / 控制面 | Increase, never decrease, a Topic's partition count. / 只增加、不减少 Topic 分区数。 |
+| 26 | `FAILOVER_AUDIT` | Admin / 管理面 | Read a Broker-local bounded failover audit ring. / 读取 Broker-local 有界故障转移审计环。 |
+| 27 | `AUTH_STATUS` | Admin / 管理面 | Report the caller credential's scopes on one Broker. / 报告调用凭据在单个 Broker 上的 scopes。 |
+| 28 | `CONFIGURE_TOPIC_RELIABILITY` | Control / 控制面 | Atomically set or clear explicit retry/DLQ links. / 原子设置或清除显式 retry/DLQ 关联。 |
+| 29 | `MARK_BROKER_OFFLINE_ADMIN` | Control / 控制面 | Authorized operator request to mark a Broker offline. / 经授权的运维 Broker 下线请求。 |
+| 30 | `CREATE_TOPIC_ADMIN` | Control / 控制面 | Scoped V4 Topic creation. / V4 scoped Topic 创建。 |
+| 31 | `PRODUCE_V2` | Data / 数据面 | Append immediate or delayed records with `deliverAtEpochMs`. / 追加带 `deliverAtEpochMs` 的即时或延迟记录。 |
+| 32 | `REPLICA_FETCH_V2` | Internal data / 内部数据面 | Fenced replica fetch preserving delivery timestamps. / 保留投递时间且带 fencing 的副本拉取。 |
+| 33 | `TOPIC_DELETE_ACK` | Internal control / 内部控制面 | Acknowledge versioned local tombstone cleanup. / 确认指定版本的本地 tombstone 清理。 |
+| 34 | `FETCH_V2` | Data / 数据面 | Bounded fetch with physical/visible watermarks and next visibility time. / 带物理/可见水位与下次可见时间的有界拉取。 |
+| 35 | `METADATA_V2` | Control / 控制面 | Bounded active metadata, independent topic/tombstone cursors, and explicit reliability links. / 有界 active 元数据、独立 topic/tombstone 游标与显式可靠性关联。 |
+| 36 | `RUNTIME_METRICS_V2` | Admin / 管理面 | Bounded rates, payload bytes, latency, lag, and audit overwrite metrics. / 有界速率、payload 字节、延迟、lag 与审计覆盖指标。 |
+| 37 | `UPDATE_REPLICA_STATE_V2` | Internal control / 内部控制面 | Report fenced physical and visible replica progress. / 上报带 fencing 的物理与可见副本进度。 |
 
 ## 3. Serialization Rules / 序列化规则
 
@@ -291,9 +309,9 @@ Real maintenance attempts reader quiescence before compaction planning reads seg
 
 ## 5. Metadata Design / 元数据设计
 
-Cluster metadata is persisted by `MetadataStore` as JSON in:
+V4 shared cluster metadata uses format version 4 and is persisted under the etcd metadata snapshot through revision CAS. `MetadataStore` still reads the local JSON document below only as the explicit 2.x import source:
 
-元数据由 `MetadataStore` 持久化为 JSON：
+V4 共享集群元数据格式版本为 4，通过 revision CAS 持久化到 etcd metadata snapshot。`MetadataStore` 只在显式导入 2.x 时读取以下本地 JSON：
 
 ```text
 {dataDir}/cluster-metadata.json
@@ -303,9 +321,9 @@ V1.3 metadata corruption recovery should validate this file before applying it t
 
 V1.3 元数据损坏恢复需要在应用到 Controller 状态前校验该文件。空文件、畸形 JSON、半截 JSON 或结构不兼容文档都视为损坏。推荐写入路径是先写临时文件、刷盘，再在平台支持时原子替换正式文件。推荐恢复路径是把不可读文件隔离为带时间戳的 `.corrupt` 文件，然后要么带清晰错误快速失败，要么仅在显式启用损坏恢复时从空元数据状态启动。
 
-The metadata object contains brokers, topics, partitions, consumer groups, group members, and committed offsets.
+The format-4 object contains Brokers, active Topics, durable Topic tombstones, explicit retry/DLQ links, partitions with epoch/readiness and per-replica physical/visible progress, complete watermark snapshots, consumer groups, members, and committed offsets.
 
-元数据对象包含 Broker、Topic、Partition、Consumer Group、成员和已提交 offset。
+格式 4 元数据包含 Broker、active Topic、持久化 Topic tombstone、显式 retry/DLQ 关联、带 epoch/readiness 和逐副本物理/可见进度的 Partition、完整水位快照、Consumer Group、成员与已提交 offset。
 
 ```mermaid
 erDiagram
@@ -360,9 +378,13 @@ erDiagram
 
 ## 6. Topic And Partition Design / Topic 与 Partition 设计
 
-Topic creation validates that the topic name is non-blank and partition count is positive. Leaders are assigned round-robin over online brokers sorted by broker id.
+Topic creation accepts only portable names of 1..249 characters from `[A-Za-z0-9._-]`; `.` and `..` are rejected. The same validator is used at protocol, metadata, and storage boundaries, while storage also verifies normalized paths remain below its root. Partition count must be positive. Leaders are assigned round-robin over online Brokers sorted by Broker id.
 
-创建 Topic 时会校验名称非空、分区数大于 0。Leader 分配逻辑会按 broker id 排序后的在线 Broker 列表做 round-robin。
+创建 Topic 时只接受长度 1..249、字符集为 `[A-Za-z0-9._-]` 的可移植名称，并拒绝 `.` 与 `..`。协议、元数据和存储边界共用同一校验器，存储层还会确认规范化路径仍位于数据根目录内。分区数必须大于 0；Leader 按 Broker id 排序后的在线 Broker 列表做 round-robin。
+
+Deletion persists `DELETING` first, reconciles local storage on every required Broker, and then persists `DELETED`. The default API wait is 10,000 ms; timeout returns the current `DELETING` response instead of pretending failure or completion. Tombstones remain in metadata after `DELETED`, so a deleted name cannot be recreated. Broker activation waits for an initial metadata revision and successful reconciliation of every installed tombstone.
+
+删除先持久化 `DELETING`，在所有 required Broker 对账并清理本地存储，再持久化 `DELETED`。API 默认最多等待 10,000ms；超时返回当前 `DELETING`，不会伪装失败或完成。进入 `DELETED` 后 tombstone 仍保留在元数据中，因此名称不可重新创建。Broker 进入 `ACTIVE` 前必须安装初始 metadata revision，并成功对账其中全部 tombstone。
 
 Example / 示例：
 
@@ -397,9 +419,9 @@ Consumer group coordination is simplified but captures the essential flow:
 
 `NetworkClient` 是 Netty 上的同步请求/响应封装。它维护 `correlationId -> blocking queue` 的映射。响应到达后，入站 handler 读取 correlation id，并把 retained `ByteBuf` 放入对应队列。
 
-`Producer` keeps one bootstrap controller client and lazily creates leader broker clients. `Consumer` keeps one controller client, joins the group during subscribe, starts heartbeat scheduling, and polls assigned partitions.
+`Producer` and `Consumer` use the complete bootstrap list to discover the current Controller, and lazily create partition-Leader clients. They cache metadata for at most 30 seconds and invalidate it on routing errors before one bounded refresh/retry. Producer reliability-link metadata uses the same 30-second bound; a routing error invalidates both route and link state and resolves the link once more.
 
-`Producer` 保留一个 bootstrap controller client，并懒加载 leader broker client。`Consumer` 保留一个 controller client，在 subscribe 时加入 group，启动 heartbeat，并轮询 assigned partitions。
+`Producer` 与 `Consumer` 使用完整 bootstrap 列表发现当前 Controller，并懒加载分区 Leader 客户端。元数据最多缓存 30 秒；路由错误会先使缓存失效，再执行一次有界刷新/重试。Producer 的 reliability-link 元数据同样最多缓存 30 秒；路由错误会同时失效路由和 link，并重新解析一次。
 
 V1.3 adds the client-resilience boundary for stale metadata. `NetworkClient` supports configurable synchronous request timeout and converts common failures into typed client exceptions. `Producer` and `Consumer` cache metadata per topic, invalidate the cache when a data-plane request receives `NOT_LEADER` or `BROKER_FENCED`, or cached metadata can no longer route the topic/partition, refresh metadata once, and retry once. The retry budget is fixed at initial request plus one refresh retry. If the second attempt still fails, the surfaced `MiniMqServerException` includes operation context such as API, topic, partition, routed Broker, and attempt count.
 
@@ -407,16 +429,16 @@ V1.3 补齐了过期元数据相关的客户端韧性边界。`NetworkClient` �
 
 ### 8.1 Web Runtime Reuse / Web Runtime 复用
 
-The Web demo backend is intentionally closer to a real application than to a one-shot CLI command. It keeps a small runtime cache keyed by `bootstrapServers + topic + groupId`. Each runtime owns one admin `NetworkClient`, one `Producer`, one `Consumer`, topic-readiness state, and consumer-subscription state. The cache uses an access-ordered LRU policy and currently keeps at most 4 active runtimes.
+The Web demo backend is intentionally closer to a real application than to a one-shot CLI command. It keeps a small runtime cache keyed by `bootstrapServers + topic + groupId`. Each real-flow runtime owns a controller-aware admin client, one `Producer`, one `Consumer`, topic-readiness state, and consumer-subscription state. Operator endpoints use the same controller-aware bootstrap behavior for controller operations and require one explicit Broker for Broker-local operations. Credentials stay on the server, and error text is redacted and capped at 256 characters. The cache uses an access-ordered LRU policy and keeps at most 4 active runtimes.
 
-Web 演示后端更接近真实应用，而不是一次性 CLI 命令。它按 `bootstrapServers + topic + groupId` 维护一个小型 runtime 缓存。每个 runtime 拥有一个管理用 `NetworkClient`、一个 `Producer`、一个 `Consumer`、Topic 就绪状态和 Consumer 订阅状态。缓存采用按访问顺序排列的 LRU 策略，当前最多保留 4 个活跃 runtime。
+Web 演示后端更接近真实应用，而不是一次性 CLI 命令。它按 `bootstrapServers + topic + groupId` 维护一个小型 runtime 缓存。每个真实流程 runtime 拥有一个 controller-aware 管理客户端、一个 `Producer`、一个 `Consumer`、Topic 就绪状态和 Consumer 订阅状态。Controller 操作使用相同的 bootstrap 自动发现，Broker-local 操作要求单个明确 Broker。凭据只保留在服务端，错误文本经过脱敏且最多 256 字符。缓存采用按访问顺序排列的 LRU 策略，最多保留 4 个活跃 runtime。
 
 Why this is needed / 为什么需要这样设计：
 
 | Concern / 关注点 | If Not Fixed / 不修复的问题 | Current Design / 当前修复方式 |
 | --- | --- | --- |
 | Concurrent produce/poll / 并发生产与消费 | Two HTTP requests sharing one Consumer could interleave `produce` and `poll`, so request A might consume request B's message. / 两个共享同一 Consumer 的 HTTP 请求可能交错执行 `produce` 和 `poll`，导致请求 A 消费到请求 B 的消息。 | `RealFlowRuntime.run` synchronizes the full create-topic, produce, poll, and commit sequence. / `RealFlowRuntime.run` 将建 Topic、生产、拉取和提交位点作为完整同步单元执行。 |
-| Stale runtime after failure / 异常后的旧 runtime | A closed or broken Netty channel could stay in cache and make every later real request fail or wait for request timeout. / 已关闭或损坏的 Netty 通道如果留在缓存里，后续真实请求可能持续失败或等待请求超时。 | Real mode evicts the failed runtime, closes it, rebuilds one replacement runtime, and retries once. / Real 模式会驱逐失败 runtime、关闭它、重建一个替代 runtime，并重试一次。 |
+| Stale runtime after failure / 异常后的旧 runtime | A closed runtime could stay in cache and make later real requests fail or wait for request timeout. / 已关闭的 runtime 如果留在缓存里，后续真实请求可能持续失败或等待请求超时。 | Real mode evicts and rebuilds only for the explicit stale-runtime signal, then retries once. Other failures evict and close the runtime but surface the original error; AUTO never converts a flow that may have written data into mock success. / Real 模式只在明确的失效状态下驱逐并重建 runtime 后重试一次。其他失败会驱逐并关闭 runtime，直接透传原始错误；AUTO 不会把可能已写入数据的流程伪装成 mock 成功。 |
 | Unbounded runtime cache / 无上限 runtime 缓存 | Repeated topic/group experiments could leak sockets, event loops, and heartbeat threads. / 反复测试不同 topic/group 可能造成 socket、EventLoop 和心跳线程持续增长。 | Runtime cache is capped at 4 entries; LRU eviction removes the eldest runtime and closes it asynchronously. / runtime 缓存上限为 4；LRU 淘汰最久未访问 runtime，并异步关闭其资源。 |
 
 The eviction path removes the runtime from the cache before cleanup. Cleanup is delegated to a single daemon executor so that closing Netty channels and heartbeat schedulers does not block the user-facing HTTP response. Application shutdown still closes all currently cached runtimes synchronously before stopping the cleanup executor.
@@ -429,19 +451,28 @@ MiniMQ uses `ErrorCode` in response headers:
 
 MiniMQ 在响应头里使用 `ErrorCode`：
 
-| Code / 错误码 | Meaning / 含义 |
-| --- | --- |
-| `NONE` | Success. / 成功。 |
-| `UNKNOWN_TOPIC` | Topic does not exist. / Topic 不存在。 |
-| `UNKNOWN_PARTITION` | Topic exists but partition does not. / Topic 存在但 Partition 不存在。 |
-| `NOT_LEADER` | Broker is not leader for the partition. / 当前 Broker 不是该分区 leader。 |
-| `INVALID_REQUEST` | Malformed request, invalid arguments, or wrong endpoint role. / 请求畸形、参数非法或端点角色错误。 |
-| `GROUP_NOT_FOUND` | Consumer group/member is missing. / 消费组或成员不存在。 |
-| `REBALANCE_IN_PROGRESS` | Reserved for future rebalance behavior. / 为未来 rebalance 行为预留。 |
-| `THROTTLED` | Broker in-flight request limit rejected the request. / Broker 并发请求限流拒绝了请求。 |
-
-| `BROKER_FENCED` | The Broker epoch or local lease is no longer valid; data-plane work must stop. / Broker epoch 或本地租约已失效，必须停止数据面工作。 |
-| `BROKER_ID_IN_USE` | The Broker ID still has a live Controller lease. / Broker ID 仍有有效的 Controller 租约。 |
+| Code | Name / 名称 | Meaning / 含义 |
+| ---: | --- | --- |
+| 0 | `NONE` | Success. / 成功。 |
+| 1 | `UNKNOWN_TOPIC` | Topic does not exist. / Topic 不存在。 |
+| 2 | `UNKNOWN_PARTITION` | Partition does not exist. / Partition 不存在。 |
+| 3 | `NOT_LEADER` | Target Broker is not the partition Leader. / 目标 Broker 不是分区 Leader。 |
+| 4 | `INVALID_REQUEST` | Malformed request or invalid arguments. / 请求畸形或参数非法。 |
+| 5 | `GROUP_NOT_FOUND` | Consumer group/member is missing. / 消费组或成员不存在。 |
+| 6 | `REBALANCE_IN_PROGRESS` | Group assignment is not stable. / 消费组分配尚未稳定。 |
+| 7 | `UNAUTHORIZED` | Credential is missing or unknown. / 凭据缺失或未知。 |
+| 8 | `MAINTENANCE_BUSY` | Destructive maintenance/storage work cannot be admitted. / 无法准入破坏性维护或存储工作。 |
+| 9 | `BROKER_FENCED` | Broker epoch or local lease is invalid. / Broker epoch 或本地租约失效。 |
+| 10 | `BROKER_ID_IN_USE` | Broker ID still has a live lease. / Broker ID 仍有有效租约。 |
+| 11 | `CONTROLLER_FENCED` | Controller identity/epoch cannot mutate state. / Controller 身份或 epoch 无权修改状态。 |
+| 12 | `NOT_CONTROLLER` | Request reached a non-Controller Broker. / 请求到达非 Controller Broker。 |
+| 13 | `STALE_LEADER_EPOCH` | Routed Leader epoch is stale. / 路由携带的 Leader epoch 已过期。 |
+| 14 | `LEADER_NOT_READY` | Promoted Leader has not completed activation. / 新 Leader 尚未完成激活。 |
+| 15 | `CONTROLLER_NOT_READY` | Controller path is temporarily unavailable. / Controller 路径暂不可用。 |
+| 16 | `THROTTLED` | Broker in-flight limit rejected the request. / Broker 并发上限拒绝请求。 |
+| 17 | `FORBIDDEN` | Credential is authenticated but lacks the required scope. / 凭据有效但缺少所需 scope。 |
+| 18 | `UNKNOWN_BROKER` | Referenced Broker does not exist. / 引用的 Broker 不存在。 |
+| 19 | `STALE_TOMBSTONE` | Topic-deletion acknowledgement uses a stale version. / Topic 删除确认使用过期版本。 |
 
 Malformed request bodies are handled inside `MqRequestHandler` so that, when the request header is valid, the broker can return `INVALID_REQUEST` with the original `correlationId`.
 
@@ -564,7 +595,34 @@ V3.3 externalizes the V3.1 in-process `BrokerRuntimeMetrics` snapshot through pr
 V3.4 adds deterministic resilience coverage instead of a broad fault-injection framework. Embedded-channel tests now verify that `STORAGE_DEGRADED` rejects produce and destructive maintenance while allowing fetch, metadata, maintenance metrics, and runtime metrics. A pre-acquired `RequestThrottler` slot verifies `THROTTLED` responses and runtime throttling counters without sleeps or high concurrency.
 
 V3.5 extends `benchmark-fetch` with `--network-transport nio|auto|epoll`. The benchmark passes the selected mode into `BrokerConfig` and prints `networkTransport=<mode>` before heap/sendfile rows, so transport comparisons are auditable without changing the benchmark's local, bounded shape.
-## 12. Design Tradeoffs / 设计取舍
+
+## 12. V4 Operator Readiness / V4 运维就绪设计
+
+V4 preserves frame version 1 and all positional layouts for keys 0-19. V3 clients therefore remain wire-compatible with a V4 Broker. A mixed V3/V4 Broker cluster is unsupported: V4 replication keys 32 and 37 are required to preserve delivery timestamps and authoritative physical/visible progress, so every Broker must be upgraded together. Metadata format 4 is likewise a cluster-wide contract.
+
+V4 保持 frame version 1 以及 API 0-19 的全部位置布局，因此 V3 客户端仍可连接 V4 Broker。但 V3/V4 Broker 混合集群不受支持：只有 V4 的 key 32 与 37 会保留 delivery timestamp 和权威物理/可见进度，所以所有 Broker 必须一起升级；metadata format 4 同样是集群级契约。
+
+Authorization is local to each Broker. `--admin-token` maps to every scope; repeated `--operator-credential token=scope,scope` entries can grant only `STATUS`, `TOPIC_ADMIN`, `MAINTENANCE`, and/or `BROKER_OFFLINE`. Authentication runs before mutation, storage access, or expensive snapshot assembly. `UNAUTHORIZED` means the credential is unknown; `FORBIDDEN` means it is known but lacks the required scope.
+
+运维鉴权配置在各 Broker 本地。`--admin-token` 映射到全部 scope；可重复使用 `--operator-credential token=scope,scope`，只授予 `STATUS`、`TOPIC_ADMIN`、`MAINTENANCE` 和/或 `BROKER_OFFLINE`。鉴权发生在元数据修改、存储访问或昂贵快照组装之前。`UNAUTHORIZED` 表示凭据未知，`FORBIDDEN` 表示凭据有效但缺少所需 scope。
+
+`FETCH_V2` and `REPLICA_FETCH_V2` encode at most 10,000 records even when many zero-payload records fit under `maxBytes`; their bounded-list `total` and `truncated` fields describe the complete read result. One immutable visibility snapshot supplies physical high watermark, visible high watermark, and next-visible time for each response. Runtime payload metrics count only successfully written key/value bytes, excluding record and frame headers.
+
+`FETCH_V2` 与 `REPLICA_FETCH_V2` 最多编码 10,000 条记录，即使大量零 payload 记录仍满足 `maxBytes`；有界列表的 `total` 与 `truncated` 描述完整读取结果。每个响应只使用一份不可变 visibility snapshot，统一提供物理 high watermark、可见 high watermark 和下次可见时间。Runtime payload metrics 只统计成功写出的 key/value 字节，不包括 record/frame framing。
+
+Retry and dead-letter targets are explicit operator-selected active Topic names. Configuration rejects self-links, missing/deleted targets, and cycles across both link types; deleting a Topic clears inbound and outbound links atomically. Producer helpers resolve only these links. Link metadata is cached for at most 30 seconds and, after a routing error, invalidated and resolved once more before the bounded retry.
+
+Retry 与 dead-letter 目标是运维人员显式选择的 active Topic 名称。配置会拒绝自关联、不存在/已删除目标，以及跨两种关联形成的环；删除 Topic 时原子清理入边和出边。Producer helper 只按这些显式 link 路由。Link metadata 最多缓存 30 秒；遇到路由错误后先失效并重新解析一次，再执行有界重试。
+
+Delayed records are required V4 behavior. WAL type 8 stores the ordinary key/value record plus `deliverAtEpochMs`. A Broker-wide `--max-scheduled-records` limit defaults to 100000; zero rejects new future records but never discards recovery or replication state. Fetch exposes only the contiguous visible prefix. Consumer sleeps for at most the smaller of time-until-due and remaining poll deadline, then checks the deadline immediately after waking. Future records protect only their containing segments from retention and compaction; after due time they follow ordinary maintenance policy.
+
+延迟消息是 V4 必需行为。WAL type 8 保存普通 key/value 记录及 `deliverAtEpochMs`。Broker-wide `--max-scheduled-records` 默认 100000；设为 0 会拒绝新的 future record，但不会丢弃恢复或复制状态。FETCH 只暴露连续可见前缀。Consumer sleep 不超过“距离到期时间”和“poll 剩余 deadline”中的较小值，唤醒后立即再次检查 deadline。Future record 只保护其所在 segment 不被 retention/compaction；到期后恢复普通维护策略。
+
+The local scripts own one run directory through `.minimq-run-directory`, record PID plus process start time, bound readiness and shutdown waits, and preserve unowned or surviving processes. Recursive cleanup is refused without the valid ownership marker. The failover demo waits until all three replicas are in ISR before stopping the initial Leader, then captures status/audit evidence and always performs owned-process cleanup.
+
+本地脚本通过 `.minimq-run-directory` 声明运行目录所有权，记录 PID 与进程启动时间，对 readiness/shutdown 设置上限，并保留非自身进程或未退出进程。没有有效 ownership marker 时拒绝递归清理。Failover demo 会等 3 个副本全部进入 ISR 后才停止初始 Leader，随后采集状态/审计证据，并始终清理自己拥有的进程。
+
+## 13. Design Tradeoffs / 设计取舍
 
 | Decision / 决策 | Benefit / 收益 | Cost / 代价 |
 | --- | --- | --- |
@@ -575,7 +633,7 @@ V3.5 extends `benchmark-fetch` with `--network-transport nio|auto|epoll`. The be
 | Synchronous client API / 同步客户端 API | Easy to use and test. / 易用且易测。 | Lower throughput than async batching. / 吞吐低于异步批量方案。 |
 | Sendfile FETCH path / sendfile FETCH 路径 | Removes payload copies on the Broker network write path. / 去掉 Broker 网络写路径上的 payload 复制。 | TLS and unsupported pipelines still use heap fallback. / TLS 与不支持的 pipeline 仍走 heap 回退。 |
 
-## 13. Professional Terms / 专业名词解释
+## 14. Professional Terms / 专业名词解释
 
 | Term / 术语 | 中文解释 | English explanation / 英文解释 |
 | --- | --- | --- |

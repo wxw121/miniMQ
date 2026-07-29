@@ -29,6 +29,14 @@ docker version
 
 Result: exit code 1. Docker client metadata was printed, but local access still failed with `WARNING: Error loading config file: open C:\Users\Wxw\.docker\config.json: Access is denied.` and `permission denied while trying to connect to the docker API at npipe:////./pipe/docker_engine`.
 
+Latest V4.0.0 recheck on 2026-07-29:
+
+```powershell
+docker info --format '{{.ServerVersion}}'
+```
+
+Five bounded checks all returned exit code 1. The first check reported that `C:\Users\Wxw\.docker\config.json` was inaccessible and `//./pipe/docker_engine` did not exist; checks 2-5 independently confirmed that the daemon pipe was absent. The `-Petcd-it` profile was not run, so the real-etcd gate remains open rather than being reported as passed.
+
 ## KI-2026-07-20-02: Failover FETCH Test Race
 
 Status: Fixed in the working tree for V3.0.1.

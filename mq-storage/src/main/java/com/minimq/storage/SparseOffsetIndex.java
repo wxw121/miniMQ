@@ -116,12 +116,26 @@ final class SparseOffsetIndex implements AutoCloseable {
         if (closed) {
             return;
         }
+        closed = true;
+        IOException failure = null;
         try {
-            channel.force(false);
-            channel.close();
-            closed = true;
+            if (channel.isOpen()) {
+                channel.force(false);
+            }
         } catch (IOException e) {
-            throw new IllegalStateException("Failed to close sparse index " + path, e);
+            failure = e;
+        }
+        try {
+            channel.close();
+        } catch (IOException e) {
+            if (failure == null) {
+                failure = e;
+            } else {
+                failure.addSuppressed(e);
+            }
+        }
+        if (failure != null) {
+            throw new IllegalStateException("Failed to close sparse index " + path, failure);
         }
     }
 

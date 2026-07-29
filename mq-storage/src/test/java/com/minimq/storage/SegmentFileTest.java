@@ -39,6 +39,8 @@ class SegmentFileTest {
         assertEquals(0, segment.size());
         assertFalse(segment.hasRecords());
         assertEquals(List.of(), segment.read(5, 0));
+        segment.truncateTo(5);
+        assertThrows(IllegalArgumentException.class, () -> segment.truncateTo(4));
 
         segment.flush();
         segment.close();
@@ -69,6 +71,44 @@ class SegmentFileTest {
             assertNull(segment.recordAt(9));
             assertNull(segment.recordAt(12));
             assertThrows(IOException.class, () -> segment.append(11, "k".getBytes(), "v".getBytes()));
+        }
+    }
+
+    @Test
+    void planReadHonorsHighWatermarkStartOffsetAndBudgetBoundaries(@TempDir Path dir) throws Exception {
+        byte[] key = "k".getBytes();
+        byte[] firstValue = "first".getBytes();
+        byte[] secondValue = "second-value".getBytes();
+        byte[] thirdValue = "third-value".getBytes();
+        try (SegmentFile segment = SegmentFile.create(
+                dir,
+                new SegmentDescriptor(0, 100),
+                new SegmentedLogConfig(1_024, 10))) {
+            segment.append(0, key, firstValue);
+            segment.append(1, key, secondValue);
+            segment.append(2, key, thirdValue);
+
+            int firstRecordBytes = PartitionLogRecordCodec.encodedSize(0, key, firstValue);
+            SegmentFile.PlannedRead zeroBudget = segment.planRead(0, 0, 10, true);
+            assertEquals(0, zeroBudget.recordCount());
+            assertNull(zeroBudget.slice());
+
+            SegmentFile.PlannedRead oversizedDisallowed =
+                    segment.planRead(0, firstRecordBytes - 1, 10, false);
+            assertEquals(0, oversizedDisallowed.recordCount());
+            assertNull(oversizedDisallowed.slice());
+
+            SegmentFile.PlannedRead boundedByHighWatermark =
+                    segment.planRead(0, 10_000, 1, true);
+            assertEquals(1, boundedByHighWatermark.recordCount());
+
+            SegmentFile.PlannedRead startsAfterIndexedFloor =
+                    segment.planRead(1, 10_000, 10, true);
+            assertEquals(2, startsAfterIndexedFloor.recordCount());
+
+            SegmentFile.PlannedRead boundedByBudget =
+                    segment.planRead(0, firstRecordBytes, 10, true);
+            assertEquals(1, boundedByBudget.recordCount());
         }
     }
 

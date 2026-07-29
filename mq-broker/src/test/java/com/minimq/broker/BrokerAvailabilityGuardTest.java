@@ -55,4 +55,18 @@ class BrokerAvailabilityGuardTest {
         assertTrue(guard.allowsProduce());
         assertTrue(guard.allowsFetch());
     }
+
+    @Test
+    void storageCleanupFenceCannotBeClearedByLeaseRecovery() {
+        BrokerAvailabilityGuard guard = new BrokerAvailabilityGuard();
+        guard.activate();
+
+        guard.fenceStorageCleanup();
+        guard.startRecovering();
+        guard.activate();
+
+        assertEquals(BrokerAvailabilityGuard.State.FENCED, guard.state());
+        assertTrue(guard.hasStickyStorageFence());
+        assertFalse(guard.allowsDataPlane());
+    }
 }

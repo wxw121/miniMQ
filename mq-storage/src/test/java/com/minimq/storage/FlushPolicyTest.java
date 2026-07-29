@@ -41,6 +41,7 @@ class FlushPolicyTest {
 
     @Test
     void rejectsInvalidPolicySettings() {
+        assertThrows(IllegalArgumentException.class, () -> new FlushPolicy(null, 0, 0));
         assertThrows(IllegalArgumentException.class, () -> FlushPolicy.everyNAppends(0));
         assertThrows(IllegalArgumentException.class, () -> FlushPolicy.intervalMs(0));
         assertThrows(IllegalArgumentException.class,

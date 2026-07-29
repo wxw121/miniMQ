@@ -86,6 +86,41 @@ class BrokerStatusServiceTest {
         assertTrue(response.partitions().items().get(0).frozen());
     }
 
+    @Test
+    void statusSortsReplicaAndIsrListsWithoutMutatingControllerOrder() {
+        BrokerConfig config = config();
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        controller.registerBroker(new RegisterBrokerRequest(0, "broker-0", 9092));
+        controller.registerBroker(new RegisterBrokerRequest(1, "broker-1", 9093));
+        controller.registerBroker(new RegisterBrokerRequest(2, "broker-2", 9094));
+        assertEquals(
+                ErrorCode.NONE,
+                controller.createTopic(new CreateTopicRequest("orders", 1, 3)));
+        controller.updateMetadata(metadata -> {
+            var partition = metadata.topics.get("orders").partitions.get(0);
+            partition.replicaBrokerIds = new java.util.ArrayList<>(List.of(2, 0, 1));
+            partition.isrBrokerIds = new java.util.ArrayList<>(List.of(1, 2, 0));
+            return null;
+        });
+
+        BrokerStatusService service = new BrokerStatusService(
+                config, controller, new BrokerAvailabilityGuard(), () -> 123_456L);
+        var before = controller.snapshot().topics.get("orders").partitions.get(0);
+        List<Integer> controllerReplicas = List.copyOf(before.replicaBrokerIds);
+        List<Integer> controllerIsr = List.copyOf(before.isrBrokerIds);
+
+        var partition = service.status(10, 10).partitions().items().get(0);
+
+        assertEquals(List.of(0, 1, 2), partition.replicaIds().items());
+        assertEquals(List.of(0, 1, 2), partition.isrIds().items());
+        assertEquals(
+                controllerReplicas,
+                controller.snapshot().topics.get("orders").partitions.get(0).replicaBrokerIds);
+        assertEquals(
+                controllerIsr,
+                controller.snapshot().topics.get("orders").partitions.get(0).isrBrokerIds);
+    }
+
     private BrokerConfig config() {
         return new BrokerConfig(
                 0, "127.0.0.1", 9092, tempDir, true, "127.0.0.1", 9092, false,

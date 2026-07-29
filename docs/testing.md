@@ -48,43 +48,43 @@ mvn -q -pl mq-protocol -am -Dtest=ProtocolSerdesTest test -gs .mvn/settings.xml 
 
 ## 4. Current Quality Baseline / 当前质量基线
 
-Latest verified command / 最近验证过的命令：
+Latest release-gate command / 最新发布门禁命令：
 
 ```powershell
 mvn clean verify -gs .mvn/settings.xml -s .mvn/settings.xml
 ```
 
-Latest result / 最近结果：
+Latest V4.0.0 result / 最新 V4.0.0 结果：
 
 | Metric / 指标 | Value / 数值 |
 | --- | ---: |
-| Tests run / 测试总数 | 323 |
+| Tests run / 测试总数 | 712 |
 | Failures / 失败数 | 0 |
 | Errors / 错误数 | 0 |
 | Skipped / 跳过数 | 0 |
-| Overall line coverage / 总体行覆盖率 | 91.62% |
-| Overall instruction coverage / 总体指令覆盖率 | 92.93% |
-| Overall branch coverage / 总体分支覆盖率 | 81.04% |
-| Overall method coverage / 总体方法覆盖率 | 96.96% |
-| Overall class coverage / 总体类覆盖率 | 100.00% |
+| Overall line coverage / 总体行覆盖率 | 91.17% (`10999 / 12064`) |
+| Overall instruction coverage / 总体指令覆盖率 | 92.01% (`50235 / 54598`) |
+| Overall branch coverage / 总体分支覆盖率 | 78.72% (`4061 / 5159`) |
+| Overall method coverage / 总体方法覆盖率 | 94.84% (`1819 / 1918`) |
+| Overall class coverage / 总体类覆盖率 | 99.34% (`303 / 305`) |
 
 ## 5. Coverage By Module / 模块覆盖率
 
 | Module / 模块 | Instruction / 指令 | Branch / 分支 | Line / 行 | Method / 方法 | Class / 类 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `mq-broker` | 93.80% | 80.02% | 92.11% | 98.67% | 100.00% |
-| `mq-client` | 92.40% | 78.57% | 90.20% | 92.86% | 100.00% |
-| `mq-common` | 96.96% | 84.38% | 97.90% | 100.00% | 100.00% |
-| `mq-demo` | 96.27% | 77.06% | 94.07% | 96.43% | 100.00% |
-| `mq-protocol` | 93.66% | 83.24% | 92.29% | 94.00% | 100.00% |
-| `mq-storage` | 90.52% | 82.46% | 90.03% | 97.37% | 100.00% |
+| `mq-broker` | 90.92% | 76.81% | 90.09% | 94.08% | 98.97% |
+| `mq-client` | 90.77% | 74.86% | 90.36% | 94.12% | 100.00% |
+| `mq-common` | 97.92% | 92.96% | 98.40% | 100.00% | 100.00% |
+| `mq-demo` | 94.93% | 77.30% | 92.86% | 93.85% | 100.00% |
+| `mq-protocol` | 94.97% | 81.70% | 94.92% | 94.27% | 100.00% |
+| `mq-storage` | 90.87% | 81.54% | 90.04% | 97.29% | 98.00% |
 
 ```mermaid
 xychart-beta
     title "Line Coverage By Module / 模块行覆盖率"
     x-axis ["broker/代理", "client/客户端", "common/公共", "demo/演示", "protocol/协议", "storage/存储"]
     y-axis "Line % / 行覆盖率 %" 0 --> 100
-    bar [92.11, 90.20, 97.90, 94.07, 92.29, 90.03]
+    bar [90.09, 90.36, 98.40, 92.86, 94.92, 90.04]
 ```
 
 ```mermaid
@@ -92,15 +92,15 @@ xychart-beta
     title "Overall Coverage / 总体覆盖率"
     x-axis ["Instruction/指令", "Branch/分支", "Line/行", "Method/方法", "Class/类"]
     y-axis "Coverage % / 覆盖率 %" 0 --> 100
-    bar [92.93, 81.04, 91.62, 96.96, 100.00]
+    bar [92.01, 78.72, 91.17, 94.84, 99.34]
 ```
 
 
 ## 6. Key Flow Test Evidence / 关键流程测试结果截图
 
-The numeric baseline above and the closeout report are the source of truth for the latest verified Surefire and JaCoCo results. The screenshots below remain visual aids for the core flows, so a new reader can inspect the main testing shape without opening every `target` report directory.
+The [V4.0.0 closeout report](test-report-2026-07-22-v4.0.0-operator-readiness.md) is the source of truth for the latest verified Surefire and JaCoCo results. The screenshots below remain historical visual aids for the core flows, so a new reader can inspect the main testing shape without opening every `target` report directory.
 
-上面的数字基线与收口报告是最近一次通过验证的 Surefire 与 JaCoCo 结果来源。下面截图保留为核心流程的可视化辅助，新读者无需逐个打开 `target` 报告目录，也能快速看到关键测试形态。
+最终 [V4.0.0 收口报告](test-report-2026-07-22-v4.0.0-operator-readiness.md) 是最新 Surefire 与 JaCoCo 结果的事实来源。下面截图保留为核心流程的历史可视化辅助，新读者无需逐个打开 `target` 报告目录，也能快速看到关键测试形态。
 
 ### 6.1 Full Build Verification / 完整构建验证
 
@@ -175,7 +175,7 @@ The numeric baseline above and the closeout report are the source of truth for t
 | `mq-demo` | `DemoCliTest` | Component/Integration / 组件/集成测试 | Single-broker/token validation, unauthorized responses, maintenance/runtime metrics CLI output, and real TCP enabled retention/compaction output alongside create/produce/consume. / 单 Broker/令牌校验、未授权响应、维护/运行时指标 CLI 输出，以及真实 TCP 下启用 retention/compaction 的输出和创建/生产/消费链路。 |
 | `mq-demo` | `FetchBenchmarkTest` | Unit / 单元测试 | Benchmark argument parsing, network transport selector parsing, output rendering, and latency percentile summarization. / 基准参数解析、网络传输选择解析、输出渲染与延迟百分位汇总。 |
 | `mq-demo` | `MiniMqE2ETest` | E2E / 端到端测试 | Three-broker cluster with two consumers. / 三节点 Broker 集群与两个 Consumer。 |
-| `mq-demo` | `MiniMqWebAppTest` | Web integration / Web 集成测试 | Static assets, real Web flow, mock fallback, HTTP errors, runtime reuse, concurrent request isolation, stale runtime rebuild, and LRU runtime eviction. / 静态资源、真实 Web 主流程、mock fallback、HTTP 错误、runtime 复用、并发请求隔离、旧 runtime 重建和 LRU runtime 淘汰。 |
+| `mq-demo` | `MiniMqWebAppTest` | Web integration / Web 集成测试 | Static assets, real Web flow, pre-side-effect mock fallback, HTTP errors, runtime reuse, concurrent request isolation, stale-runtime rebuild, post-side-effect error propagation, and LRU runtime eviction. / 静态资源、真实 Web 主流程、写入副作用前的 mock fallback、HTTP 错误、runtime 复用、并发请求隔离、旧 runtime 重建、写入副作用后的错误透传和 LRU runtime 淘汰。 |
 
 ### 7.1 V2.0 Storage Recovery Closeout / V2.0 存储恢复收口
 
@@ -277,7 +277,7 @@ Web 后端已为当前版本修复的三个 runtime 风险补充专门回归测�
 | Test / 测试 | Why It Exists / 为什么要测 | Verified Behavior / 验证行为 |
 | --- | --- | --- |
 | `isolatesConcurrentRealFlowRequestsOnSharedRuntime` | A shared Consumer can otherwise let two simultaneous requests consume each other's messages. / 共享 Consumer 否则可能让两个并发请求消费到对方消息。 | Two concurrent real-mode requests on the same runtime each receive their own `consumedValue`. / 同一 runtime 上两个并发 real 请求分别拿到自己的 `consumedValue`。 |
-| `rebuildsCachedRuntimeAfterRuntimeFailure` | A closed runtime used to stay cached and could make later requests timeout. / 已关闭 runtime 曾可能继续留在缓存里，导致后续请求超时。 | Closing the cached runtime causes the next real request to evict, rebuild, retry, and still return `mode=real`. / 关闭缓存 runtime 后，下一次真实请求会驱逐、重建、重试，并仍返回 `mode=real`。 |
+| `rebuildsCachedRuntimeAfterRuntimeFailure` | A closed runtime used to stay cached and could make later requests timeout. / 已关闭 runtime 曾可能继续留在缓存里，导致后续请求超时。 | Closing the cached runtime causes the next real request to evict, rebuild, retry, and still return `mode=real`; ordinary failures are surfaced after eviction instead of being retried blindly. / 关闭缓存 runtime 后，下一次真实请求会驱逐、重建、重试，并仍返回 `mode=real`；普通失败会在驱逐后直接透传，而不会盲目重试。 |
 | `evictsRuntimeCacheWhenLimitIsExceeded` | Runtime cache without a cap can leak connections and heartbeat threads during exploratory Web testing. / 无上限 runtime 缓存在探索式 Web 测试中会泄露连接和心跳线程。 | Creating more than 4 distinct runtimes keeps `runtimeCount()` at the configured cap. / 创建超过 4 个不同 runtime 后，`runtimeCount()` 保持在配置上限。 |
 
 Latest focused verification command / 最近一次聚焦验证命令：
@@ -326,9 +326,9 @@ The current agreed gate is:
 Per-module line coverage >= 90% for modules covered by JaCoCo check / 接入 JaCoCo check 的模块行覆盖率均 >= 90%
 ```
 
-The project currently satisfies this gate at 91.62% overall line coverage, with JaCoCo `check` bound to Maven `verify`. Blocking process entrypoints (`BrokerMain`, `MiniMqWebMain`, and `MiniMqWebDevMain`) are excluded from the report and gate because their behavior is covered indirectly through CLI, broker integration, and Web launcher tests.
+JaCoCo `check` is bound to Maven `verify`. The 2026-07-29 V4.0.0 release run passed with every module above the 90% line rule and 91.17% overall line coverage. Blocking process entrypoints (`BrokerMain`, `MiniMqWebMain`, and `MiniMqWebDevMain`) are excluded from the report and gate because their behavior is covered indirectly through CLI, broker integration, and Web launcher tests.
 
-项目当前总体行覆盖率为 91.62%，并且 JaCoCo `check` 已绑定到 Maven `verify`。阻塞式进程入口（`BrokerMain`、`MiniMqWebMain`、`MiniMqWebDevMain`）的行为已通过 CLI、Broker 集成测试和 Web 启动器测试间接覆盖，因此从报告和门禁统计中排除。
+JaCoCo `check` 已绑定到 Maven `verify`。2026-07-29 的 V4.0.0 发布验证中，每个模块均超过 90% 行覆盖率，总体行覆盖率为 91.17%。阻塞式进程入口（`BrokerMain`、`MiniMqWebMain`、`MiniMqWebDevMain`）的行为已通过 CLI、Broker 集成测试和 Web 启动器测试间接覆盖，因此从报告和门禁统计中排除。
 
 ## 10. Slow Tests / 慢测试说明
 

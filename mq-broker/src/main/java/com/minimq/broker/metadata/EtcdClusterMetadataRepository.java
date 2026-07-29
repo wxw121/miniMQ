@@ -14,7 +14,9 @@ import io.etcd.jetcd.options.PutOption;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 /** Leader-fenced, revision-CAS cluster metadata stored in etcd. */
 public final class EtcdClusterMetadataRepository implements ClusterMetadataRepository {
@@ -47,14 +49,26 @@ public final class EtcdClusterMetadataRepository implements ClusterMetadataRepos
 
     @Override
     public VersionedClusterMetadata read() {
+        return read(OPERATION_TIMEOUT);
+    }
+
+    @Override
+    public VersionedClusterMetadata read(Duration timeout) {
+        return readUntil(deadlineNanos(timeout));
+    }
+
+    private VersionedClusterMetadata readUntil(long deadlineNanos) {
         try {
-            List<KeyValue> values = await(kv.get(snapshotKey)).getKvs();
+            List<KeyValue> values = await(() -> kv.get(snapshotKey), deadlineNanos).getKvs();
             if (values.isEmpty()) {
                 return new VersionedClusterMetadata(new ClusterMetadata(), 0);
             }
             KeyValue value = values.get(0);
+            ClusterMetadata metadata = mapper.readValue(
+                    value.getValue().getBytes(), ClusterMetadata.class);
+            MetadataStore.migrateAndValidate(metadata);
             return new VersionedClusterMetadata(
-                    mapper.readValue(value.getValue().getBytes(), ClusterMetadata.class),
+                    metadata,
                     value.getModRevision());
         } catch (Exception e) {
             throw new IllegalStateException("failed to read cluster metadata from etcd", e);
@@ -63,15 +77,30 @@ public final class EtcdClusterMetadataRepository implements ClusterMetadataRepos
 
     @Override
     public UpdateResult initialize(ClusterMetadata metadata) {
+        return initialize(metadata, OPERATION_TIMEOUT);
+    }
+
+    @Override
+    public UpdateResult initialize(ClusterMetadata metadata, Duration timeout) {
+        long deadlineNanos = deadlineNanos(timeout);
         ClusterMetadata candidate = copy(metadata);
         candidate.metadataVersion = 0;
         try {
-            boolean written = await(kv.txn()
-                    .If(leaderComparison(),
-                            new Cmp(snapshotKey, Cmp.Op.EQUAL, CmpTarget.createRevision(0)))
-                    .Then(Op.put(snapshotKey, ByteSequence.from(mapper.writeValueAsBytes(candidate)), PutOption.DEFAULT))
-                    .commit()).isSucceeded();
-            VersionedClusterMetadata current = read();
+            byte[] serialized = mapper.writeValueAsBytes(candidate);
+            boolean written = await(
+                    () -> kv.txn()
+                            .If(leaderComparison(),
+                                    new Cmp(
+                                            snapshotKey,
+                                            Cmp.Op.EQUAL,
+                                            CmpTarget.createRevision(0)))
+                            .Then(Op.put(
+                                    snapshotKey,
+                                    ByteSequence.from(serialized),
+                                    PutOption.DEFAULT))
+                            .commit(),
+                    deadlineNanos).isSucceeded();
+            VersionedClusterMetadata current = readUntil(deadlineNanos);
             if (written || mapper.valueToTree(candidate).equals(mapper.valueToTree(current.metadata()))) {
                 return new UpdateResult(ErrorCode.NONE, current);
             }
@@ -83,19 +112,35 @@ public final class EtcdClusterMetadataRepository implements ClusterMetadataRepos
 
     @Override
     public UpdateResult compareAndSet(long expectedRevision, ClusterMetadata metadata) {
-        VersionedClusterMetadata current = read();
+        return compareAndSet(expectedRevision, metadata, OPERATION_TIMEOUT);
+    }
+
+    @Override
+    public UpdateResult compareAndSet(
+            long expectedRevision, ClusterMetadata metadata, Duration timeout) {
+        long deadlineNanos = deadlineNanos(timeout);
+        VersionedClusterMetadata current = readUntil(deadlineNanos);
         if (current.revision() != expectedRevision) {
             return new UpdateResult(ErrorCode.CONTROLLER_FENCED, current);
         }
         ClusterMetadata candidate = copy(metadata);
         candidate.metadataVersion = Math.addExact(current.metadata().metadataVersion, 1);
         try {
-            boolean written = await(kv.txn()
-                    .If(leaderComparison(),
-                            new Cmp(snapshotKey, Cmp.Op.EQUAL, CmpTarget.modRevision(expectedRevision)))
-                    .Then(Op.put(snapshotKey, ByteSequence.from(mapper.writeValueAsBytes(candidate)), PutOption.DEFAULT))
-                    .commit()).isSucceeded();
-            VersionedClusterMetadata result = read();
+            byte[] serialized = mapper.writeValueAsBytes(candidate);
+            boolean written = await(
+                    () -> kv.txn()
+                            .If(leaderComparison(),
+                                    new Cmp(
+                                            snapshotKey,
+                                            Cmp.Op.EQUAL,
+                                            CmpTarget.modRevision(expectedRevision)))
+                            .Then(Op.put(
+                                    snapshotKey,
+                                    ByteSequence.from(serialized),
+                                    PutOption.DEFAULT))
+                            .commit(),
+                    deadlineNanos).isSucceeded();
+            VersionedClusterMetadata result = readUntil(deadlineNanos);
             return new UpdateResult(written ? ErrorCode.NONE : ErrorCode.CONTROLLER_FENCED, result);
         } catch (Exception e) {
             throw new IllegalStateException("failed to CAS cluster metadata", e);
@@ -110,16 +155,48 @@ public final class EtcdClusterMetadataRepository implements ClusterMetadataRepos
         if (metadata == null) {
             throw new IllegalArgumentException("metadata must not be null");
         }
-        return mapper.convertValue(metadata, ClusterMetadata.class);
+        ClusterMetadata copy = mapper.convertValue(metadata, ClusterMetadata.class);
+        try {
+            MetadataStore.migrateAndValidate(copy);
+        } catch (java.io.IOException invalidMetadata) {
+            throw new IllegalArgumentException("invalid cluster metadata", invalidMetadata);
+        }
+        return copy;
     }
 
     private static ByteSequence bytes(String value) {
         return ByteSequence.from(value, StandardCharsets.UTF_8);
     }
 
-    private static <T> T await(java.util.concurrent.CompletableFuture<T> future) {
+    private static long deadlineNanos(Duration timeout) {
+        if (timeout == null || timeout.isZero() || timeout.isNegative()) {
+            throw new IllegalArgumentException("timeout must be positive");
+        }
+        Duration bounded = timeout.compareTo(OPERATION_TIMEOUT) > 0
+                ? OPERATION_TIMEOUT : timeout;
+        long now = System.nanoTime();
+        long budgetNanos = bounded.toNanos();
+        return now > Long.MAX_VALUE - budgetNanos
+                ? Long.MAX_VALUE : now + budgetNanos;
+    }
+
+    private static <T> T await(
+            Supplier<CompletableFuture<T>> operation, long deadlineNanos) {
         try {
-            return future.get(OPERATION_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+            long remainingNanos = deadlineNanos - System.nanoTime();
+            if (remainingNanos <= 0L) {
+                throw new java.util.concurrent.TimeoutException("etcd operation budget exhausted");
+            }
+            CompletableFuture<T> future = operation.get();
+            remainingNanos = deadlineNanos - System.nanoTime();
+            if (remainingNanos <= 0L) {
+                future.cancel(true);
+                throw new java.util.concurrent.TimeoutException("etcd operation budget exhausted");
+            }
+            return future.get(remainingNanos, TimeUnit.NANOSECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("etcd operation interrupted", interrupted);
         } catch (Exception e) {
             throw new IllegalStateException("etcd operation failed", e);
         }

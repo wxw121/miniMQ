@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.minimq.common.error.ErrorCode;
+import com.minimq.common.validation.TopicNames;
 
 import java.io.IOException;
 import java.nio.channels.FileChannel;
@@ -12,7 +13,10 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.format.DateTimeFormatter;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * 元数据文件存储器，负责把 ClusterMetadata 序列化到本地 JSON 文件并在启动时加载。
@@ -49,7 +53,7 @@ public class MetadataStore implements ClusterMetadataRepository {
             validateDocument(root);
             migrateOrValidateFormat((ObjectNode) root);
             ClusterMetadata metadata = mapper.treeToValue(root, ClusterMetadata.class);
-            validate(metadata);
+            migrateAndValidate(metadata);
             return metadata;
         } catch (IOException e) {
             if (recoverCorruptMetadata) {
@@ -65,8 +69,7 @@ public class MetadataStore implements ClusterMetadataRepository {
 
     public synchronized void save(ClusterMetadata metadata) {
         try {
-            normalizeMetadata(metadata);
-            validate(metadata);
+            migrateAndValidate(metadata);
             Path parent = metadataFile.getParent();
             if (parent != null) {
                 Files.createDirectories(parent);
@@ -94,6 +97,14 @@ public class MetadataStore implements ClusterMetadataRepository {
     }
 
     @Override
+    public synchronized VersionedClusterMetadata read(Duration timeout) {
+        requirePositiveTimeout(timeout);
+        // Local file operations have no interruptible remote stage; validation still
+        // makes the caller's deadline contract explicit at this boundary.
+        return read();
+    }
+
+    @Override
     public synchronized UpdateResult initialize(ClusterMetadata metadata) {
         ClusterMetadata candidate = mapper.convertValue(metadata, ClusterMetadata.class);
         candidate.metadataVersion = 0L;
@@ -110,6 +121,12 @@ public class MetadataStore implements ClusterMetadataRepository {
     }
 
     @Override
+    public synchronized UpdateResult initialize(ClusterMetadata metadata, Duration timeout) {
+        requirePositiveTimeout(timeout);
+        return initialize(metadata);
+    }
+
+    @Override
     public synchronized UpdateResult compareAndSet(long expectedRevision, ClusterMetadata metadata) {
         VersionedClusterMetadata current = read();
         if (current.revision() != expectedRevision) {
@@ -121,7 +138,20 @@ public class MetadataStore implements ClusterMetadataRepository {
         return new UpdateResult(ErrorCode.NONE, new VersionedClusterMetadata(next, next.metadataVersion));
     }
 
-    private void validate(ClusterMetadata metadata) throws IOException {
+    @Override
+    public synchronized UpdateResult compareAndSet(
+            long expectedRevision, ClusterMetadata metadata, Duration timeout) {
+        requirePositiveTimeout(timeout);
+        return compareAndSet(expectedRevision, metadata);
+    }
+
+    private static void requirePositiveTimeout(Duration timeout) {
+        if (timeout == null || timeout.isZero() || timeout.isNegative()) {
+            throw new IllegalArgumentException("timeout must be positive");
+        }
+    }
+
+    private static void validate(ClusterMetadata metadata) throws IOException {
         if (metadata == null) {
             throw new IOException("Metadata document is null");
         }
@@ -159,17 +189,25 @@ public class MetadataStore implements ClusterMetadataRepository {
                         + " has invalid brokerEpoch " + broker.brokerEpoch);
             }
         }
+        Map<String, String> topicStorageIdentities = new HashMap<>();
         for (var entry : metadata.topics.entrySet()) {
             String topicName = entry.getKey();
             ClusterMetadata.TopicEntry topic = entry.getValue();
             if (topicName == null || topicName.isBlank()) {
                 throw new IOException("Metadata topic key is blank");
             }
+            if (!TopicNames.isValidReference(topicName)) {
+                throw new IOException("Metadata topic key is invalid");
+            }
+            registerTopicStorageIdentity(topicStorageIdentities, topicName);
             if (topic == null) {
                 throw new IOException("Metadata topic " + topicName + " is null");
             }
             if (topic.topicName == null || topic.topicName.isBlank()) {
                 throw new IOException("Metadata topic key " + topicName + " has blank topicName");
+            }
+            if (!TopicNames.isValidReference(topic.topicName)) {
+                throw new IOException("Metadata topic key " + topicName + " has invalid topicName");
             }
             if (!topicName.equals(topic.topicName)) {
                 throw new IOException("Metadata topic key " + topicName
@@ -244,8 +282,18 @@ public class MetadataStore implements ClusterMetadataRepository {
             if (topicName == null || topicName.isBlank()) {
                 throw new IOException("Metadata tombstone key is blank");
             }
+            if (!TopicNames.isValidReference(topicName)) {
+                throw new IOException("Metadata tombstone key is invalid");
+            }
+            registerTopicStorageIdentity(topicStorageIdentities, topicName);
             if (tombstone == null) {
                 throw new IOException("Metadata tombstone " + topicName + " is null");
+            }
+            if (tombstone.topicName == null || tombstone.topicName.isBlank()) {
+                throw new IOException("Metadata tombstone key " + topicName + " has blank topicName");
+            }
+            if (!TopicNames.isValidReference(tombstone.topicName)) {
+                throw new IOException("Metadata tombstone key " + topicName + " has invalid topicName");
             }
             if (!topicName.equals(tombstone.topicName)) {
                 throw new IOException("Metadata tombstone key " + topicName
@@ -299,6 +347,9 @@ public class MetadataStore implements ClusterMetadataRepository {
             }
             if (group.topicName == null || group.topicName.isBlank()) {
                 throw new IOException("Metadata consumer group " + groupId + " has blank topicName");
+            }
+            if (!TopicNames.isValidReference(group.topicName)) {
+                throw new IOException("Metadata consumer group " + groupId + " has invalid topicName");
             }
             if (group.generationId < 0) {
                 throw new IOException("Metadata consumer group " + groupId
@@ -463,7 +514,7 @@ public class MetadataStore implements ClusterMetadataRepository {
         });
     }
 
-    private void normalizeMetadata(ClusterMetadata metadata) throws IOException {
+    static void migrateAndNormalize(ClusterMetadata metadata) throws IOException {
         if (metadata == null) {
             return;
         }
@@ -516,13 +567,18 @@ public class MetadataStore implements ClusterMetadataRepository {
         }
     }
 
+    static void migrateAndValidate(ClusterMetadata metadata) throws IOException {
+        migrateAndNormalize(metadata);
+        validate(metadata);
+    }
+
     private static void putIfMissing(ObjectNode object, String fieldName, long value) {
         if (!object.has(fieldName)) {
             object.put(fieldName, value);
         }
     }
 
-    private void validateReliabilityLinks(
+    private static void validateReliabilityLinks(
             ClusterMetadata metadata, java.util.Map<String, String> links, String linkType)
             throws IOException {
         for (var entry : links.entrySet()) {
@@ -531,13 +587,27 @@ public class MetadataStore implements ClusterMetadataRepository {
             if (source == null || source.isBlank() || target == null || target.isBlank()) {
                 throw new IOException("Metadata " + linkType + " link has blank source or target");
             }
+            if (!TopicNames.isValidReference(source)
+                    || !TopicNames.isValidReference(target)) {
+                throw new IOException("Metadata " + linkType + " link has invalid source or target");
+            }
             if (!metadata.topics.containsKey(source) || !metadata.topics.containsKey(target)) {
                 throw new IOException("Metadata " + linkType + " link references inactive topic");
             }
         }
     }
 
-    private void validateReplicaProgress(
+    private static void registerTopicStorageIdentity(
+            Map<String, String> identities, String topicName) throws IOException {
+        String identity = TopicNames.portableStorageIdentity(topicName);
+        String existing = identities.putIfAbsent(identity, topicName);
+        if (existing != null && !existing.equals(topicName)) {
+            throw new IOException("Metadata topics '" + existing + "' and '" + topicName
+                    + "' share the same portable storage identity");
+        }
+    }
+
+    private static void validateReplicaProgress(
             String topicName, Integer brokerId, ClusterMetadata.ReplicaProgressEntry progress) throws IOException {
         if (progress.physicalLogEndOffset < 0
                 || progress.visibleLogEndOffset < -1
@@ -570,7 +640,7 @@ public class MetadataStore implements ClusterMetadataRepository {
         }
     }
 
-    private void validateWatermarkSnapshot(
+    private static void validateWatermarkSnapshot(
             String topicName, ClusterMetadata.WatermarkSnapshot watermark) throws IOException {
         if (watermark.physicalHighWatermark < -1
                 || watermark.visibleHighWatermark < -1

@@ -6,7 +6,7 @@ This roadmap summarizes the completed baseline, the current V4 Operator Readines
 
 ## 1. Current State
 
-MiniMQ has completed the V4 Operator Readiness implementation snapshot on top of the V3.0.0 Controller HA baseline and V3.3-V3.5 production-hardening work.
+MiniMQ 4.0.0 has completed the V4 Operator Readiness implementation snapshot on top of the V3.0.0 Controller HA baseline and V3.3-V3.5 production-hardening work.
 
 Current implemented capabilities include:
 
@@ -21,7 +21,8 @@ Current implemented capabilities include:
 - V4 operator-readiness APIs for ops status, group status, topic admin, failover audit, auth status, reliability links, metadata V2, metrics V2, and replica-state V2 reporting.
 - Retry and dead-letter links are explicit topic metadata; delayed retry produce uses PRODUCE_V2 with deliverAtEpochMs.
 - Scheduled delayed records are bounded by --max-scheduled-records with default 100000; setting it to 0 disables admission of new future delayed records.
-- CLI and Web demo flows for local produce/consume validation.
+- CLI and Web operator flows for status, group lag, Topic administration, audit, auth, runtime metrics, reliability routing, delayed produce, and the existing produce/consume validation.
+- Bounded three-Broker start/stop/failover scripts with PID/start-time ownership, readiness deadlines, marker-protected recursive cleanup, and full-ISR failover preconditions.
 
 ## 2. Remaining Gate
 
@@ -55,6 +56,10 @@ Authoritative planning documents:
 | Metrics | RUNTIME_METRICS_V2 adds bounded throughput, bytes in/out, latency, throttling, and lag snapshots without replacing key 19 compatibility. |
 | Permissions | Admin-token compatibility is preserved while scoped operator credentials authorize V4 operator APIs. |
 | Reliability extensions | Retry-topic and dead-letter-topic links are explicit metadata; delayed messages are implemented through PRODUCE_V2, WAL type 8, visible-prefix reads, and bounded Consumer waits. |
+| Compatibility | V3 clients remain compatible with unchanged key 0-19 layouts; mixed V3/V4 Broker clusters are unsupported. |
+
+Topic deletion is a durable `DELETING -> DELETED` workflow. Deleted names remain reserved and cannot
+be recreated. Retry/DLQ targets are operator-selected names rather than inferred naming conventions.
 
 ### V4.0 Non-Goals
 

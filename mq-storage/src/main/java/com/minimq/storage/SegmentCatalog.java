@@ -24,7 +24,6 @@ public record SegmentCatalog(
         if (segments == null || segments.isEmpty()) {
             throw new IllegalArgumentException("segment catalog segments are required");
         }
-        segments = List.copyOf(segments);
         long previousBaseOffset = -1;
         for (SegmentDescriptor segment : segments) {
             if (segment == null) {
@@ -35,6 +34,7 @@ public record SegmentCatalog(
             }
             previousBaseOffset = segment.baseOffset();
         }
+        segments = List.copyOf(segments);
         if (logStartOffset > segments.get(0).baseOffset()) {
             throw new IllegalArgumentException("segment catalog logStartOffset exceeds first segment base");
         }

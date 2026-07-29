@@ -54,6 +54,10 @@ public class PartitionManager {
         return logManager.nextVisibleAtEpochMs(topic, partitionId);
     }
 
+    public LogManager.VisibilitySnapshot visibilitySnapshot(String topic, int partitionId) {
+        return logManager.visibilitySnapshot(topic, partitionId);
+    }
+
     public long deliveryAtEpochMs(String topic, int partitionId, long offset) {
         return logManager.deliveryAtEpochMs(topic, partitionId, offset);
     }

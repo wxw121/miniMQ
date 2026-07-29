@@ -40,18 +40,12 @@ Generated files such as `target/` and `mq-demo/dependency-reduced-pom.xml` are i
 mvn -q -gs .mvn/settings.xml -s .mvn/settings.xml verify
 ```
 
-Expected baseline / 预期基线：
+Expected baseline / 预期基线：the command should finish with zero failures and satisfy the
+JaCoCo 90% per-module line coverage gate. Use [testing.md](testing.md) and the
+[V4.0.0 closeout report](test-report-2026-07-22-v4.0.0-operator-readiness.md) as the source of truth
+for exact test counts and coverage; do not rely on older V2/V3 counts when reviewing the V4 working tree.
 
-| Metric / 指标 | Current baseline / 当前基线 |
-| --- | ---: |
-| Tests / 测试数 | 144 |
-| Failures / 失败 | 0 |
-| Errors / 错误 | 0 |
-| Skipped / 跳过 | 0 |
-| Overall line coverage / 总体行覆盖率 | 91.91% |
-
-The latest V2.0 storage recovery closeout report is in [test-report-2026-07-10-v2-storage.md](test-report-2026-07-10-v2-storage.md).
-最新 V2.0 存储恢复收口报告见 [test-report-2026-07-10-v2-storage.md](test-report-2026-07-10-v2-storage.md)。
+预期基线：命令应以 0 failures / 0 errors 结束，并满足 JaCoCo 每模块 90% 行覆盖率门槛。精确测试数与覆盖率以 [testing.md](testing.md) 和 [V4.0.0 收口报告](test-report-2026-07-22-v4.0.0-operator-readiness.md) 为准；审查 V4 工作树时不要沿用旧 V2/V3 数字。
 
 ### 2.2 Slow Integration Tests / 集成测试较慢
 
@@ -141,6 +135,6 @@ When changing protocol, storage, metadata, CLI, or test behavior, update the cor
 | --- | --- |
 | Protocol fields / 协议字段 | [design.md](design.md), [testing.md](testing.md) |
 | Topic or routing / Topic 或路由 | [architecture.md](architecture.md), [design.md](design.md) |
-| Test count or coverage / 测试数或覆盖率 | [testing.md](testing.md), [test-report-2026-07-09.md](test-report-2026-07-09.md) |
+| Test count or coverage / 测试数或覆盖率 | [testing.md](testing.md), [test-report-2026-07-22-v4.0.0-operator-readiness.md](test-report-2026-07-22-v4.0.0-operator-readiness.md) |
 | CLI behavior / CLI 行为 | Root [README.md](../README.md), [docs/README.md](README.md) |
 | Roadmap items / 路线图事项 | [roadmap.md](roadmap.md) |

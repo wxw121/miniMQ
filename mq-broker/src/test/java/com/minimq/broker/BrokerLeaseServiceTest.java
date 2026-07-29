@@ -10,8 +10,15 @@ import com.minimq.protocol.message.MqResponseHeader;
 import com.minimq.protocol.message.ProtocolMessages.BrokerMetadata;
 import com.minimq.protocol.message.ProtocolMessages.BrokerHeartbeatRequest;
 import com.minimq.protocol.message.ProtocolMessages.MetadataResponse;
+import com.minimq.protocol.message.ProtocolMessages.MetadataV2Request;
+import com.minimq.protocol.message.ProtocolMessages.MetadataV2Response;
+import com.minimq.protocol.message.ProtocolMessages.OpsBrokerInfo;
 import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
 import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerResponse;
+import com.minimq.protocol.message.ProtocolMessages.TopicTombstoneInfo;
+import com.minimq.protocol.message.ProtocolMessages.TopicTombstoneSummary;
+import com.minimq.protocol.message.ProtocolMessages.TopicMetadata;
+import com.minimq.protocol.message.ProtocolMessages.V4BoundedList;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
@@ -30,9 +37,11 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -155,6 +164,163 @@ class BrokerLeaseServiceTest {
     }
 
     @Test
+    void legacyInitializationInstallsV2TombstonesBeforeActivation() throws Exception {
+        AtomicLong now = new AtomicLong();
+        FakeControllerClient fake = new FakeControllerClient();
+        fake.nextMetadata = new MetadataResponse(
+                List.of(new BrokerMetadata(1, "127.0.0.1", 19093)),
+                List.of(),
+                null,
+                9L);
+        TopicTombstoneSummary tombstone = new TopicTombstoneSummary(
+                "orders",
+                new TopicTombstoneInfo(
+                        "DELETING",
+                        8L,
+                        100L,
+                        new V4BoundedList<>(1, false, List.of(1)),
+                        new V4BoundedList<>(0, false, List.of()),
+                        new V4BoundedList<>(1, false, List.of(1))));
+        fake.nextMetadataV2 = new MetadataV2Response(
+                new V4BoundedList<>(1, false,
+                        List.of(new OpsBrokerInfo(1, "127.0.0.1", 19093, "ACTIVE", 4L, 0L))),
+                new V4BoundedList<>(0, false, List.of()),
+                new V4BoundedList<>(1, false, List.of(tombstone)),
+                null,
+                9L,
+                4);
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        BrokerAvailabilityGuard guard = new BrokerAvailabilityGuard();
+        BrokerLeaseService service = new BrokerLeaseService(
+                leaseConfig(),
+                controller,
+                guard,
+                () -> fake,
+                now::get,
+                new ScheduledThreadPoolExecutor(1));
+
+        service.initialize();
+
+        assertEquals(1, fake.metadataFetches);
+        assertEquals(1, fake.metadataV2Fetches);
+        assertEquals("DELETING", controller.snapshot().topicTombstones.get("orders").state);
+        assertEquals(BrokerAvailabilityGuard.State.ACTIVE, guard.state());
+        service.close();
+    }
+
+    @Test
+    void startupBarrierAndStorageCleanupFenceControlActivation() throws Exception {
+        AtomicLong now = new AtomicLong();
+        FakeControllerClient fake = new FakeControllerClient();
+        BrokerAvailabilityGuard guard = new BrokerAvailabilityGuard();
+        BrokerLeaseService service = new BrokerLeaseService(
+                leaseConfig(),
+                new ClusterController(new MetadataStore(tempDir)),
+                guard,
+                () -> fake,
+                now::get,
+                new ScheduledThreadPoolExecutor(1));
+        service.holdActivation();
+
+        service.initialize();
+        assertEquals(BrokerAvailabilityGuard.State.STARTING, guard.state());
+
+        service.activateAfterStartupBarrier();
+        assertEquals(BrokerAvailabilityGuard.State.ACTIVE, guard.state());
+
+        guard.fenceStorageCleanup();
+        now.set(TimeUnit.MILLISECONDS.toNanos(100));
+        service.runOnce();
+
+        assertEquals(BrokerAvailabilityGuard.State.FENCED, guard.state());
+        assertTrue(guard.hasStickyStorageFence());
+        service.close();
+    }
+
+    @Test
+    void controllerFenceDuringStartupBarrierPreventsActivation() throws Exception {
+        AtomicLong now = new AtomicLong();
+        FakeControllerClient fake = new FakeControllerClient();
+        BrokerAvailabilityGuard guard = new BrokerAvailabilityGuard();
+        BrokerLeaseService service = new BrokerLeaseService(
+                leaseConfig(),
+                new ClusterController(new MetadataStore(tempDir)),
+                guard,
+                () -> fake,
+                now::get,
+                new ScheduledThreadPoolExecutor(1));
+        service.holdActivation();
+        service.initialize();
+
+        fake.heartbeatFailure =
+                new ControllerClient.ControllerRequestException(ErrorCode.BROKER_FENCED);
+        now.set(TimeUnit.MILLISECONDS.toNanos(100));
+        service.runOnce();
+
+        assertEquals(BrokerAvailabilityGuard.State.FENCED, guard.state());
+        assertThrows(IllegalStateException.class, service::activateAfterStartupBarrier);
+        service.close();
+    }
+
+    @Test
+    void failedInitializationClosesPoisonedClientBeforeRetry() throws Exception {
+        AtomicLong now = new AtomicLong();
+        AtomicInteger clientsCreated = new AtomicInteger();
+        FakeControllerClient poisoned = new FakeControllerClient();
+        poisoned.connectFailure = new IllegalStateException("controller unavailable");
+        FakeControllerClient replacement = new FakeControllerClient();
+        BrokerAvailabilityGuard guard = new BrokerAvailabilityGuard();
+        BrokerLeaseService service = new BrokerLeaseService(
+                leaseConfig(),
+                new ClusterController(new MetadataStore(tempDir)),
+                guard,
+                () -> clientsCreated.getAndIncrement() == 0 ? poisoned : replacement,
+                now::get,
+                new ScheduledThreadPoolExecutor(1));
+
+        try {
+            assertThrows(IllegalStateException.class, service::initialize);
+            assertTrue(poisoned.closed);
+
+            service.initialize();
+
+            assertEquals(2, clientsCreated.get());
+            assertEquals(BrokerAvailabilityGuard.State.ACTIVE, guard.state());
+            assertEquals(1, replacement.registerCalls);
+        } finally {
+            service.close();
+        }
+    }
+
+    @Test
+    void failedInitializationPreservesFailureWhenClientCloseAlsoFails() throws Exception {
+        AtomicLong now = new AtomicLong();
+        FakeControllerClient poisoned = new FakeControllerClient();
+        RuntimeException connectFailure = new IllegalStateException("controller unavailable");
+        RuntimeException closeFailure = new IllegalStateException("controller close failed");
+        poisoned.connectFailure = connectFailure;
+        poisoned.closeFailure = closeFailure;
+        BrokerLeaseService service = new BrokerLeaseService(
+                leaseConfig(),
+                new ClusterController(new MetadataStore(tempDir)),
+                new BrokerAvailabilityGuard(),
+                () -> poisoned,
+                now::get,
+                new ScheduledThreadPoolExecutor(1));
+
+        try {
+            RuntimeException thrown = assertThrows(RuntimeException.class, service::initialize);
+
+            assertSame(connectFailure, thrown);
+            assertEquals(List.of(closeFailure), List.of(connectFailure.getSuppressed()));
+            assertTrue(poisoned.closed);
+        } finally {
+            poisoned.closeFailure = null;
+            service.close();
+        }
+    }
+
+    @Test
     void reconnectAndHeartbeatShareRemainingSelfFenceBudget() throws Exception {
         AtomicLong now = new AtomicLong();
         FakeControllerClient fake = new FakeControllerClient();
@@ -225,6 +391,18 @@ class BrokerLeaseServiceTest {
         private long heartbeatTimeoutMs;
         private long closeTimeoutMs = -1L;
         private boolean closed;
+        private int metadataFetches;
+        private int metadataV2Fetches;
+        private MetadataResponse nextMetadata = new MetadataResponse(List.of(), List.of());
+        private MetadataV2Response nextMetadataV2 = new MetadataV2Response(
+                new V4BoundedList<>(0, false, List.of()),
+                new V4BoundedList<>(0, false, List.of()),
+                new V4BoundedList<>(0, false, List.of()),
+                null,
+                0L,
+                4);
+        private RuntimeException connectFailure;
+        private RuntimeException closeFailure;
         private RuntimeException registrationFailure;
         private RuntimeException heartbeatFailure;
         private Runnable afterConnect = () -> {
@@ -241,12 +419,18 @@ class BrokerLeaseServiceTest {
         public void connect(String host, int port) {
             connectCalls++;
             afterConnect.run();
+            if (connectFailure != null) {
+                throw connectFailure;
+            }
         }
 
         @Override
         public void connect(String host, int port, long timeoutMs) {
             connectCalls++;
             afterConnect.run();
+            if (connectFailure != null) {
+                throw connectFailure;
+            }
         }
 
         @Override
@@ -275,10 +459,50 @@ class BrokerLeaseServiceTest {
 
         @Override
         public synchronized MetadataResponse fetchMetadata() {
+            metadataFetches++;
             afterFetchMetadata.run();
-            return new MetadataResponse(
-                    List.of(new BrokerMetadata(1, "127.0.0.1", 19093)),
-                    List.of());
+            return nextMetadata;
+        }
+
+        @Override
+        public synchronized MetadataResponse fetchMetadata(long responseTimeoutMs) {
+            return fetchMetadata();
+        }
+
+        @Override
+        public synchronized MetadataResponse fetchMetadata(String topicName, long responseTimeoutMs) {
+            MetadataResponse metadata = fetchMetadata();
+            if (topicName == null || topicName.isEmpty()) {
+                return metadata;
+            }
+            List<TopicMetadata> topics = metadata.topics().stream()
+                    .filter(topic -> topic.topicName().equals(topicName))
+                    .toList();
+            return new MetadataResponse(metadata.brokers(), topics, metadata.controller(), metadata.metadataVersion());
+        }
+
+        @Override
+        public synchronized MetadataV2Response fetchMetadataV2() {
+            metadataV2Fetches++;
+            return nextMetadataV2;
+        }
+
+        @Override
+        public synchronized MetadataV2Response fetchMetadataV2(long responseTimeoutMs) {
+            return fetchMetadataV2();
+        }
+
+        @Override
+        public synchronized MetadataV2Response fetchMetadataV2(
+                String topicStartAfter,
+                String tombstoneStartAfter,
+                long responseTimeoutMs) {
+            return fetchMetadataV2();
+        }
+
+        @Override
+        public synchronized MetadataV2Response fetchMetadataV2(MetadataV2Request request, long responseTimeoutMs) {
+            return fetchMetadataV2();
         }
 
         @Override
@@ -291,6 +515,9 @@ class BrokerLeaseServiceTest {
             closeTimeoutMs = timeoutMs;
             afterClose.run();
             closed = true;
+            if (closeFailure != null) {
+                throw closeFailure;
+            }
         }
     }
 

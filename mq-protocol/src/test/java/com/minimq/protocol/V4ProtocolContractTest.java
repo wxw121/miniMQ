@@ -15,11 +15,49 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class V4ProtocolContractTest {
+    @Test
+    void requestBoundariesRejectUnsafeTopicNames() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new CreateTopicRequest("../orders", 1, 1));
+        assertThrows(IllegalArgumentException.class,
+                () -> new DeleteTopicRequest("token", "..\\orders"));
+        assertThrows(IllegalArgumentException.class,
+                () -> new MetadataV2Request("a/b", 10, 10));
+        assertThrows(IllegalArgumentException.class,
+                () -> new ConfigureTopicReliabilityRequest(
+                        "token", "orders", true, "../retry", false, false, null, false));
+        assertThrows(IllegalArgumentException.class,
+                () -> new CreateTopicAdminRequest("token", "CON", 1, 1));
+        assertThrows(IllegalArgumentException.class,
+                () -> new CreateTopicAdminRequest("token", "con.events", 1, 1));
+        assertThrows(IllegalArgumentException.class,
+                () -> new CreateTopicAdminRequest("token", "orders.", 1, 1));
+        assertDoesNotThrow(() -> new CreateTopicAdminRequest(
+                "token", "orders.retry-v2_1", 1, 1));
+    }
+
+    @Test
+    void existingLegacyTopicNamesRemainUsableAsReferences() {
+        assertDoesNotThrow(() -> new MetadataRequest("sales east"));
+        assertDoesNotThrow(() -> new ProduceRequest(
+                "sales east", 0, 0L, List.of(new ProduceRecord(null, new byte[] {1}))));
+        assertDoesNotThrow(() -> new FetchRequest("订单", 0, 0L, 0L, 1_024));
+        assertDoesNotThrow(() -> new DeleteTopicRequest("token", "订单"));
+        assertDoesNotThrow(() -> new MetadataV2Request("sales east", 10, 10));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new CreateTopicRequest("sales east", 1, 1));
+        assertThrows(IllegalArgumentException.class,
+                () -> new CreateTopicAdminRequest("token", "订单", 1, 1));
+    }
+
     @Test
     void apiKeysRemainAppendOnlyAndContiguous() throws IllegalAccessException {
         Map<String, Integer> expected = new TreeMap<>();
@@ -68,6 +106,20 @@ class V4ProtocolContractTest {
         assertEquals(
                 IntStream.rangeClosed(0, 37).boxed().collect(Collectors.toCollection(TreeSet::new)),
                 new TreeSet<>(actual.values()));
+    }
+
+    @Test
+    void apiKeyNamesCoverEveryDeclaredKeyAndKeepNumericFallback() throws Exception {
+        Map<String, Integer> apiKeys = publicShortConstants(ApiKeys.class);
+
+        for (Map.Entry<String, Integer> apiKey : apiKeys.entrySet()) {
+            assertEquals(
+                    apiKey.getKey(),
+                    ApiKeys.nameOf(apiKey.getValue().shortValue()),
+                    apiKey.toString());
+        }
+        assertEquals("apiKey=-1", ApiKeys.nameOf((short) -1));
+        assertEquals("apiKey=32767", ApiKeys.nameOf(Short.MAX_VALUE));
     }
 
     @Test
@@ -155,7 +207,7 @@ class V4ProtocolContractTest {
         assertRecordComponents(FetchV2Request.class,
                 "topicName", "partitionId", "leaderEpoch", "fetchOffset", "maxBytes");
         assertRecordComponents(MetadataV2Request.class,
-                "topicFilter", "topicLimit", "partitionLimit");
+                "topicFilter", "topicStartAfter", "tombstoneStartAfter", "topicLimit", "partitionLimit");
         assertRecordComponents(RuntimeMetricsV2Request.class,
                 "credential", "counterLimit", "latencyLimit", "lagLimit");
         assertRecordComponents(UpdateReplicaStateV2Request.class,
@@ -235,7 +287,12 @@ class V4ProtocolContractTest {
                 "nextVisibleAtEpochMs",
                 "records");
         assertRecordComponents(MetadataV2Response.class,
-                "brokers", "topics", "controller", "metadataVersion", "metadataFormatVersion");
+                "brokers",
+                "topics",
+                "tombstones",
+                "controller",
+                "metadataVersion",
+                "metadataFormatVersion");
         assertRecordComponents(RuntimeMetricsV2Response.class,
                 "startedAtEpochMs",
                 "snapshotAtEpochMs",
@@ -316,6 +373,7 @@ class V4ProtocolContractTest {
                 "requiredBrokerIds",
                 "acknowledgedBrokerIds",
                 "pendingBrokerIds");
+        assertRecordComponents(TopicTombstoneSummary.class, "topicName", "tombstone");
         assertRecordComponents(AuditEventInfo.class,
                 "sequence",
                 "timestampEpochMs",

@@ -5,19 +5,344 @@ import com.minimq.broker.support.BrokerTestHarness;
 import com.minimq.client.exception.MiniMqServerException;
 import com.minimq.common.error.ErrorCode;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DemoCliTest {
+
+    @Test
+    void operatorRequestTimeoutIsConfigurableAndBounded() {
+        assertEquals(
+                Duration.ofSeconds(45),
+                DemoCli.operatorRequestTimeout(new String[] {
+                        "delete-topic", "--request-timeout-ms", "45000"
+                }));
+        assertEquals(
+                Duration.ofSeconds(15),
+                DemoCli.operatorRequestTimeout(new String[] {"delete-topic"}));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> DemoCli.operatorRequestTimeout(new String[] {
+                        "delete-topic", "--request-timeout-ms", "0"
+                }));
+        assertThrows(IllegalArgumentException.class,
+                () -> DemoCli.operatorRequestTimeout(new String[] {
+                        "delete-topic", "--request-timeout-ms", "600001"
+                }));
+    }
+
+    @Test
+    void startBrokersScriptDefinesOwnedBoundedRunContract() throws Exception {
+        String script = Files.readString(repositoryRoot().resolve("scripts/start-brokers.ps1"));
+
+        assertTrue(script.contains("[string]$RunDirectory"));
+        assertTrue(script.contains("broker-processes.json"));
+        assertTrue(script.contains("processStartTimeUtc"));
+        assertTrue(script.contains("ReadinessTimeoutSeconds"));
+        assertTrue(script.contains(".minimq-run-directory"));
+        assertTrue(script.contains("docker"));
+        assertTrue(script.contains("compose"));
+        assertTrue(script.contains("\"ops-status\""));
+        assertTrue(script.contains("brokers=total=3"));
+    }
+
+    @Test
+    void stopBrokersScriptIsIdempotentAndManifestScoped() throws Exception {
+        String script = Files.readString(repositoryRoot().resolve("scripts/stop-brokers.ps1"));
+
+        assertTrue(script.contains("[string]$RunDirectory"));
+        assertTrue(script.contains("broker-processes.json"));
+        assertTrue(script.contains("processStartTimeUtc"));
+        assertTrue(script.contains("StopTimeoutSeconds"));
+        assertTrue(script.contains("CleanupRunDirectory"));
+        assertTrue(script.contains(".minimq-run-directory"));
+        assertFalse(script.contains("Get-Process -Name"));
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void stopBrokersRefusesToDeleteDirectoryWithoutOwnershipMarker(@TempDir Path tempDir)
+            throws Exception {
+        Path unowned = Files.createDirectory(tempDir.resolve("unowned"));
+        Path userFile = Files.writeString(unowned.resolve("keep.txt"), "keep");
+
+        Process process = new ProcessBuilder(
+                windowsPowerShell(),
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                repositoryRoot().resolve("scripts/stop-brokers.ps1").toString(),
+                "-RunDirectory",
+                unowned.toString(),
+                "-CleanupRunDirectory")
+                .redirectErrorStream(true)
+                .start();
+        assertTrue(process.waitFor(15, TimeUnit.SECONDS), "stop script did not terminate");
+        String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+
+        assertNotEquals(0, process.exitValue(), output);
+        assertTrue(Files.exists(userFile), output);
+        assertTrue(output.contains("ownership marker"), output);
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void stopBrokersRefusesManifestWithoutOwnershipMarkerBeforeProcessingPids(
+            @TempDir Path tempDir) throws Exception {
+        Path unowned = Files.createDirectory(tempDir.resolve("unowned-manifest"));
+        Path manifest = Files.writeString(
+                unowned.resolve("broker-processes.json"),
+                """
+                        {
+                          "schemaVersion": 1,
+                          "createdAtUtc": "2026-07-28T00:00:00Z",
+                          "runDirectory": "%s",
+                          "composeFile": "compose.yml",
+                          "composeProjectName": "test",
+                          "brokers": [
+                            {
+                              "pid": 999999,
+                              "processStartTimeUtc": "2026-07-28T00:00:00Z",
+                              "brokerId": 0,
+                              "port": 9092
+                            }
+                          ]
+                        }
+                        """.formatted(unowned.toString().replace("\\", "\\\\")));
+
+        Process process = new ProcessBuilder(
+                windowsPowerShell(),
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                repositoryRoot().resolve("scripts/stop-brokers.ps1").toString(),
+                "-RunDirectory",
+                unowned.toString())
+                .redirectErrorStream(true)
+                .start();
+        assertTrue(process.waitFor(15, TimeUnit.SECONDS), "stop script did not terminate");
+        String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+
+        assertNotEquals(0, process.exitValue(), output);
+        assertTrue(output.contains("ownership marker"), output);
+        assertTrue(Files.exists(manifest), output);
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void stopBrokersRejectsUnknownBrokerId(@TempDir Path tempDir) throws Exception {
+        Path runDirectory = Files.createDirectory(tempDir.resolve("owned-run"));
+        Files.writeString(
+                runDirectory.resolve(".minimq-run-directory"),
+                "minimq-v4-owned-run-directory-v1");
+        Path manifest = Files.writeString(
+                runDirectory.resolve("broker-processes.json"),
+                """
+                        {
+                          "schemaVersion": 1,
+                          "createdAtUtc": "2026-07-28T00:00:00Z",
+                          "runDirectory": "%s",
+                          "composeFile": "compose.yml",
+                          "composeProjectName": "test",
+                          "brokers": [
+                            {
+                              "pid": 999999,
+                              "processStartTimeUtc": "2026-07-28T00:00:00Z",
+                              "brokerId": 0,
+                              "port": 9092
+                            }
+                          ]
+                        }
+                        """.formatted(runDirectory.toString().replace("\\", "\\\\")));
+
+        Process process = new ProcessBuilder(
+                windowsPowerShell(),
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                repositoryRoot().resolve("scripts/stop-brokers.ps1").toString(),
+                "-RunDirectory",
+                runDirectory.toString(),
+                "-BrokerId",
+                "99")
+                .redirectErrorStream(true)
+                .start();
+        assertTrue(process.waitFor(15, TimeUnit.SECONDS), "stop script did not terminate");
+        String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+
+        assertNotEquals(0, process.exitValue(), output);
+        assertTrue(output.contains("not present in the Broker manifest"), output);
+        assertTrue(Files.exists(manifest), output);
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void failoverDemoDoesNotTearDownComposeBeforeOwnershipIsEstablished(@TempDir Path tempDir)
+            throws Exception {
+        Path runDirectory = Files.createDirectories(tempDir.resolve("unowned-run").resolve("logs"))
+                .getParent();
+        Files.writeString(runDirectory.resolve("keep.txt"), "keep");
+        Path fakeBin = Files.createDirectory(tempDir.resolve("fake-bin"));
+        Path dockerLog = tempDir.resolve("docker-invocations.log");
+        Files.writeString(
+                fakeBin.resolve("docker.cmd"),
+                "@echo %*>>\"%FAKE_DOCKER_LOG%\"\r\n@exit /b 0\r\n");
+
+        ProcessBuilder builder = new ProcessBuilder(
+                windowsPowerShell(),
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                repositoryRoot().resolve("scripts/demo-v4-failover.ps1").toString(),
+                "-RunDirectory",
+                runDirectory.toString(),
+                "-ComposeProjectName",
+                "preexisting-project",
+                "-SkipBuild",
+                "-KeepRunDirectory");
+        builder.environment().put("FAKE_DOCKER_LOG", dockerLog.toString());
+        builder.environment().put(
+                "PATH",
+                fakeBin + System.getProperty("path.separator") + builder.environment().get("PATH"));
+        Process process = builder.redirectErrorStream(true).start();
+        assertTrue(process.waitFor(20, TimeUnit.SECONDS), "failover script did not terminate");
+        String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+
+        assertNotEquals(0, process.exitValue(), output);
+        assertFalse(Files.exists(dockerLog),
+                "startup failed before compose ownership, but Docker was invoked: "
+                        + (Files.exists(dockerLog) ? Files.readString(dockerLog) : ""));
+        assertTrue(Files.exists(runDirectory.resolve("keep.txt")), output);
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void failoverDemoPreservesComposeOwnershipWhenVolumeCleanupFails(@TempDir Path tempDir)
+            throws Exception {
+        Path harnessRoot = Files.createDirectory(tempDir.resolve("harness"));
+        Path scripts = Files.createDirectory(harnessRoot.resolve("scripts"));
+        Files.writeString(
+                harnessRoot.resolve("pom.xml"),
+                "<project><version>4.0.0</version></project>");
+        Files.writeString(
+                scripts.resolve("demo-v4-failover.ps1"),
+                Files.readString(repositoryRoot().resolve("scripts/demo-v4-failover.ps1")));
+        Files.writeString(
+                scripts.resolve("start-brokers.ps1"),
+                """
+                        param(
+                            [int[]]$Ports,
+                            [string]$EtcdEndpoints,
+                            [string]$ClusterId,
+                            [string]$RunDirectory,
+                            [string]$AdminToken,
+                            [string]$ComposeFile,
+                            [string]$ComposeProjectName,
+                            [int]$ReadinessTimeoutSeconds,
+                            [int]$CommandTimeoutSeconds,
+                            [switch]$RequireUnusedComposeProject,
+                            [switch]$SkipBuild
+                        )
+                        New-Item -ItemType Directory -Force -Path $RunDirectory | Out-Null
+                        [IO.File]::WriteAllText(
+                            (Join-Path $RunDirectory '.minimq-run-directory'),
+                            'minimq-v4-owned-run-directory-v1')
+                        [IO.File]::WriteAllText(
+                            (Join-Path $RunDirectory '.minimq-compose-owned'),
+                            ('minimq-v4-owned-compose-project-v1:' + $ComposeProjectName))
+                        throw 'forced startup failure after compose ownership'
+                        """);
+        Files.writeString(
+                scripts.resolve("stop-brokers.ps1"),
+                """
+                        param(
+                            [string]$RunDirectory,
+                            [int[]]$BrokerId = @(),
+                            [int]$StopTimeoutSeconds,
+                            [switch]$CleanupRunDirectory
+                        )
+                        if ($CleanupRunDirectory) {
+                            Remove-Item -LiteralPath $RunDirectory -Recurse -Force
+                        }
+                        """);
+        Path fakeBin = Files.createDirectory(tempDir.resolve("fake-bin"));
+        Files.writeString(fakeBin.resolve("docker.cmd"), "@exit /b 1\r\n");
+        Path runDirectory = tempDir.resolve("owned-run");
+
+        ProcessBuilder builder = new ProcessBuilder(
+                windowsPowerShell(),
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                scripts.resolve("demo-v4-failover.ps1").toString(),
+                "-RunDirectory",
+                runDirectory.toString(),
+                "-ComposeProjectName",
+                "owned-project",
+                "-AdminToken",
+                "secret",
+                "-SkipBuild");
+        builder.environment().put(
+                "PATH",
+                fakeBin + System.getProperty("path.separator") + builder.environment().get("PATH"));
+        Process process = builder.redirectErrorStream(true).start();
+        assertTrue(process.waitFor(20, TimeUnit.SECONDS), "failover script did not terminate");
+        String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+
+        assertNotEquals(0, process.exitValue(), output);
+        assertTrue(Files.exists(runDirectory.resolve(".minimq-run-directory")), output);
+        assertTrue(Files.exists(runDirectory.resolve(".minimq-compose-owned")), output);
+    }
+
+    @Test
+    void failoverDemoRunsRecoveryWorkflowWithFinallyCleanup() throws Exception {
+        String script = Files.readString(repositoryRoot().resolve("scripts/demo-v4-failover.ps1"));
+
+        for (String command : List.of(
+                "create-topic", "produce", "consume", "ops-status", "failover-audit")) {
+            assertTrue(script.contains("\"" + command + "\""), "workflow missing " + command);
+        }
+        assertTrue(script.contains("FailoverTimeoutSeconds"));
+        assertTrue(script.contains("-BrokerId $leaderId"));
+        assertTrue(script.contains("RequireFullIsr"));
+        assertTrue(script.contains("isrIds=V4BoundedList[total=3"));
+        assertTrue(script.contains("$candidate -ne [int]$PreviousLeaderId"));
+        assertTrue(script.contains("\"produce-after\""));
+        assertTrue(script.contains("\"consume-after\""));
+        assertTrue(script.contains("finally"));
+        assertTrue(script.contains("stop-brokers.ps1"));
+    }
+
+    private static String windowsPowerShell() {
+        return Path.of(
+                System.getenv("SystemRoot"),
+                "System32",
+                "WindowsPowerShell",
+                "v1.0",
+                "powershell.exe").toString();
+    }
 
     @Test
     void printsUsageForNoArgsAndUnknownCommand() throws Exception {
@@ -32,6 +357,23 @@ class DemoCliTest {
         assertTrue(unknown.contains("maintenance-metrics"));
         assertTrue(noArgs.contains("runtime-metrics"));
         assertTrue(unknown.contains("runtime-metrics"));
+        for (String command : List.of(
+                "ops-status",
+                "group-status",
+                "list-topics",
+                "describe-topic",
+                "delete-topic",
+                "increase-partitions",
+                "failover-audit",
+                "auth-status",
+                "configure-topic-reliability",
+                "broker-offline",
+                "retry-produce",
+                "dead-letter-produce",
+                "delayed-produce")) {
+            assertTrue(noArgs.contains(command), "usage missing " + command);
+            assertTrue(unknown.contains(command), "unknown-command usage missing " + command);
+        }
         String brokerUsage =
                 "broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --etcd-endpoints http://localhost:2379 --initialize-empty-cluster --admin-token <secret>";
         assertTrue(noArgs.contains(brokerUsage));
@@ -194,13 +536,110 @@ class DemoCliTest {
             assertTrue(metricsOutput.contains("dryRuns=1"));
             assertTrue(metricsOutput.contains("lastRunStatus=SKIPPED_DISABLED"));
             assertTrue(runtimeMetricsOutput.contains("Runtime metrics"));
-            assertTrue(runtimeMetricsOutput.contains("requestsByApiKey"));
-            assertTrue(runtimeMetricsOutput.contains("responsesByErrorCode"));
-            assertTrue(runtimeMetricsOutput.contains("latencyByApiKey"));
+            assertTrue(runtimeMetricsOutput.contains("uptimeMs="));
+            assertTrue(runtimeMetricsOutput.contains("requestRatePerSecond="));
+            assertTrue(runtimeMetricsOutput.contains("produceBytes="));
+            assertTrue(runtimeMetricsOutput.contains("fetchBytes="));
+            assertTrue(runtimeMetricsOutput.contains("lagMetrics="));
+            assertTrue(runtimeMetricsOutput.contains("auditOverwrittenCount="));
             assertFalse(reportOutput.contains(BrokerTestHarness.ADMIN_TOKEN));
             assertFalse(runOutput.contains(BrokerTestHarness.ADMIN_TOKEN));
             assertFalse(metricsOutput.contains(BrokerTestHarness.ADMIN_TOKEN));
             assertFalse(runtimeMetricsOutput.contains(BrokerTestHarness.ADMIN_TOKEN));
+        }
+    }
+
+    @Test
+    void v4OperatorAndReliabilityCommandsRunThroughProtocolWithoutCredentialLeaks() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("demo-cli-v4-operator");
+        Path followerDir = BrokerTestHarness.newDataDir("demo-cli-v4-operator-follower");
+        try (BrokerTestHarness broker = BrokerTestHarness.startController(
+                     dataDir, "--topic-delete-timeout-ms", "500");
+             BrokerTestHarness follower = BrokerTestHarness.startFollower(
+                     1, followerDir, "127.0.0.1", broker.port())) {
+            String endpoint = broker.bootstrapServers();
+            String credential = BrokerTestHarness.ADMIN_TOKEN;
+            StringBuilder output = new StringBuilder();
+
+            output.append(captureStdout(() -> DemoCli.main(new String[] {
+                    "broker-offline", "--brokers", endpoint, "--admin-token", credential,
+                    "--broker-id", "1"
+            })));
+
+            for (String topic : List.of("orders", "orders-retry", "orders-dlq")) {
+                output.append(captureStdout(() -> DemoCli.main(new String[] {
+                        "create-topic", "--brokers", endpoint, "--admin-token", credential,
+                        "--name", topic, "--partitions", "1"
+                })));
+            }
+            output.append(captureStdout(() -> DemoCli.main(new String[] {
+                    "configure-topic-reliability", "--brokers", endpoint,
+                    "--admin-token", credential, "--source-topic", "orders",
+                    "--retry-topic", "orders-retry", "--dead-letter-topic", "orders-dlq"
+            })));
+            output.append(captureStdout(() -> DemoCli.main(new String[] {
+                    "increase-partitions", "--brokers", endpoint, "--admin-token", credential,
+                    "--topic", "orders", "--target-count", "2"
+            })));
+            output.append(captureStdout(() -> DemoCli.main(new String[] {
+                    "list-topics", "--brokers", endpoint, "--admin-token", credential
+            })));
+            output.append(captureStdout(() -> DemoCli.main(new String[] {
+                    "describe-topic", "--brokers", endpoint, "--admin-token", credential,
+                    "--topic", "orders"
+            })));
+            output.append(captureStdout(() -> DemoCli.main(new String[] {
+                    "ops-status", "--broker", endpoint, "--admin-token", credential
+            })));
+            output.append(captureStdout(() -> DemoCli.main(new String[] {
+                    "auth-status", "--broker", endpoint, "--admin-token", credential
+            })));
+            output.append(captureStdout(() -> DemoCli.main(new String[] {
+                    "failover-audit", "--broker", endpoint, "--admin-token", credential
+            })));
+
+            output.append(captureStdout(() -> DemoCli.main(new String[] {
+                    "produce", "--brokers", endpoint, "--topic", "orders", "--message", "group-seed"
+            })));
+            output.append(captureStdout(() -> DemoCli.consumeForPolls(new String[] {
+                    "consume", "--brokers", endpoint, "--topic", "orders", "--group", "ops-group"
+            }, 1)));
+            output.append(captureStdout(() -> DemoCli.main(new String[] {
+                    "group-status", "--brokers", endpoint, "--admin-token", credential,
+                    "--group", "ops-group", "--topic", "orders"
+            })));
+
+            long deliverAt = System.currentTimeMillis();
+            output.append(captureStdout(() -> DemoCli.main(new String[] {
+                    "delayed-produce", "--brokers", endpoint, "--topic", "orders",
+                    "--message", "delayed", "--deliver-at-epoch-ms", Long.toString(deliverAt)
+            })));
+            output.append(captureStdout(() -> DemoCli.main(new String[] {
+                    "retry-produce", "--brokers", endpoint, "--source-topic", "orders",
+                    "--message", "retry", "--deliver-at-epoch-ms", Long.toString(deliverAt)
+            })));
+            output.append(captureStdout(() -> DemoCli.main(new String[] {
+                    "dead-letter-produce", "--brokers", endpoint, "--source-topic", "orders",
+                    "--message", "dead-letter"
+            })));
+
+            output.append(captureStdout(() -> DemoCli.main(new String[] {
+                    "delete-topic", "--brokers", endpoint, "--admin-token", credential,
+                    "--topic", "orders-dlq"
+            })));
+            output.append(captureStdout(() -> DemoCli.main(new String[] {
+                    "describe-topic", "--brokers", endpoint, "--admin-token", credential,
+                    "--topic", "orders-dlq", "--include-deleted"
+            })));
+            String rendered = output.toString();
+            for (String marker : List.of(
+                    "Reliability configured", "Partitions increased", "Topics total=",
+                    "Topic orders active=true", "Ops status", "Auth status", "Failover audit",
+                    "Group status", "Delayed produce", "Retry produce", "Dead-letter produce",
+                    "Topic deletion", "active=false", "Broker offline")) {
+                assertTrue(rendered.contains(marker), "missing output marker " + marker);
+            }
+            assertFalse(rendered.contains(credential));
         }
     }
 
@@ -281,6 +720,18 @@ class DemoCliTest {
         } finally {
             System.setOut(original);
         }
+    }
+
+    private static Path repositoryRoot() {
+        Path current = Path.of(System.getProperty("user.dir")).toAbsolutePath();
+        while (current != null) {
+            if (Files.isDirectory(current.resolve("scripts"))
+                    && Files.isRegularFile(current.resolve("pom.xml"))) {
+                return current;
+            }
+            current = current.getParent();
+        }
+        throw new IllegalStateException("Cannot locate repository root");
     }
 
     @FunctionalInterface

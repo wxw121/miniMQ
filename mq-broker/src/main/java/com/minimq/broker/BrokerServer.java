@@ -10,6 +10,7 @@ import com.minimq.broker.replication.ReplicaFetcher;
 import com.minimq.broker.replication.ReplicaStateManager;
 import com.minimq.broker.replication.ReplicaStateReporter;
 import com.minimq.broker.admin.TopicDeletionReconciler;
+import com.minimq.broker.admin.TopicAdminService;
 import com.minimq.broker.metadata.MetadataStore;
 import com.minimq.broker.metadata.SwitchableClusterMetadataRepository;
 import com.minimq.broker.metrics.BrokerRuntimeMetrics;
@@ -39,6 +40,7 @@ import org.slf4j.LoggerFactory;
  */
 public class BrokerServer {
     private static final Logger log = LoggerFactory.getLogger(BrokerServer.class);
+    private static final long STARTUP_BARRIER_TIMEOUT_MS = 15_000L;
 
     private final BrokerConfig config;
     private final long startedAtEpochMs;
@@ -62,6 +64,7 @@ public class BrokerServer {
     private ControllerRole controllerRole;
     private BrokerStatusService brokerStatusService;
     private TopicDeletionReconciler topicDeletionReconciler;
+    private TopicAdminService topicAdminService;
     private final FailoverAuditLog failoverAuditLog;
     private boolean stopped;
 
@@ -141,6 +144,8 @@ public class BrokerServer {
         partitionManager = new PartitionManager(logManager);
         topicDeletionReconciler = new TopicDeletionReconciler(
                 config, clusterController, partitionManager, availabilityGuard, controllerRole);
+        topicAdminService = new TopicAdminService(
+                clusterController, config.topicDeleteTimeoutMs());
         operatorAuthorizer = OperatorAuthorizer.fromConfig(config);
         maintenanceAdminService = new MaintenanceAdminService(operatorAuthorizer, partitionManager);
         replicaStateReporter = new ReplicaStateReporter(
@@ -154,6 +159,7 @@ public class BrokerServer {
                 replicaStateReporter);
         brokerLeaseService = new BrokerLeaseService(
                 config, clusterController, availabilityGuard, controllerRole, failoverAuditLog);
+        brokerLeaseService.holdActivation();
         brokerStatusService = new BrokerStatusService(
                 config,
                 clusterController,
@@ -196,7 +202,8 @@ public class BrokerServer {
                                         runtimeMetrics,
                                         requestThrottler,
                                         brokerStatusService,
-                                        failoverAuditLog))
+                                        failoverAuditLog,
+                                        topicAdminService))
                                 .addLast(new MqEncoder());
                     }
                 });
@@ -205,6 +212,7 @@ public class BrokerServer {
             channelFuture = bootstrap.bind(config.host(), config.port()).sync();
             if (controllerRuntime != null) {
                 controllerRuntime.start();
+                controllerRuntime.awaitInitialMetadata(STARTUP_BARRIER_TIMEOUT_MS);
                 initializeEtcdBrokerLease();
             } else {
                 brokerLeaseService.initialize();
@@ -212,11 +220,10 @@ public class BrokerServer {
                     brokerLeaseMonitor.start();
                 }
             }
-            // Local tombstones must be applied before follower traffic starts;
-            // the scheduled pass retries any cleanup that failed transiently.
-            topicDeletionReconciler.reconcileOnce();
-            topicDeletionReconciler.start();
             brokerLeaseService.start();
+            awaitInitialTopicReconciliation();
+            brokerLeaseService.activateAfterStartupBarrier();
+            topicDeletionReconciler.start();
             replicaFetcher.start();
         } catch (InterruptedException failure) {
             cleanupAfterFailedStart(failure);
@@ -236,7 +243,8 @@ public class BrokerServer {
     }
 
     private void initializeEtcdBrokerLease() throws InterruptedException {
-        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(15);
+        long deadline = System.nanoTime()
+                + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(STARTUP_BARRIER_TIMEOUT_MS);
         RuntimeException lastFailure = null;
         while (System.nanoTime() < deadline) {
             try {
@@ -248,6 +256,28 @@ public class BrokerServer {
             }
         }
         throw new IllegalStateException("Controller discovery timed out during Broker registration", lastFailure);
+    }
+
+    private void awaitInitialTopicReconciliation() throws InterruptedException {
+        long deadline = System.nanoTime()
+                + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(STARTUP_BARRIER_TIMEOUT_MS);
+        while (true) {
+            topicDeletionReconciler.reconcileOnce(deadline);
+            if (availabilityGuard.hasStickyStorageFence()) {
+                throw new IllegalStateException("Local topic deletion reconciliation failed");
+            }
+            if (System.nanoTime() >= deadline) {
+                throw new IllegalStateException("Initial topic deletion reconciliation timed out");
+            }
+            if (topicDeletionReconciler.isCaughtUp()) {
+                return;
+            }
+            long remainingNanos = deadline - System.nanoTime();
+            long sleepMillis = Math.min(
+                    100L,
+                    Math.max(1L, java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(remainingNanos)));
+            Thread.sleep(sleepMillis);
+        }
     }
 
     private synchronized void activateControllerMonitor() {
@@ -287,6 +317,9 @@ public class BrokerServer {
         }
         if (topicDeletionReconciler != null) {
             topicDeletionReconciler.close();
+        }
+        if (topicAdminService != null) {
+            topicAdminService.close();
         }
         if (replicaStateReporter != null) {
             replicaStateReporter.close();

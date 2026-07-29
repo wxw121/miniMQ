@@ -1,5 +1,7 @@
 package com.minimq.storage;
 
+import com.minimq.common.validation.TopicNames;
+
 import java.util.Arrays;
 
 /**
@@ -18,9 +20,7 @@ public record WalRecord(
         if (type == null) {
             throw new IllegalArgumentException("WAL record type is required");
         }
-        if (topic == null || topic.isBlank()) {
-            throw new IllegalArgumentException("WAL record topic is required");
-        }
+        TopicNames.requireValidReference(topic);
         if (partitionId < 0) {
             throw new IllegalArgumentException("WAL record partitionId must be non-negative");
         }

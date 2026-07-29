@@ -13,6 +13,7 @@ import com.minimq.common.error.ErrorCode;
 import com.minimq.protocol.message.ProtocolMessages.ReplicaFetchResponse;
 import com.minimq.protocol.message.ProtocolMessages.ReplicaFetchV2Response;
 import com.minimq.protocol.message.ProtocolMessages.ScheduledReplicaRecord;
+import com.minimq.storage.LogManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -115,16 +116,16 @@ public final class ReplicaFetcher implements AutoCloseable {
     @Override
     public void close() throws InterruptedException {
         running = false;
-        thread.interrupt();
         try {
-            thread.join(5_000);
+            connectionPool.close();
+            thread.join(SLEEP_MS * 10);
+            if (thread.isAlive()) {
+                thread.interrupt();
+                thread.join(5_000);
+            }
         } finally {
-            try {
-                connectionPool.close();
-            } finally {
-                if (ownsReplicaStateReporter) {
-                    replicaStateReporter.close();
-                }
+            if (ownsReplicaStateReporter) {
+                replicaStateReporter.close();
             }
         }
     }
@@ -238,23 +239,22 @@ public final class ReplicaFetcher implements AutoCloseable {
     }
 
     private void reportLocalReplicaState(String topicName, int partitionId) {
-        long logEndOffset = partitionManager.highWatermark(topicName, partitionId);
-        long visibleLogEndOffset = partitionManager.visibleHighWatermark(topicName, partitionId);
-        long nextVisibleAtEpochMs = partitionManager.nextVisibleAtEpochMs(topicName, partitionId);
+        LogManager.VisibilitySnapshot visibility =
+                partitionManager.visibilitySnapshot(topicName, partitionId);
         ErrorCode error = replicaStateReporter.report(
                 topicName,
                 partitionId,
                 config.brokerId(),
-                logEndOffset,
-                visibleLogEndOffset,
-                nextVisibleAtEpochMs);
+                visibility.physicalHighWatermark(),
+                visibility.visibleHighWatermark(),
+                visibility.nextVisibleAtEpochMs());
         if (error != ErrorCode.NONE) {
             log.debug(
                     "Deferred local replica state report topic={} partition={} broker={} leo={} error={}",
                     topicName,
                     partitionId,
                     config.brokerId(),
-                    logEndOffset,
+                    visibility.physicalHighWatermark(),
                     error);
         }
     }

@@ -1,6 +1,6 @@
 # MiniMQ Project Context Index / 项目上下文索引
 
-> Last updated / 最后更新：2026-07-26
+> Last updated / 最后更新：2026-07-29
 > Audience / 适用对象（英文）：new contributors, reviewers, and operators
 > 适用对象：新贡献者、代码审查者与运维/排障读者
 
@@ -38,6 +38,7 @@ The current V4 layer is implemented in source: operator APIs expose status, grou
 | 7i | [V4 Operator Readiness Implementation Plan](plans/v4-operator-readiness-implementation.md) | Historical implementation checklist; use source and focused tests as current truth. |
 | 7j | [V3.3-V3.5 Production Hardening Test Report](test-report-2026-07-21-v3.3-v3.5-production-hardening.md) | See runtime metrics export, resilience matrix, benchmark transport selector, and bounded verification evidence. |
 | 7k | [Future Storage Notes](roadmap.md#future-version-notes) | Review deferred experimental storage work after V4 is complete. |
+| 7l | [V4.0.0 Operator Readiness Test Report](test-report-2026-07-22-v4.0.0-operator-readiness.md) | See the fresh full-reactor test counts, coverage, review regressions, and Docker-gated etcd status. |
 | 8 | [Troubleshooting Guide](troubleshooting.md) / [故障排查指南](troubleshooting.md) | Resolve common Maven, port, Windows, test report, and GitHub/SSH issues. / 排查 Maven、端口、Windows、测试报告、GitHub/SSH 常见问题。 |
 
 ## 3. Current Snapshot / 当前快照
@@ -45,7 +46,7 @@ The current V4 layer is implemented in source: operator APIs expose status, grou
 | Item / 项目 | Value / 值 |
 | --- | --- |
 | Language / 语言 | Java 17 |
-| Project version | 3.0.0 |
+| Project version | 4.0.0 |
 | Build tool / 构建工具 | Maven multi-module project / Maven 多模块项目 |
 | Network framework / 网络框架 | Netty 4.1 |
 | Serialization / 序列化 | Custom binary protocol over Netty `ByteBuf` / 基于 Netty `ByteBuf` 的自定义二进制协议 |
@@ -53,9 +54,9 @@ The current V4 layer is implemented in source: operator APIs expose status, grou
 | Storage / 存储 | WAL-backed segmented log with retention, compaction, dry-run reports, maintenance metrics, zero-copy FETCH sendfile, ISR-aware replication, delayed scheduling, and visible-prefix reads / 基于 WAL 的分段日志，支持保留策略、压缩、dry-run 报告、维护指标、零拷贝 FETCH sendfile、ISR 感知副本、延迟调度与可见前缀读取 |
 | Tests / 测试 | JUnit 5 + Surefire |
 | Coverage / 覆盖率 | JaCoCo |
-| Latest milestone tag | Not cut for the current working tree; project version remains 3.0.0 while the source contains the V4 operator-readiness snapshot |
+| Latest milestone tag | Not cut for the current working tree; Maven project version is 4.0.0 |
 | Latest release | V4 operator readiness in the working tree: operator APIs, bounded metrics V2, topic admin, failover audit, reliability links, delayed delivery, and FETCH_V2 visibility |
-| Latest evidence | Source and focused V4 tests; older V3.3-V3.5 evidence remains in [production hardening test report](test-report-2026-07-21-v3.3-v3.5-production-hardening.md) |
+| Latest evidence | [V4.0.0 operator readiness test report](test-report-2026-07-22-v4.0.0-operator-readiness.md): 712 tests, zero failures/errors/skips, 91.17% overall line coverage, and every module above 90% |
 
 ## 4. Module Map / 模块地图
 
@@ -109,9 +110,9 @@ Start a three-broker demo cluster / 启动三节点 Broker 演示集群：
 
 ```powershell
 docker compose -f deploy/etcd/docker-compose.yml up -d
-java -jar mq-demo/target/mq-demo-3.0.0.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --etcd-endpoints http://localhost:2379 --initialize-empty-cluster --admin-token <secret>
-java -jar mq-demo/target/mq-demo-3.0.0.jar broker --broker-id 1 --port 9093 --data-dir ./data/broker-1 --etcd-endpoints http://localhost:2379 --admin-token <secret>
-java -jar mq-demo/target/mq-demo-3.0.0.jar broker --broker-id 2 --port 9094 --data-dir ./data/broker-2 --etcd-endpoints http://localhost:2379 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-4.0.0.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --etcd-endpoints http://localhost:2379 --initialize-empty-cluster --admin-token <secret>
+java -jar mq-demo/target/mq-demo-4.0.0.jar broker --broker-id 1 --port 9093 --data-dir ./data/broker-1 --etcd-endpoints http://localhost:2379 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-4.0.0.jar broker --broker-id 2 --port 9094 --data-dir ./data/broker-2 --etcd-endpoints http://localhost:2379 --admin-token <secret>
 ```
 
 On Windows, `scripts/start-brokers.ps1` reads the current project version from the root POM and
@@ -128,18 +129,18 @@ Delayed-message admission is bounded by --max-scheduled-records with default 100
 Create, produce, and consume / 创建 Topic、生产消息、消费消息：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-3.0.0.jar create-topic --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --name orders --partitions 3
-java -jar mq-demo/target/mq-demo-3.0.0.jar produce --brokers localhost:9092,localhost:9093,localhost:9094 --topic orders --key user-1 --message hello
-java -jar mq-demo/target/mq-demo-3.0.0.jar consume --brokers localhost:9092,localhost:9093,localhost:9094 --topic orders --group order-processors
+java -jar mq-demo/target/mq-demo-4.0.0.jar create-topic --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --name orders --partitions 3
+java -jar mq-demo/target/mq-demo-4.0.0.jar produce --brokers localhost:9092,localhost:9093,localhost:9094 --topic orders --key user-1 --message hello
+java -jar mq-demo/target/mq-demo-4.0.0.jar consume --brokers localhost:9092,localhost:9093,localhost:9094 --topic orders --group order-processors
 ```
 
 Inspect and run storage maintenance / 查看并执行存储维护：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-3.0.0.jar maintenance-report --broker localhost:9092 --admin-token <secret>
-java -jar mq-demo/target/mq-demo-3.0.0.jar maintenance-run --broker localhost:9092 --admin-token <secret>
-java -jar mq-demo/target/mq-demo-3.0.0.jar maintenance-metrics --broker localhost:9092 --admin-token <secret>
-java -jar mq-demo/target/mq-demo-3.0.0.jar runtime-metrics --broker localhost:9092 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-4.0.0.jar maintenance-report --broker localhost:9092 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-4.0.0.jar maintenance-run --broker localhost:9092 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-4.0.0.jar maintenance-metrics --broker localhost:9092 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-4.0.0.jar runtime-metrics --broker localhost:9092 --admin-token <secret>
 ```
 
 All brokers require the shared admin token. Invalid maintenance credentials return `UNAUTHORIZED`, while an overlapping destructive run returns `MAINTENANCE_BUSY`; report/run work executes on the broker's dedicated maintenance executor.
@@ -147,16 +148,44 @@ All brokers require the shared admin token. Invalid maintenance credentials retu
 Benchmark FETCH heap versus sendfile / 对比 HEAP 与 sendfile 的 FETCH 基准：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-3.0.0.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576 --network-transport nio
+java -jar mq-demo/target/mq-demo-4.0.0.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576 --network-transport nio
 ```
 
 ## 6. V4 Operator Readiness Notes
 
 - API keys 20-37 are reserved and implemented for operator status, group lag, topic administration, failover audit, authorization status, reliability links, create-topic admin, PRODUCE_V2, REPLICA_FETCH_V2, FETCH_V2, METADATA_V2, RUNTIME_METRICS_V2, and replica-state V2.
+- METADATA_V2 uses independent start-after cursors for active topic summaries and tombstones; legacy followers page V2 metadata and fetch exact legacy topic metadata when a snapshot has more than 10,000 active topics.
+- Error codes are append-only through `STALE_TOMBSTONE = 19`; metadata format version is 4.
+- Operator scopes are `STATUS`, `TOPIC_ADMIN`, `MAINTENANCE`, and `BROKER_OFFLINE`. The legacy admin token maps to all four scopes.
+- Topic names use 1..249 characters from `[A-Za-z0-9._-]`, excluding `.` and `..`. Deletion advances `DELETING -> DELETED`; deleted names stay reserved and cannot be recreated.
+- Topic deletion uses one caller deadline across queueing, metadata mutation, repository IO, and polling. A normal wait timeout returns the current `DELETING` tombstone; an uncertain mutation result returns `CONTROLLER_NOT_READY`.
 - Retry and DLQ targets are ordinary operator-selected topics linked explicitly in metadata; MiniMQ does not infer naming conventions.
 - WAL type 8 is SCHEDULED_DATA_APPEND. It keeps the existing data append body and adds deliverAtEpochMs for future visibility.
 - Legacy FETCH and FETCH_V2 both hide future delayed records behind the contiguous visible prefix.
 - Consumer uses FETCH_V2 and bounded client-side waiting: nextVisibleAtEpochMs caps the sleep by the remaining poll timeout, and the Broker request is not held open.
+- V3 clients remain wire-compatible because keys 0-19 retain their layouts. Mixed V3/V4 Broker clusters are unsupported.
+- Web AUTO mode falls back to mock only before a real side effect happens. Once real produce succeeds, later poll/commit failure is surfaced as a real error instead of mock success.
+
+Controller-aware commands use the complete `--brokers` bootstrap list; Broker-local status,
+maintenance, audit, auth, and metrics commands require exactly one `--broker` target.
+
+```powershell
+java -jar mq-demo/target/mq-demo-4.0.0.jar ops-status --broker localhost:9092 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-4.0.0.jar group-status --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --group order-processors
+java -jar mq-demo/target/mq-demo-4.0.0.jar list-topics --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-4.0.0.jar describe-topic --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --topic orders
+java -jar mq-demo/target/mq-demo-4.0.0.jar delete-topic --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --topic orders
+```
+
+The local workflow scripts use a PID/start-time manifest and bounded readiness. Recursive cleanup
+requires a valid `.minimq-run-directory` ownership marker, and the failover demo waits for all three
+replicas to enter ISR before stopping the initial Leader.
+
+```powershell
+.\scripts\start-brokers.ps1 -AdminToken <secret>
+.\scripts\demo-v4-failover.ps1 -AdminToken <secret>
+.\scripts\stop-brokers.ps1 -CleanupRunDirectory
+```
 
 ## 7. Glossary / 专业名词解释
 
@@ -179,7 +208,7 @@ java -jar mq-demo/target/mq-demo-3.0.0.jar benchmark-fetch --records 256 --value
 2. Read `architecture.md` for module boundaries and runtime topology. / 阅读 `architecture.md`，理解模块边界和运行时拓扑。
 3. Read `design.md` before changing protocol, storage, metadata, or consumer group logic. / 修改协议、存储、元数据或消费组逻辑前先阅读 `design.md`。
 4. Run `mvn verify -gs .mvn/settings.xml -s .mvn/settings.xml` before and after changes. / 修改前后都运行完整 Maven 测试命令。
-5. Check `docs/test-report-2026-07-09.md` for the V1.3 closeout baseline. / 查看 `docs/test-report-2026-07-09.md` 了解 V1.3 收口基线。
+5. Check `docs/test-report-2026-07-22-v4.0.0-operator-readiness.md` for the current closeout baseline. / 查看 `docs/test-report-2026-07-22-v4.0.0-operator-readiness.md` 了解当前收口基线。
 6. Do not treat target files as source of truth; source lives under `src/main/java` and `src/test/java`. / 不要把 `target` 目录当作事实来源，源码位于 `src/main/java` 和 `src/test/java`。
 7. Keep JaCoCo overall line coverage at or above 90%. / 保持 JaCoCo 总体行覆盖率不低于 90%。
 8. If changing protocol fields, update both `ProtocolSerdesTest` and the design document. / 如果修改协议字段，同时更新 `ProtocolSerdesTest` 和设计文档。
