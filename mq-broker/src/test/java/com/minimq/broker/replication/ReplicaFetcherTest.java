@@ -39,6 +39,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ReplicaFetcherTest {
 
@@ -190,6 +191,46 @@ class ReplicaFetcherTest {
         }
     }
 
+    @Test
+    void reportsReplicaStateFromOneVisibilitySnapshot() throws Exception {
+        ClusterController controller =
+                new ClusterController(new MetadataStore(tempDir.resolve("snapshot-controller")));
+        controller.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 19092));
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("orders", 1)));
+        BrokerConfig config = new BrokerConfig(
+                0,
+                "127.0.0.1",
+                19092,
+                tempDir.resolve("snapshot-broker"),
+                true,
+                "127.0.0.1",
+                19092,
+                false,
+                BrokerTestHarness.ADMIN_TOKEN);
+        SnapshotOnlyPartitionManager partitionManager = new SnapshotOnlyPartitionManager(
+                new LogManager(tempDir.resolve("snapshot-log")));
+        ReplicaFetcher fetcher = new ReplicaFetcher(config, controller, partitionManager);
+        try {
+            fetcher.start();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (System.nanoTime() < deadline) {
+                var progress = controller.snapshot().topics.get("orders").partitions.get(0)
+                        .replicaProgress.get(0);
+                if (progress != null && progress.physicalLogEndOffset == 3L) {
+                    assertEquals(1L, progress.visibleLogEndOffset);
+                    assertEquals(5_000L, progress.nextVisibleAtEpochMs);
+                    assertTrue(partitionManager.snapshotCalls.get() >= 1);
+                    return;
+                }
+                Thread.sleep(25L);
+            }
+            assertEquals(3L, controller.replicaLogEndOffset("orders", 0, 0));
+        } finally {
+            fetcher.close();
+            partitionManager.close();
+        }
+    }
+
     private static void waitForHighWatermark(
             PartitionManager partitionManager,
             String topicName,
@@ -320,6 +361,35 @@ class ReplicaFetcherTest {
             channel.close().sync();
             boss.shutdownGracefully().sync();
             worker.shutdownGracefully().sync();
+        }
+    }
+
+    private static final class SnapshotOnlyPartitionManager extends PartitionManager {
+        private final AtomicInteger snapshotCalls = new AtomicInteger();
+
+        private SnapshotOnlyPartitionManager(LogManager logManager) {
+            super(logManager);
+        }
+
+        @Override
+        public LogManager.VisibilitySnapshot visibilitySnapshot(String topic, int partitionId) {
+            snapshotCalls.incrementAndGet();
+            return new LogManager.VisibilitySnapshot(3L, 1L, 5_000L);
+        }
+
+        @Override
+        public long highWatermark(String topic, int partitionId) {
+            throw new AssertionError("replica reporting must use visibilitySnapshot");
+        }
+
+        @Override
+        public long visibleHighWatermark(String topic, int partitionId) {
+            throw new AssertionError("replica reporting must use visibilitySnapshot");
+        }
+
+        @Override
+        public long nextVisibleAtEpochMs(String topic, int partitionId) {
+            throw new AssertionError("replica reporting must use visibilitySnapshot");
         }
     }
 }

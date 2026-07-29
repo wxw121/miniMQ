@@ -1,5 +1,6 @@
 package com.minimq.protocol.message;
 
+import com.minimq.common.validation.TopicNames;
 import com.minimq.protocol.MqFrame;
 
 import java.util.List;
@@ -31,13 +32,33 @@ public final class ProtocolMessages {
         }
     }
 
-    private static void requireOptionalNonEmpty(String value, String fieldName) {
-        if (value != null && value.isEmpty()) {
-            throw new IllegalArgumentException(fieldName + " must be absent or non-empty");
+    private static void requireTopicName(String value, String fieldName) {
+        try {
+            TopicNames.requireValidReference(value);
+        } catch (IllegalArgumentException invalid) {
+            throw new IllegalArgumentException(fieldName + " is not a valid topic reference", invalid);
+        }
+    }
+
+    private static void requireNewTopicName(String value, String fieldName) {
+        try {
+            TopicNames.requireValid(value);
+        } catch (IllegalArgumentException invalid) {
+            throw new IllegalArgumentException(fieldName + " is not a valid new topic name", invalid);
+        }
+    }
+
+    private static void requireOptionalTopicName(String value, String fieldName) {
+        if (value != null) {
+            requireTopicName(value, fieldName);
         }
     }
 
     public record CreateTopicRequest(String topicName, int numPartitions, int replicationFactor) {
+        public CreateTopicRequest {
+            requireNewTopicName(topicName, "topicName");
+        }
+
         public CreateTopicRequest(String topicName, int numPartitions) {
             this(topicName, numPartitions, 1);
         }
@@ -47,6 +68,14 @@ public final class ProtocolMessages {
     }
 
     public record MetadataRequest(String topicName) {
+        public MetadataRequest {
+            if (topicName == null) {
+                throw new IllegalArgumentException("topicName must not be null");
+            }
+            if (!topicName.isEmpty()) {
+                requireTopicName(topicName, "topicName");
+            }
+        }
     }
 
     public record BrokerMetadata(int brokerId, String host, int port) {
@@ -128,6 +157,7 @@ public final class ProtocolMessages {
 
     public record ProduceRequest(String topicName, int partitionId, long leaderEpoch, List<ProduceRecord> records) {
         public ProduceRequest {
+            requireTopicName(topicName, "topicName");
             requireNonNegative(leaderEpoch, "leaderEpoch");
         }
         public ProduceRequest(String topicName, int partitionId, List<ProduceRecord> records) {
@@ -140,6 +170,7 @@ public final class ProtocolMessages {
 
     public record FetchRequest(String topicName, int partitionId, long leaderEpoch, long fetchOffset, int maxBytes) {
         public FetchRequest {
+            requireTopicName(topicName, "topicName");
             requireNonNegative(leaderEpoch, "leaderEpoch");
         }
         public FetchRequest(String topicName, int partitionId, long fetchOffset, int maxBytes) {
@@ -158,6 +189,9 @@ public final class ProtocolMessages {
     }
 
     public record JoinGroupRequest(String groupId, String memberId, String topicName) {
+        public JoinGroupRequest {
+            requireTopicName(topicName, "topicName");
+        }
     }
 
     public record JoinGroupResponse(
@@ -180,12 +214,18 @@ public final class ProtocolMessages {
     }
 
     public record OffsetCommitRequest(String groupId, String topicName, int partitionId, long offset) {
+        public OffsetCommitRequest {
+            requireTopicName(topicName, "topicName");
+        }
     }
 
     public record OffsetCommitResponse() {
     }
 
     public record OffsetFetchRequest(String groupId, String topicName, int partitionId) {
+        public OffsetFetchRequest {
+            requireTopicName(topicName, "topicName");
+        }
     }
 
     public record OffsetFetchResponse(long offset) {
@@ -227,6 +267,7 @@ public final class ProtocolMessages {
             long fetchOffset,
             int maxBytes) {
         public ReplicaFetchRequest {
+            requireTopicName(topicName, "topicName");
             requireNonNegative(leaderEpoch, "leaderEpoch");
         }
         public ReplicaFetchRequest(
@@ -265,6 +306,7 @@ public final class ProtocolMessages {
             long controllerEpoch,
             long logEndOffset) {
         public UpdateReplicaLeoRequest {
+            requireTopicName(topicName, "topicName");
             requireNonNegative(brokerEpoch, "brokerEpoch");
             requireNonNegative(controllerEpoch, "controllerEpoch");
         }
@@ -295,6 +337,7 @@ public final class ProtocolMessages {
             long leaderEpoch,
             long logEndOffset) {
         public LeaderReadyRequest {
+            requireTopicName(topicName, "topicName");
             requireNonNegative(brokerEpoch, "brokerEpoch");
             requireNonNegative(controllerEpoch, "controllerEpoch");
             requireNonNegative(leaderEpoch, "leaderEpoch");
@@ -407,7 +450,7 @@ public final class ProtocolMessages {
         public GroupStatusRequest {
             requireNonEmpty(credential, "credential");
             requireNonEmpty(groupId, "groupId");
-            requireOptionalNonEmpty(topicFilter, "topicFilter");
+            requireOptionalTopicName(topicFilter, "topicFilter");
             requireRange(memberLimit, 1, 1_000, "memberLimit");
             requireRange(partitionLimit, 1, 1_000, "partitionLimit");
         }
@@ -424,7 +467,7 @@ public final class ProtocolMessages {
             String credential, String topicName, int partitionLimit, boolean includeDeleted) {
         public DescribeTopicRequest {
             requireNonEmpty(credential, "credential");
-            requireNonEmpty(topicName, "topicName");
+            requireTopicName(topicName, "topicName");
             requireRange(partitionLimit, 1, 1_000, "partitionLimit");
         }
     }
@@ -432,7 +475,7 @@ public final class ProtocolMessages {
     public record DeleteTopicRequest(String credential, String topicName) {
         public DeleteTopicRequest {
             requireNonEmpty(credential, "credential");
-            requireNonEmpty(topicName, "topicName");
+            requireTopicName(topicName, "topicName");
         }
     }
 
@@ -440,7 +483,7 @@ public final class ProtocolMessages {
             String credential, String topicName, int targetPartitionCount) {
         public IncreasePartitionsRequest {
             requireNonEmpty(credential, "credential");
-            requireNonEmpty(topicName, "topicName");
+            requireTopicName(topicName, "topicName");
             requireRange(targetPartitionCount, 1, 10_000, "targetPartitionCount");
         }
     }
@@ -469,7 +512,7 @@ public final class ProtocolMessages {
             boolean clearDeadLetterTopic) {
         public ConfigureTopicReliabilityRequest {
             requireNonEmpty(credential, "credential");
-            requireNonEmpty(sourceTopicName, "sourceTopicName");
+            requireTopicName(sourceTopicName, "sourceTopicName");
             if (retryTopicSupplied == clearRetryTopic) {
                 if (retryTopicSupplied) {
                     throw new IllegalArgumentException("retry topic cannot be supplied and cleared");
@@ -482,13 +525,13 @@ public final class ProtocolMessages {
                 }
             }
             if (retryTopicSupplied) {
-                requireNonEmpty(retryTopicName, "retryTopicName");
+                requireTopicName(retryTopicName, "retryTopicName");
             } else if (retryTopicName != null) {
                 throw new IllegalArgumentException(
                         "retryTopicName requires retryTopicSupplied");
             }
             if (deadLetterTopicSupplied) {
-                requireNonEmpty(deadLetterTopicName, "deadLetterTopicName");
+                requireTopicName(deadLetterTopicName, "deadLetterTopicName");
             } else if (deadLetterTopicName != null) {
                 throw new IllegalArgumentException(
                         "deadLetterTopicName requires deadLetterTopicSupplied");
@@ -506,7 +549,7 @@ public final class ProtocolMessages {
             String credential, String topicName, int numPartitions, int replicationFactor) {
         public CreateTopicAdminRequest {
             requireNonEmpty(credential, "credential");
-            requireNonEmpty(topicName, "topicName");
+            requireNewTopicName(topicName, "topicName");
             requireRange(numPartitions, 1, 10_000, "numPartitions");
             requireRange(replicationFactor, 1, 10_000, "replicationFactor");
         }
@@ -524,7 +567,7 @@ public final class ProtocolMessages {
             long leaderEpoch,
             V4BoundedList<ScheduledProduceRecord> records) {
         public ProduceV2Request {
-            requireNonEmpty(topicName, "topicName");
+            requireTopicName(topicName, "topicName");
             requireNonNegative(leaderEpoch, "leaderEpoch");
             if (records == null) {
                 throw new IllegalArgumentException("records must not be null");
@@ -544,7 +587,7 @@ public final class ProtocolMessages {
             int maxBytes) {
         public ReplicaFetchV2Request {
             requireNonEmpty(clusterCredential, "clusterCredential");
-            requireNonEmpty(topicName, "topicName");
+            requireTopicName(topicName, "topicName");
             requireNonNegative(brokerEpoch, "brokerEpoch");
             requireNonNegative(controllerEpoch, "controllerEpoch");
             requireNonNegative(leaderEpoch, "leaderEpoch");
@@ -562,7 +605,7 @@ public final class ProtocolMessages {
             long controllerEpoch) {
         public TopicDeleteAckRequest {
             requireNonEmpty(clusterCredential, "clusterCredential");
-            requireNonEmpty(topicName, "topicName");
+            requireTopicName(topicName, "topicName");
             requireNonNegative(tombstoneVersion, "tombstoneVersion");
             requireNonNegative(brokerEpoch, "brokerEpoch");
             requireNonNegative(controllerEpoch, "controllerEpoch");
@@ -572,16 +615,30 @@ public final class ProtocolMessages {
     public record FetchV2Request(
             String topicName, int partitionId, long leaderEpoch, long fetchOffset, int maxBytes) {
         public FetchV2Request {
-            requireNonEmpty(topicName, "topicName");
+            requireTopicName(topicName, "topicName");
             requireNonNegative(leaderEpoch, "leaderEpoch");
             requireNonNegative(fetchOffset, "fetchOffset");
             requireRange(maxBytes, 1, MqFrame.MAX_FRAME_BYTES, "maxBytes");
         }
     }
 
-    public record MetadataV2Request(String topicFilter, int topicLimit, int partitionLimit) {
+    public record MetadataV2Request(
+            String topicFilter,
+            String topicStartAfter,
+            String tombstoneStartAfter,
+            int topicLimit,
+            int partitionLimit) {
+        public MetadataV2Request(String topicFilter, int topicLimit, int partitionLimit) {
+            this(topicFilter, null, null, topicLimit, partitionLimit);
+        }
+
         public MetadataV2Request {
-            requireOptionalNonEmpty(topicFilter, "topicFilter");
+            requireOptionalTopicName(topicFilter, "topicFilter");
+            requireOptionalTopicName(topicStartAfter, "topicStartAfter");
+            requireOptionalTopicName(tombstoneStartAfter, "tombstoneStartAfter");
+            if (topicFilter != null && (topicStartAfter != null || tombstoneStartAfter != null)) {
+                throw new IllegalArgumentException("metadata cursors require an absent topic filter");
+            }
             requireRange(topicLimit, 1, 10_000, "topicLimit");
             requireRange(partitionLimit, 1, 10_000, "partitionLimit");
         }
@@ -610,7 +667,7 @@ public final class ProtocolMessages {
             long nextVisibleAtEpochMs) {
         public UpdateReplicaStateV2Request {
             requireNonEmpty(clusterCredential, "clusterCredential");
-            requireNonEmpty(topicName, "topicName");
+            requireTopicName(topicName, "topicName");
             requireNonNegative(brokerEpoch, "brokerEpoch");
             requireNonNegative(controllerEpoch, "controllerEpoch");
             requireNonNegative(leaderEpoch, "leaderEpoch");
@@ -719,6 +776,15 @@ public final class ProtocolMessages {
             V4BoundedList<Integer> requiredBrokerIds,
             V4BoundedList<Integer> acknowledgedBrokerIds,
             V4BoundedList<Integer> pendingBrokerIds) {
+    }
+
+    public record TopicTombstoneSummary(String topicName, TopicTombstoneInfo tombstone) {
+        public TopicTombstoneSummary {
+            requireTopicName(topicName, "topicName");
+            if (tombstone == null) {
+                throw new IllegalArgumentException("tombstone must not be null");
+            }
+        }
     }
 
     public record AuditEventInfo(
@@ -865,6 +931,7 @@ public final class ProtocolMessages {
     public record MetadataV2Response(
             V4BoundedList<OpsBrokerInfo> brokers,
             V4BoundedList<TopicSummary> topics,
+            V4BoundedList<TopicTombstoneSummary> tombstones,
             ControllerMetadata controller,
             long metadataVersion,
             int metadataFormatVersion) {

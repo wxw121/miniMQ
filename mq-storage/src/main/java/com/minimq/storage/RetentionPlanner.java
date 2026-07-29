@@ -17,6 +17,14 @@ final class RetentionPlanner {
             List<SegmentMetadata> segments,
             RetentionPolicy policy,
             long nowEpochMs) {
+        return segmentsToDelete(segments, policy, nowEpochMs, Set.of());
+    }
+
+    static List<Long> segmentsToDelete(
+            List<SegmentMetadata> segments,
+            RetentionPolicy policy,
+            long nowEpochMs,
+            Set<Long> protectedBases) {
         if (segments == null || segments.isEmpty() || policy == null || !policy.enabled()) {
             return List.of();
         }
@@ -26,6 +34,7 @@ final class RetentionPlanner {
         if (policy.retentionMs() > 0) {
             for (SegmentMetadata segment : segments) {
                 if (!segment.active()
+                        && !protectedBases.contains(segment.baseOffset())
                         && segment.createdAtEpochMs() + policy.retentionMs() <= nowEpochMs) {
                     selected.add(segment.baseOffset());
                     selectedBases.add(segment.baseOffset());
@@ -39,7 +48,9 @@ final class RetentionPlanner {
                 if (totalBytes <= policy.retentionBytes()) {
                     break;
                 }
-                if (segment.active() || selectedBases.contains(segment.baseOffset())) {
+                if (segment.active()
+                        || protectedBases.contains(segment.baseOffset())
+                        || selectedBases.contains(segment.baseOffset())) {
                     continue;
                 }
                 selected.add(segment.baseOffset());

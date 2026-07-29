@@ -302,13 +302,36 @@ final class SegmentFile implements AutoCloseable {
         if (closed) {
             return;
         }
+        closed = true;
+        RuntimeException failure = null;
         try {
-            logChannel.force(false);
-            index.close();
-            logChannel.close();
-            closed = true;
+            if (logChannel.isOpen()) {
+                logChannel.force(false);
+            }
         } catch (IOException e) {
-            throw new IllegalStateException("Failed to close segment " + logPath, e);
+            failure = new IllegalStateException("Failed to close segment " + logPath, e);
+        }
+        try {
+            index.close();
+        } catch (RuntimeException e) {
+            if (failure == null) {
+                failure = e;
+            } else {
+                failure.addSuppressed(e);
+            }
+        }
+        try {
+            logChannel.close();
+        } catch (IOException e) {
+            RuntimeException closeFailure = new IllegalStateException("Failed to close segment " + logPath, e);
+            if (failure == null) {
+                failure = closeFailure;
+            } else {
+                failure.addSuppressed(closeFailure);
+            }
+        }
+        if (failure != null) {
+            throw failure;
         }
     }
 

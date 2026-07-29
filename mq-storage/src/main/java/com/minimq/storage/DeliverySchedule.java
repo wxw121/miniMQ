@@ -120,31 +120,56 @@ public final class DeliverySchedule {
     /** Returns the first offset blocked by a future record, or physicalHighWatermark. */
     public synchronized long visibleHighWatermark(
             String topic, int partitionId, long physicalHighWatermark) {
+        return visibilityState(topic, partitionId, physicalHighWatermark).visibleHighWatermark();
+    }
+
+    public synchronized long nextVisibleAtEpochMs(
+            String topic, int partitionId, long physicalHighWatermark) {
+        return visibilityState(topic, partitionId, physicalHighWatermark).nextVisibleAtEpochMs();
+    }
+
+    synchronized VisibilityState visibilityState(
+            String topic, int partitionId, long physicalHighWatermark) {
+        return visibilityStateAt(
+                topic, partitionId, physicalHighWatermark, clockMillis.getAsLong());
+    }
+
+    synchronized VisibilityUpdate pruneAndGetVisibility(
+            String topic, int partitionId, long physicalHighWatermark) {
+        return pruneAndGetVisibilityAt(
+                topic, partitionId, physicalHighWatermark, clockMillis.getAsLong());
+    }
+
+    synchronized VisibilityUpdate pruneAndGetVisibilityAt(
+            String topic, int partitionId, long physicalHighWatermark, long now) {
+        int prunedCount = pruneDueAt(topic, partitionId, physicalHighWatermark, now);
+        VisibilityState state = visibilityStateAt(
+                topic, partitionId, physicalHighWatermark, now);
+        return new VisibilityUpdate(
+                state.visibleHighWatermark(), state.nextVisibleAtEpochMs(), prunedCount);
+    }
+
+    private VisibilityState visibilityStateAt(
+            String topic, int partitionId, long physicalHighWatermark, long now) {
         if (physicalHighWatermark < 0) {
             throw new IllegalArgumentException("physicalHighWatermark must be non-negative");
         }
         Map<Long, Long> partition = entries.get(new PartitionKey(topic, partitionId));
         if (partition == null || partition.isEmpty()) {
-            return physicalHighWatermark;
+            return new VisibilityState(physicalHighWatermark, -1L);
         }
-        long now = clockMillis.getAsLong();
         long floor = visibleWatermark(topic, partitionId);
-        return partition.entrySet().stream()
+        long visible = partition.entrySet().stream()
                 .filter(entry -> entry.getKey() < physicalHighWatermark
                         && entry.getKey() >= floor
                         && entry.getValue() > now)
                 .mapToLong(Map.Entry::getKey)
                 .min()
                 .orElse(physicalHighWatermark);
-    }
-
-    public synchronized long nextVisibleAtEpochMs(
-            String topic, int partitionId, long physicalHighWatermark) {
-        long visible = visibleHighWatermark(topic, partitionId, physicalHighWatermark);
-        if (visible >= physicalHighWatermark) {
-            return -1L;
-        }
-        return deliveryAt(topic, partitionId, visible).orElse(-1L);
+        long nextVisibleAtEpochMs = visible < physicalHighWatermark
+                ? partition.get(visible)
+                : -1L;
+        return new VisibilityState(visible, nextVisibleAtEpochMs);
     }
 
     public synchronized boolean hasFutureDelivery(
@@ -161,8 +186,35 @@ public final class DeliverySchedule {
                         && entry.getValue() > now);
     }
 
+    /** Returns the scheduled offsets that are still blocked by future delivery. */
+    public synchronized List<Long> futureOffsets(
+            String topic, int partitionId, long physicalHighWatermark) {
+        if (physicalHighWatermark < 0) {
+            throw new IllegalArgumentException("physicalHighWatermark must be non-negative");
+        }
+        Map<Long, Long> partition = entries.get(new PartitionKey(topic, partitionId));
+        if (partition == null || partition.isEmpty()) {
+            return List.of();
+        }
+        long now = clockMillis.getAsLong();
+        long floor = visibleWatermark(topic, partitionId);
+        return partition.entrySet().stream()
+                .filter(entry -> entry.getKey() < physicalHighWatermark
+                        && entry.getKey() >= floor
+                        && entry.getValue() > now)
+                .map(Map.Entry::getKey)
+                .sorted()
+                .toList();
+    }
+
     /** Removes due entries before the supplied physical high watermark. */
     public synchronized int pruneDue(String topic, int partitionId, long physicalHighWatermark) {
+        return pruneDueAt(
+                topic, partitionId, physicalHighWatermark, clockMillis.getAsLong());
+    }
+
+    synchronized int pruneDueAt(
+            String topic, int partitionId, long physicalHighWatermark, long now) {
         if (physicalHighWatermark < 0) {
             throw new IllegalArgumentException("physicalHighWatermark must be non-negative");
         }
@@ -171,7 +223,6 @@ public final class DeliverySchedule {
         if (partition == null) {
             return 0;
         }
-        long now = clockMillis.getAsLong();
         int removed = 0;
         for (Long offset : new ArrayList<>(partition.keySet())) {
             Long dueAt = partition.get(offset);
@@ -264,5 +315,14 @@ public final class DeliverySchedule {
     }
 
     public record ScheduledEntry(String topic, int partitionId, long offset, long deliverAtEpochMs) {
+    }
+
+    record VisibilityState(long visibleHighWatermark, long nextVisibleAtEpochMs) {
+    }
+
+    record VisibilityUpdate(
+            long visibleHighWatermark,
+            long nextVisibleAtEpochMs,
+            int prunedCount) {
     }
 }

@@ -3,6 +3,7 @@ package com.minimq.broker.controller;
 import com.minimq.broker.metadata.MetadataStore;
 import com.minimq.broker.metadata.ClusterMetadata;
 import com.minimq.broker.metadata.ClusterMetadataRepository;
+import com.minimq.broker.metadata.SwitchableClusterMetadataRepository;
 import com.minimq.broker.metadata.VersionedClusterMetadata;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.protocol.message.ProtocolMessages.BrokerHeartbeatRequest;
@@ -82,6 +83,108 @@ class ClusterControllerTest {
         assertEquals(1, metadata.topics().get(0).partitions().get(1).leaderBrokerId());
         assertEquals(2, metadata.topics().get(0).partitions().get(2).leaderBrokerId());
         assertTrue(metadata.brokers().size() >= 3);
+    }
+
+    @Test
+    void createTopicRejectsPortableStorageIdentityCollision() {
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("orders", 1)));
+        assertEquals(
+                ErrorCode.INVALID_REQUEST,
+                controller.createTopic(new CreateTopicRequest("Orders", 1)));
+    }
+
+    @Test
+    void deleteTopicRejectsInvalidUnknownAndNullTimeoutRequests() {
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+
+        assertEquals(ErrorCode.INVALID_REQUEST, controller.deleteTopic("", 1L));
+        assertEquals(ErrorCode.INVALID_REQUEST, controller.deleteTopic("orders", -1L));
+        assertEquals(ErrorCode.UNKNOWN_TOPIC, controller.deleteTopic("orders", 1L));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> controller.deleteTopic("orders", 1L, null));
+    }
+
+    @Test
+    void deleteTopicWithoutOnlineBrokersTransitionsDirectlyToDeleted() {
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        assertEquals(ErrorCode.NONE, controller.registerBroker(
+                new RegisterBrokerRequest(0, "localhost", 9092)).errorCode());
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("orders", 1)));
+        controller.updateMetadata(metadata -> {
+            metadata.brokers.get(0).online = false;
+            return null;
+        });
+
+        assertEquals(ErrorCode.NONE, controller.deleteTopic("orders", 123L));
+
+        ClusterMetadata.TopicTombstone tombstone = controller.getTopicTombstone("orders");
+        assertEquals("DELETED", tombstone.state);
+        assertEquals(123L, tombstone.deletedAtEpochMs);
+        assertTrue(tombstone.requiredBrokerIds.isEmpty());
+        assertEquals(ErrorCode.NONE, controller.deleteTopic("orders", 456L));
+        assertEquals(123L, controller.getTopicTombstone("orders").deletedAtEpochMs);
+    }
+
+    @Test
+    void deleteTopicRemovesConsumerGroupsAndReliabilityLinks() {
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        assertEquals(ErrorCode.NONE, controller.registerBroker(
+                new RegisterBrokerRequest(0, "localhost", 9092)).errorCode());
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("orders", 1)));
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("retry", 1)));
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("dlq", 1)));
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("retry-source", 1)));
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("dlq-source", 1)));
+        controller.updateMetadata(metadata -> {
+            ClusterMetadata.ConsumerGroupEntry group = new ClusterMetadata.ConsumerGroupEntry();
+            group.groupId = "g1";
+            group.topicName = "orders";
+            metadata.consumerGroups.put(group.groupId, group);
+            metadata.retryTopicBySource.put("orders", "retry");
+            metadata.deadLetterTopicBySource.put("orders", "dlq");
+            metadata.retryTopicBySource.put("retry-source", "orders");
+            metadata.deadLetterTopicBySource.put("dlq-source", "orders");
+            return null;
+        });
+
+        assertEquals(ErrorCode.NONE, controller.deleteTopic("orders", 123L));
+
+        ClusterMetadata snapshot = controller.snapshot();
+        assertFalse(snapshot.consumerGroups.containsKey("g1"));
+        assertFalse(snapshot.retryTopicBySource.containsKey("orders"));
+        assertFalse(snapshot.deadLetterTopicBySource.containsKey("orders"));
+        assertFalse(snapshot.retryTopicBySource.containsValue("orders"));
+        assertFalse(snapshot.deadLetterTopicBySource.containsValue("orders"));
+    }
+
+    @Test
+    void topicDeletionAcknowledgementFencesIdentityAndIsIdempotent() {
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        assertEquals(ErrorCode.NONE, controller.registerBroker(
+                new RegisterBrokerRequest(0, "localhost", 9092)).errorCode());
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("orders", 1)));
+        assertEquals(ErrorCode.NONE, controller.deleteTopic("orders", 123L));
+        ClusterMetadata.TopicTombstone tombstone = controller.getTopicTombstone("orders");
+        long brokerEpoch = controller.getBroker(0).brokerEpoch;
+        long controllerEpoch = controller.snapshot().controllerEpoch;
+
+        assertEquals(ErrorCode.UNKNOWN_BROKER, controller.acknowledgeTopicDeletion(
+                "orders", tombstone.tombstoneVersion, 9, brokerEpoch, controllerEpoch));
+        assertEquals(ErrorCode.CONTROLLER_FENCED, controller.acknowledgeTopicDeletion(
+                "orders", tombstone.tombstoneVersion, 0, brokerEpoch, controllerEpoch + 1));
+        assertEquals(ErrorCode.BROKER_FENCED, controller.acknowledgeTopicDeletion(
+                "orders", tombstone.tombstoneVersion, 0, brokerEpoch + 1, controllerEpoch));
+        assertEquals(ErrorCode.STALE_TOMBSTONE, controller.acknowledgeTopicDeletion(
+                "orders", tombstone.tombstoneVersion + 1, 0, brokerEpoch, controllerEpoch));
+        assertEquals(ErrorCode.NONE, controller.acknowledgeTopicDeletion(
+                "orders", tombstone.tombstoneVersion, 0, brokerEpoch, controllerEpoch));
+        assertEquals("DELETED", controller.getTopicTombstone("orders").state);
+        assertEquals(ErrorCode.NONE, controller.acknowledgeTopicDeletion(
+                "orders", tombstone.tombstoneVersion, 0, brokerEpoch, controllerEpoch));
     }
 
     @Test
@@ -254,6 +357,38 @@ class ClusterControllerTest {
                 controller.updateReplicaStateV2(
                         "orders", 0, 0, 0L, 99L, 0L,
                         5L, 5L, -1L));
+    }
+
+    @Test
+    void replicaFetchV2FencesIdentityAndEpochs() {
+        ClusterController controller = controllerWithReplicatedTopic();
+        assertEquals(ErrorCode.NONE,
+                controller.registerBroker(new RegisterBrokerRequest(2, "localhost", 9094)).errorCode());
+
+        assertEquals(ErrorCode.NONE,
+                controller.validateReplicaFetchV2("orders", 0, 0, 1, 1L, 0L, 0L));
+        assertEquals(ErrorCode.UNKNOWN_BROKER,
+                controller.validateReplicaFetchV2("orders", 0, 0, 99, 1L, 0L, 0L));
+        assertEquals(ErrorCode.UNKNOWN_TOPIC,
+                controller.validateReplicaFetchV2("missing", 0, 0, 1, 1L, 0L, 0L));
+        assertEquals(ErrorCode.UNKNOWN_PARTITION,
+                controller.validateReplicaFetchV2("orders", 99, 0, 1, 1L, 0L, 0L));
+        assertEquals(ErrorCode.NOT_LEADER,
+                controller.validateReplicaFetchV2("orders", 0, 1, 0, 1L, 0L, 0L));
+        assertEquals(ErrorCode.INVALID_REQUEST,
+                controller.validateReplicaFetchV2("orders", 0, 0, 0, 1L, 0L, 0L));
+        assertEquals(ErrorCode.INVALID_REQUEST,
+                controller.validateReplicaFetchV2("orders", 0, 0, 2, 1L, 0L, 0L));
+        assertEquals(ErrorCode.BROKER_FENCED,
+                controller.validateReplicaFetchV2("orders", 0, 0, 1, 0L, 0L, 0L));
+        assertEquals(ErrorCode.CONTROLLER_FENCED,
+                controller.validateReplicaFetchV2("orders", 0, 0, 1, 1L, 1L, 0L));
+        assertEquals(ErrorCode.STALE_LEADER_EPOCH,
+                controller.validateReplicaFetchV2("orders", 0, 0, 1, 1L, 0L, 1L));
+
+        assertEquals(ErrorCode.NONE, controller.markBrokerOffline(1));
+        assertEquals(ErrorCode.BROKER_FENCED,
+                controller.validateReplicaFetchV2("orders", 0, 0, 1, 1L, 0L, 0L));
     }
 
     @Test
@@ -695,6 +830,48 @@ class ClusterControllerTest {
         assertFalse(controller.getBroker(1).online);
     }
 
+    @Test
+    void recoveryWindowTreatsExactEpochHeartbeatAsRecoveryConfirmation() {
+        AtomicLong now = new AtomicLong();
+        ClusterController controller = new ClusterController(
+                new MetadataStore(tempDir), 5_000L, now::get);
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
+
+        controller.beginRecovery(2_000L);
+        assertEquals(ErrorCode.NONE,
+                controller.heartbeatBroker(new BrokerHeartbeatRequest(0, 1L)));
+
+        now.set(TimeUnit.MILLISECONDS.toNanos(2_001));
+        assertTrue(controller.advanceRecoveryWindow());
+        assertTrue(controller.getBroker(0).online);
+        assertFalse(controller.getBroker(1).online);
+    }
+
+    @Test
+    void installedOnlineBrokerCanRenewItsPersistedLeaseDuringControllerRecovery() {
+        AtomicLong now = new AtomicLong();
+        MetadataStore shared = new MetadataStore(tempDir.resolve("shared"));
+        ClusterController previousController = new ClusterController(shared, 5_000L, now::get);
+        assertEquals(ErrorCode.NONE, previousController.registerBroker(
+                new RegisterBrokerRequest(0, "localhost", 9092)).errorCode());
+
+        SwitchableClusterMetadataRepository repository =
+                new SwitchableClusterMetadataRepository(
+                        new MetadataStore(tempDir.resolve("empty")));
+        ClusterController promotedController = new ClusterController(
+                repository, 5_000L, now::get);
+        repository.switchTo(shared);
+        promotedController.installMetadata(shared.read());
+        promotedController.beginRecovery(2_000L);
+
+        assertEquals(ErrorCode.NONE,
+                promotedController.heartbeatBroker(new BrokerHeartbeatRequest(0, 1L)));
+        now.set(TimeUnit.MILLISECONDS.toNanos(2_001L));
+        assertTrue(promotedController.advanceRecoveryWindow());
+        assertTrue(promotedController.getBroker(0).online);
+    }
+
     private ClusterController controllerWithReplicatedTopic() {
         ClusterController controller = new ClusterController(new MetadataStore(tempDir));
         controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
@@ -730,12 +907,28 @@ class ClusterControllerTest {
         }
 
         @Override
+        public VersionedClusterMetadata read(java.time.Duration timeout) {
+            return current;
+        }
+
+        @Override
         public UpdateResult initialize(ClusterMetadata metadata) {
             return new UpdateResult(ErrorCode.CONTROLLER_FENCED, current);
         }
 
         @Override
+        public UpdateResult initialize(ClusterMetadata metadata, java.time.Duration timeout) {
+            return new UpdateResult(ErrorCode.CONTROLLER_FENCED, current);
+        }
+
+        @Override
         public UpdateResult compareAndSet(long expectedRevision, ClusterMetadata metadata) {
+            return new UpdateResult(ErrorCode.CONTROLLER_FENCED, current);
+        }
+
+        @Override
+        public UpdateResult compareAndSet(
+                long expectedRevision, ClusterMetadata metadata, java.time.Duration timeout) {
             return new UpdateResult(ErrorCode.CONTROLLER_FENCED, current);
         }
     }

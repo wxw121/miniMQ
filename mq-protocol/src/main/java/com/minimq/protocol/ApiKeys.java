@@ -43,6 +43,53 @@ public final class ApiKeys {
     public static final short RUNTIME_METRICS_V2 = 36;
     public static final short UPDATE_REPLICA_STATE_V2 = 37;
 
+    private static final String[] NAMES = {
+            "CREATE_TOPIC",
+            "METADATA",
+            "PRODUCE",
+            "FETCH",
+            "JOIN_GROUP",
+            "SYNC_GROUP",
+            "HEARTBEAT",
+            "OFFSET_COMMIT",
+            "OFFSET_FETCH",
+            "REGISTER_BROKER",
+            "REPLICA_FETCH",
+            "MARK_BROKER_OFFLINE",
+            "UPDATE_REPLICA_LEO",
+            "MAINTENANCE_REPORT",
+            "MAINTENANCE_RUN",
+            "MAINTENANCE_METRICS",
+            "BROKER_HEARTBEAT",
+            "DISCOVER_CONTROLLER",
+            "LEADER_READY",
+            "RUNTIME_METRICS",
+            "OPS_STATUS",
+            "GROUP_STATUS",
+            "LIST_TOPICS",
+            "DESCRIBE_TOPIC",
+            "DELETE_TOPIC",
+            "INCREASE_PARTITIONS",
+            "FAILOVER_AUDIT",
+            "AUTH_STATUS",
+            "CONFIGURE_TOPIC_RELIABILITY",
+            "MARK_BROKER_OFFLINE_ADMIN",
+            "CREATE_TOPIC_ADMIN",
+            "PRODUCE_V2",
+            "REPLICA_FETCH_V2",
+            "TOPIC_DELETE_ACK",
+            "FETCH_V2",
+            "METADATA_V2",
+            "RUNTIME_METRICS_V2",
+            "UPDATE_REPLICA_STATE_V2"
+    };
+
+    public static String nameOf(short apiKey) {
+        return apiKey >= 0 && apiKey < NAMES.length
+                ? NAMES[apiKey]
+                : "apiKey=" + apiKey;
+    }
+
     private ApiKeys() {
     }
 }

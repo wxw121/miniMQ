@@ -15,9 +15,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Comparator;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 /**
  * Applies installed tombstones away from the metadata-watch executor.  A
@@ -27,6 +31,7 @@ import java.util.concurrent.TimeUnit;
 public final class TopicDeletionReconciler implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(TopicDeletionReconciler.class);
     private static final long DEFAULT_RETRY_MS = 250L;
+    private static final long DEFAULT_PASS_TIMEOUT_MS = 5_000L;
 
     private final BrokerConfig config;
     private final ClusterController clusterController;
@@ -36,6 +41,9 @@ public final class TopicDeletionReconciler implements AutoCloseable {
     private final LeaderEpochStateStore epochStateStore;
     private final ScheduledExecutorService executor;
     private final boolean ownsExecutor;
+    private final LongSupplier nanoTime;
+    private final Supplier<ControllerClient> controllerClientFactory;
+    private final Map<String, Long> locallyCleanedTombstones = new ConcurrentHashMap<>();
     private volatile boolean closed;
 
     public TopicDeletionReconciler(
@@ -55,7 +63,9 @@ public final class TopicDeletionReconciler implements AutoCloseable {
                     thread.setDaemon(true);
                     return thread;
                 }),
-                true);
+                true,
+                System::nanoTime,
+                ControllerClient::new);
     }
 
     TopicDeletionReconciler(
@@ -65,7 +75,36 @@ public final class TopicDeletionReconciler implements AutoCloseable {
             BrokerAvailabilityGuard availabilityGuard,
             ControllerRole controllerRole,
             ScheduledExecutorService executor) {
-        this(config, clusterController, partitionManager, availabilityGuard, controllerRole, executor, false);
+        this(
+                config,
+                clusterController,
+                partitionManager,
+                availabilityGuard,
+                controllerRole,
+                executor,
+                false,
+                System::nanoTime,
+                ControllerClient::new);
+    }
+
+    TopicDeletionReconciler(
+            BrokerConfig config,
+            ClusterController clusterController,
+            PartitionManager partitionManager,
+            BrokerAvailabilityGuard availabilityGuard,
+            ControllerRole controllerRole,
+            ScheduledExecutorService executor,
+            LongSupplier nanoTime) {
+        this(
+                config,
+                clusterController,
+                partitionManager,
+                availabilityGuard,
+                controllerRole,
+                executor,
+                false,
+                nanoTime,
+                ControllerClient::new);
     }
 
     private TopicDeletionReconciler(
@@ -75,7 +114,9 @@ public final class TopicDeletionReconciler implements AutoCloseable {
             BrokerAvailabilityGuard availabilityGuard,
             ControllerRole controllerRole,
             ScheduledExecutorService executor,
-            boolean ownsExecutor) {
+            boolean ownsExecutor,
+            LongSupplier nanoTime,
+            Supplier<ControllerClient> controllerClientFactory) {
         this.config = config;
         this.clusterController = clusterController;
         this.partitionManager = partitionManager;
@@ -84,6 +125,8 @@ public final class TopicDeletionReconciler implements AutoCloseable {
         this.epochStateStore = new LeaderEpochStateStore(config.dataDir().resolve("leader-epochs"));
         this.executor = executor;
         this.ownsExecutor = ownsExecutor;
+        this.nanoTime = nanoTime;
+        this.controllerClientFactory = controllerClientFactory;
     }
 
     public void start() {
@@ -92,6 +135,16 @@ public final class TopicDeletionReconciler implements AutoCloseable {
 
     /** Runs one bounded reconciliation pass; useful for deterministic tests. */
     public int reconcileOnce() {
+        long now = nanoTime.getAsLong();
+        long timeoutNanos = TimeUnit.MILLISECONDS.toNanos(DEFAULT_PASS_TIMEOUT_MS);
+        long deadlineNanos = now > Long.MAX_VALUE - timeoutNanos
+                ? Long.MAX_VALUE
+                : now + timeoutNanos;
+        return reconcileOnce(deadlineNanos);
+    }
+
+    /** Runs one pass without starting work after the supplied monotonic deadline. */
+    public int reconcileOnce(long deadlineNanos) {
         if (closed) {
             return 0;
         }
@@ -103,38 +156,73 @@ public final class TopicDeletionReconciler implements AutoCloseable {
         var tombstones = clusterController.snapshot().topicTombstones.values().stream()
                 .sorted(Comparator.comparing(tombstone -> tombstone.topicName))
                 .toList();
-        for (ClusterMetadata.TopicTombstone tombstone : tombstones) {
-            try {
-                partitionManager.deleteTopic(tombstone.topicName, tombstone.tombstoneVersion);
-                epochStateStore.deleteTopic(tombstone.topicName);
+        ControllerClient remoteClient = null;
+        try {
+            for (ClusterMetadata.TopicTombstone tombstone : tombstones) {
+                if (deadlineReached(deadlineNanos)) {
+                    break;
+                }
+                if (!Long.valueOf(tombstone.tombstoneVersion).equals(
+                        locallyCleanedTombstones.get(tombstone.topicName))) {
+                    try {
+                        partitionManager.deleteTopic(tombstone.topicName, tombstone.tombstoneVersion);
+                        epochStateStore.deleteTopic(tombstone.topicName);
+                        locallyCleanedTombstones.put(
+                                tombstone.topicName, tombstone.tombstoneVersion);
+                    } catch (RuntimeException failure) {
+                        availabilityGuard.fenceStorageCleanup();
+                        log.warn("Topic deletion cleanup failed on broker {} for {}",
+                                config.brokerId(), tombstone.topicName, failure);
+                        continue;
+                    }
+                }
+                if (tombstone.acknowledgedBrokerIds.contains(config.brokerId())) {
+                    continue;
+                }
                 try {
-                    acknowledge(tombstone, broker);
+                    if (!controllerRole.isActive() && remoteClient == null) {
+                        remoteClient = connectRemoteController(deadlineNanos);
+                    }
+                    acknowledge(tombstone, broker, remoteClient, deadlineNanos);
+                    applied++;
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                     return applied;
+                } catch (ControllerClient.ControllerRequestException failure) {
+                    // A stale snapshot is expected during a metadata transition;
+                    // refresh and retry on the next bounded pass. An ACK's epoch
+                    // may have become stale after this pass captured its snapshot;
+                    // lease heartbeats remain the authority for self-fencing.
+                    log.debug("Topic deletion ack deferred topic={} error={}",
+                            tombstone.topicName, failure.errorCode());
+                } catch (RuntimeException failure) {
+                    log.warn("Topic deletion acknowledgement failed on broker {} for {}",
+                            config.brokerId(), tombstone.topicName, failure);
+                    remoteClient = closeRemoteClient(remoteClient, deadlineNanos);
                 }
-                applied++;
-            } catch (ControllerClient.ControllerRequestException failure) {
-                // A stale snapshot is expected during a metadata transition;
-                // refresh and retry on the next bounded pass.
-                log.debug("Topic deletion ack deferred topic={} error={}",
-                        tombstone.topicName, failure.errorCode());
-                if (failure.errorCode() == ErrorCode.BROKER_FENCED
-                        || failure.errorCode() == ErrorCode.CONTROLLER_FENCED) {
-                    availabilityGuard.fence();
-                }
-            } catch (RuntimeException failure) {
-                availabilityGuard.fence();
-                log.warn("Topic deletion cleanup failed on broker {} for {}",
-                        config.brokerId(), tombstone.topicName, failure);
             }
+        } finally {
+            closeRemoteClient(remoteClient, deadlineNanos);
         }
         return applied;
     }
 
+    public boolean isCaughtUp() {
+        ClusterMetadata.BrokerEntry broker = clusterController.getBroker(config.brokerId());
+        if (broker == null || !broker.online) {
+            return false;
+        }
+        return clusterController.snapshot().topicTombstones.values().stream()
+                .allMatch(tombstone -> tombstone.acknowledgedBrokerIds.contains(config.brokerId())
+                        && Long.valueOf(tombstone.tombstoneVersion).equals(
+                        locallyCleanedTombstones.get(tombstone.topicName)));
+    }
+
     private void acknowledge(
             ClusterMetadata.TopicTombstone tombstone,
-            ClusterMetadata.BrokerEntry broker) throws InterruptedException {
+            ClusterMetadata.BrokerEntry broker,
+            ControllerClient remoteClient,
+            long deadlineNanos) throws InterruptedException {
         long controllerEpoch = clusterController.snapshot().controllerEpoch;
         TopicDeleteAckRequest request = new TopicDeleteAckRequest(
                 config.clusterToken(),
@@ -151,16 +239,54 @@ public final class TopicDeletionReconciler implements AutoCloseable {
                 throw new ControllerClient.ControllerRequestException(error);
             }
         } else {
-            try (ControllerClient client = new ControllerClient()) {
-                var identity = controllerRole.currentLeader();
-                if (identity == null) {
-                    throw new IllegalStateException("Controller is not available");
-                }
-                client.connect(identity.host(), identity.port());
-                client.acknowledgeTopicDeletion(request);
+            if (remoteClient == null) {
+                throw new IllegalStateException("Controller is not available");
             }
-            MetadataSync.refresh(config, clusterController, controllerRole);
+            remoteClient.acknowledgeTopicDeletion(
+                    request, remainingTimeoutMillis(deadlineNanos));
+            if (config.usesLegacyControllerMode()) {
+                MetadataSync.refresh(
+                        clusterController, remoteClient, deadlineNanos, nanoTime);
+            }
         }
+    }
+
+    private ControllerClient connectRemoteController(long deadlineNanos) throws InterruptedException {
+        var identity = controllerRole.currentLeader();
+        if (identity == null) {
+            throw new IllegalStateException("Controller is not available");
+        }
+        ControllerClient client = controllerClientFactory.get();
+        try {
+            client.connect(identity.host(), identity.port(), remainingTimeoutMillis(deadlineNanos));
+            return client;
+        } catch (InterruptedException | RuntimeException | Error failure) {
+            closeRemoteClient(client, deadlineNanos);
+            throw failure;
+        }
+    }
+
+    private boolean deadlineReached(long deadlineNanos) {
+        return nanoTime.getAsLong() >= deadlineNanos;
+    }
+
+    private long remainingTimeoutMillis(long deadlineNanos) {
+        long remainingNanos = deadlineNanos - nanoTime.getAsLong();
+        return Math.max(1L, TimeUnit.NANOSECONDS.toMillis(Math.max(0L, remainingNanos)));
+    }
+
+    private ControllerClient closeRemoteClient(ControllerClient client, long deadlineNanos) {
+        if (client == null) {
+            return null;
+        }
+        try {
+            client.close(remainingTimeoutMillis(deadlineNanos));
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        } catch (RuntimeException failure) {
+            log.debug("Controller client cleanup failed during topic deletion reconciliation", failure);
+        }
+        return null;
     }
 
     private void runSafely() {

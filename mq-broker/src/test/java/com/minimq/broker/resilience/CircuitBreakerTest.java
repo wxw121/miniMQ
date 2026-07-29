@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CircuitBreakerTest {
@@ -46,6 +47,25 @@ class CircuitBreakerTest {
         assertFalse(breaker.allowRequest());
         clock.advance(1);
         assertTrue(breaker.allowRequest());
+    }
+
+    @Test
+    void rejectsNonPositiveConfiguration() {
+        MutableClock clock = new MutableClock();
+
+        assertThrows(IllegalArgumentException.class, () -> new CircuitBreaker(0, 1, clock::now));
+        assertThrows(IllegalArgumentException.class, () -> new CircuitBreaker(1, 0, clock::now));
+    }
+
+    @Test
+    void stateTransitionsToHalfOpenAfterCooldown() {
+        MutableClock clock = new MutableClock();
+        CircuitBreaker breaker = new CircuitBreaker(1, 50, clock::now);
+
+        breaker.recordFailure();
+        clock.advance(50);
+
+        assertEquals(CircuitBreaker.State.HALF_OPEN, breaker.state());
     }
 
     private static final class MutableClock {

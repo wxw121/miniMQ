@@ -30,26 +30,42 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.LongConsumer;
 import java.util.function.Predicate;
 
 final class FetchResponseWriter {
+    private static final int RECORD_FRAMING_BYTES = Long.BYTES + 2 * Integer.BYTES;
     private final FetchTransferMode mode;
     private final long timeoutMs;
     private final FetchTransferMetrics metrics;
     private final Predicate<Channel> fileRegionSupported;
+    private final LongConsumer fetchBytesRecorder;
 
     FetchResponseWriter(BrokerConfig config, FetchTransferMetrics metrics) {
+        this(config, metrics, ignored -> { });
+    }
+
+    FetchResponseWriter(
+            BrokerConfig config, FetchTransferMetrics metrics, LongConsumer fetchBytesRecorder) {
         this(config.fetchTransferMode(), config.fetchTransferTimeoutMs(), metrics,
-                channel -> channel instanceof SocketChannel);
+                channel -> channel instanceof SocketChannel, fetchBytesRecorder);
     }
 
     FetchResponseWriter(FetchTransferMode mode, long timeoutMs,
                         FetchTransferMetrics metrics,
                         Predicate<Channel> fileRegionSupported) {
+        this(mode, timeoutMs, metrics, fileRegionSupported, ignored -> { });
+    }
+
+    FetchResponseWriter(FetchTransferMode mode, long timeoutMs,
+                        FetchTransferMetrics metrics,
+                        Predicate<Channel> fileRegionSupported,
+                        LongConsumer fetchBytesRecorder) {
         this.mode = mode;
         this.timeoutMs = timeoutMs;
         this.metrics = metrics;
         this.fileRegionSupported = fileRegionSupported;
+        this.fetchBytesRecorder = fetchBytesRecorder;
     }
 
     boolean write(ChannelHandlerContext ctx, MqResponseHeader header,
@@ -97,7 +113,12 @@ final class FetchResponseWriter {
         FetchResponse response = new FetchResponse(
                 request.topicName(), request.partitionId(), responseHighWatermark, fetched);
         ByteBuf frame = ProtocolSerdes.encodeResponse(header, response);
-        ctx.writeAndFlush(frame);
+        long payloadBytes = payloadBytes(fetched);
+        ctx.writeAndFlush(frame).addListener(future -> {
+            if (future.isSuccess()) {
+                fetchBytesRecorder.accept(payloadBytes);
+            }
+        });
     }
 
     private void writeSendfile(ChannelHandlerContext ctx, MqResponseHeader header,
@@ -109,6 +130,7 @@ final class FetchResponseWriter {
         List<DefaultFileRegion> regions = new ArrayList<>();
         boolean prefixQueued = false;
         try {
+            long payloadBytes = payloadBytes(plan);
             for (FileRegionSlice slice : plan.slices()) {
                 FileChannel channel = FileChannel.open(slice.path(), StandardOpenOption.READ);
                 try {
@@ -162,6 +184,7 @@ final class FetchResponseWriter {
                 timeout.cancel(false);
                 if (future.isSuccess()) {
                     metrics.recordSendfile(plan.recordBytes());
+                    fetchBytesRecorder.accept(payloadBytes);
                 } else {
                     metrics.recordFailure();
                     ctx.close();
@@ -178,6 +201,26 @@ final class FetchResponseWriter {
             }
             throw new IllegalStateException("Failed to write sendfile FETCH response", failure);
         }
+    }
+
+    private static long payloadBytes(List<FetchedRecord> records) {
+        long payloadBytes = 0L;
+        for (FetchedRecord record : records) {
+            payloadBytes = Math.addExact(
+                    payloadBytes,
+                    (record.key() == null ? 0L : record.key().length)
+                            + (record.value() == null ? 0L : record.value().length));
+        }
+        return payloadBytes;
+    }
+
+    private static long payloadBytes(FetchPlan plan) {
+        long framingBytes = Math.multiplyExact((long) plan.recordCount(), RECORD_FRAMING_BYTES);
+        long payloadBytes = Math.subtractExact((long) plan.recordBytes(), framingBytes);
+        if (payloadBytes < 0L) {
+            throw new IllegalStateException("Fetch plan record bytes are smaller than record framing");
+        }
+        return payloadBytes;
     }
 
     private static final class TransferCleanup implements Runnable {

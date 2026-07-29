@@ -196,7 +196,7 @@ public final class SegmentedPartitionLog implements PartitionLog, TransferablePa
     @Override
     public synchronized void flush() {
         ensureOpen();
-        segments.forEach(SegmentFile::flush);
+        segments.stream().filter(segment -> !segment.isClosed()).forEach(SegmentFile::flush);
     }
 
     @Override
@@ -224,14 +224,16 @@ public final class SegmentedPartitionLog implements PartitionLog, TransferablePa
             String partition,
             RetentionPolicy retentionPolicy,
             CompactionPolicy compactionPolicy,
-            long nowEpochMs) {
+            long nowEpochMs,
+            List<Long> protectedOffsets) {
         ensureOpen();
         try {
             MaintenancePlan plan = planMaintenance(
                     partition,
                     retentionPolicy,
                     compactionPolicy,
-                    nowEpochMs);
+                    nowEpochMs,
+                    protectedOffsets);
             return new LogMaintenanceReport(
                     true,
                     plan.reports().isEmpty() ? MaintenanceStatus.NOOP : MaintenanceStatus.SUCCESS,
@@ -247,7 +249,8 @@ public final class SegmentedPartitionLog implements PartitionLog, TransferablePa
             String partition,
             RetentionPolicy retentionPolicy,
             CompactionPolicy compactionPolicy,
-            long nowEpochMs) {
+            long nowEpochMs,
+            List<Long> protectedOffsets) {
         ensureOpen();
         if (!tryBeginReaderQuiescence()) {
             return new LogMaintenanceReport(
@@ -262,7 +265,8 @@ public final class SegmentedPartitionLog implements PartitionLog, TransferablePa
                     partition,
                     retentionPolicy,
                     compactionPolicy,
-                    nowEpochMs);
+                    nowEpochMs,
+                    protectedOffsets);
             if (plan.reports().isEmpty()) {
                 return new LogMaintenanceReport(false, MaintenanceStatus.NOOP, List.of(), 0, 0);
             }
@@ -618,10 +622,6 @@ public final class SegmentedPartitionLog implements PartitionLog, TransferablePa
         }
     }
 
-    private void flushSegments() {
-        segments.forEach(SegmentFile::flush);
-    }
-
     private List<SegmentMetadata> segmentMetadata() {
         List<SegmentMetadata> metadata = new ArrayList<>();
         for (int i = 0; i < segments.size(); i++) {
@@ -650,21 +650,46 @@ public final class SegmentedPartitionLog implements PartitionLog, TransferablePa
             String partition,
             RetentionPolicy retentionPolicy,
             CompactionPolicy compactionPolicy,
-            long nowEpochMs) throws IOException {
+            long nowEpochMs,
+            List<Long> protectedOffsets) throws IOException {
+        Set<Long> protectedBases = protectedSegmentBases(protectedOffsets);
         List<Long> retentionBases = RetentionPlanner.segmentsToDelete(
                 segmentMetadata(),
                 retentionPolicy,
-                nowEpochMs);
+                nowEpochMs,
+                protectedBases);
         Set<Long> retentionSet = new HashSet<>(retentionBases);
         List<SegmentFile> survivingSegments = segments.stream()
                 .filter(segment -> !retentionSet.contains(segment.baseOffset()))
                 .toList();
         List<SegmentCompactor.SegmentReplacement> compactionReplacements =
-                SegmentCompactor.plan(survivingSegments, compactionPolicy);
+                SegmentCompactor.plan(survivingSegments, compactionPolicy, protectedBases);
         List<MaintenanceSegmentReport> reports = new ArrayList<>();
         reports.addAll(retentionReports(partition, retentionBases));
         reports.addAll(compactionReports(partition, compactionReplacements));
         return new MaintenancePlan(retentionBases, compactionReplacements, reports);
+    }
+
+    private Set<Long> protectedSegmentBases(List<Long> protectedOffsets) {
+        if (protectedOffsets.isEmpty()) {
+            return Set.of();
+        }
+        List<Long> sortedOffsets = protectedOffsets.stream().sorted().toList();
+        Set<Long> protectedBases = new HashSet<>();
+        int offsetIndex = 0;
+        for (SegmentFile segment : segments) {
+            while (offsetIndex < sortedOffsets.size()
+                    && sortedOffsets.get(offsetIndex) < segment.firstOffset()) {
+                offsetIndex++;
+            }
+            if (offsetIndex >= sortedOffsets.size()) {
+                break;
+            }
+            if (sortedOffsets.get(offsetIndex) <= segment.lastOffset()) {
+                protectedBases.add(segment.baseOffset());
+            }
+        }
+        return Set.copyOf(protectedBases);
     }
 
     private List<MaintenanceSegmentReport> compactionReports(

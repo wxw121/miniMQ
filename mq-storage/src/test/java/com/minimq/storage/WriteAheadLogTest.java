@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -18,6 +19,30 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class WriteAheadLogTest {
+
+    @Test
+    void scansRecordsWithoutRetainingTheWholeWal(@TempDir Path dir) throws IOException {
+        Path walPath = dir.resolve("wal").resolve("minimq.wal");
+        try (WriteAheadLog wal = new WriteAheadLog(walPath)) {
+            wal.append(WalRecord.dataAppend("orders", 0, 0, null, "first".getBytes()));
+            wal.append(WalRecord.topicDeleteBegin("orders", 7L));
+            wal.append(WalRecord.topicDeleteCommit("orders", 7L));
+
+            AtomicInteger visited = new AtomicInteger();
+            wal.scanFrom(0L, record -> {
+                int index = visited.getAndIncrement();
+                if (index == 0) {
+                    assertEquals(WalRecordType.DATA_APPEND, record.type());
+                } else if (index == 1) {
+                    assertEquals(WalRecordType.TOPIC_DELETE_BEGIN, record.type());
+                } else {
+                    assertEquals(WalRecordType.TOPIC_DELETE_COMMIT, record.type());
+                }
+            });
+
+            assertEquals(3, visited.get());
+        }
+    }
 
     @Test
     void appendAndReadDataAppendRecord(@TempDir Path dir) throws IOException {
@@ -115,6 +140,26 @@ class WriteAheadLogTest {
             assertEquals(deliverAtEpochMs, record.deliverAtEpochMs());
             assertArrayEquals("key".getBytes(), record.key());
             assertArrayEquals("value".getBytes(), record.value());
+        }
+    }
+
+    @Test
+    void readsV3WalRecordForPortableLegacyTopicName(@TempDir Path dir) throws IOException {
+        Path walPath = dir.resolve("wal").resolve("minimq.wal");
+        writeV3DataAppend(
+                walPath,
+                "sales east",
+                0,
+                7L,
+                "key".getBytes(StandardCharsets.UTF_8),
+                "value".getBytes(StandardCharsets.UTF_8));
+
+        try (WriteAheadLog reopened = new WriteAheadLog(walPath)) {
+            WalRecord record = reopened.readAll().get(0);
+
+            assertEquals("sales east", record.topic());
+            assertEquals(7L, record.offset());
+            assertArrayEquals("value".getBytes(StandardCharsets.UTF_8), record.value());
         }
     }
 
@@ -307,6 +352,38 @@ class WriteAheadLogTest {
                 key,
                 value,
                 deliverAtEpochMs);
+    }
+
+    private void writeV3DataAppend(
+            Path walPath,
+            String topic,
+            int partitionId,
+            long offset,
+            byte[] key,
+            byte[] value) throws IOException {
+        Files.createDirectories(walPath.getParent());
+        byte[] topicBytes = topic.getBytes(StandardCharsets.UTF_8);
+        int headerBytes = Short.BYTES + Byte.BYTES + Byte.BYTES + Integer.BYTES;
+        int bodyLength = Short.BYTES + topicBytes.length
+                + Integer.BYTES
+                + Long.BYTES
+                + Integer.BYTES + key.length
+                + Integer.BYTES + value.length;
+        ByteBuffer frame = ByteBuffer.allocate(headerBytes + bodyLength + Integer.BYTES);
+        frame.putShort(WriteAheadLog.MAGIC);
+        frame.put(WriteAheadLog.VERSION);
+        frame.put(WalRecordType.DATA_APPEND.id());
+        frame.putInt(bodyLength);
+        frame.putShort((short) topicBytes.length);
+        frame.put(topicBytes);
+        frame.putInt(partitionId);
+        frame.putLong(offset);
+        putBytes(frame, key);
+        putBytes(frame, value);
+        CRC32 crc = new CRC32();
+        crc.update(frame.array(), 0, frame.position());
+        frame.putInt((int) crc.getValue());
+        Files.write(walPath, frame.array());
     }
 
     private void writeRecordWithTrailingDelivery(

@@ -7,8 +7,11 @@ import io.etcd.jetcd.options.WatchOption;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
@@ -18,6 +21,8 @@ import java.util.function.Consumer;
  * installation are serialized on the metadata-installer thread.
  */
 public final class MetadataWatchService implements AutoCloseable {
+    private static final long RELOAD_RETRY_MS = 100L;
+
     public interface Source {
         Subscription watch(long startRevision, Consumer<VersionedClusterMetadata> event, Runnable failure);
     }
@@ -32,6 +37,7 @@ public final class MetadataWatchService implements AutoCloseable {
     private final Consumer<VersionedClusterMetadata> installer;
     private final ExecutorService executor;
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final CompletableFuture<Long> initialLoad = new CompletableFuture<>();
     private long installedRevision = -1;
     private Subscription subscription;
 
@@ -61,16 +67,41 @@ public final class MetadataWatchService implements AutoCloseable {
         enqueue(this::reloadAndWatch);
     }
 
+    public CompletionStage<Long> initialLoad() {
+        return initialLoad;
+    }
+
     private void reloadAndWatch() {
         if (closed.get()) {
             return;
         }
-        closeSubscription();
-        VersionedClusterMetadata current = repository.read();
-        install(current);
-        subscription = source.watch(Math.addExact(current.revision(), 1L),
-                value -> enqueue(() -> install(value)),
-                () -> enqueue(this::reloadAndWatch));
+        try {
+            closeSubscription();
+            VersionedClusterMetadata current = repository.read();
+            install(current);
+            subscription = source.watch(Math.addExact(current.revision(), 1L),
+                    value -> enqueue(() -> install(value)),
+                    () -> enqueue(this::reloadAndWatch));
+            initialLoad.complete(current.revision());
+        } catch (RuntimeException failure) {
+            retryReload();
+        } catch (Error failure) {
+            initialLoad.completeExceptionally(failure);
+            throw failure;
+        }
+    }
+
+    private void retryReload() {
+        if (closed.get()) {
+            return;
+        }
+        try {
+            Thread.sleep(RELOAD_RETRY_MS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return;
+        }
+        enqueue(this::reloadAndWatch);
     }
 
     private void install(VersionedClusterMetadata value) {
@@ -87,7 +118,13 @@ public final class MetadataWatchService implements AutoCloseable {
 
     private void enqueue(Runnable task) {
         if (!closed.get()) {
-            executor.execute(task);
+            try {
+                executor.execute(task);
+            } catch (RejectedExecutionException rejected) {
+                if (!closed.get()) {
+                    throw rejected;
+                }
+            }
         }
     }
 
@@ -137,6 +174,7 @@ public final class MetadataWatchService implements AutoCloseable {
                         var keyValue = watchEvent.getKeyValue();
                         ClusterMetadata metadata = mapper.readValue(
                                 keyValue.getValue().getBytes(), ClusterMetadata.class);
+                        MetadataStore.migrateAndValidate(metadata);
                         event.accept(new VersionedClusterMetadata(metadata, keyValue.getModRevision()));
                     } catch (Exception invalidSnapshot) {
                         if (finished.compareAndSet(false, true)) {

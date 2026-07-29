@@ -1,9 +1,12 @@
 package com.minimq.broker;
 
+import com.minimq.broker.admin.TopicAdminService;
+import com.minimq.broker.auth.OperatorAuthorizer;
 import com.minimq.broker.controller.ClusterController;
 import com.minimq.broker.controller.GroupCoordinator;
+import com.minimq.broker.coordination.ControllerIdentity;
 import com.minimq.broker.handler.MqRequestHandler;
-import com.minimq.broker.auth.OperatorAuthorizer;
+import com.minimq.broker.metadata.ClusterMetadata;
 import com.minimq.broker.metadata.MetadataStore;
 import com.minimq.broker.metrics.BrokerRuntimeMetrics;
 import com.minimq.broker.metrics.BrokerRuntimeMetricsSnapshot;
@@ -20,16 +23,32 @@ import com.minimq.protocol.codec.ByteBufSerde;
 import com.minimq.protocol.codec.MqDecoder;
 import com.minimq.protocol.codec.MqEncoder;
 import com.minimq.protocol.message.MqRequestHeader;
+import com.minimq.protocol.message.ProtocolMessages.AuthStatusRequest;
+import com.minimq.protocol.message.ProtocolMessages.AuthStatusResponse;
+import com.minimq.protocol.message.ProtocolMessages.CreateTopicAdminRequest;
+import com.minimq.protocol.message.ProtocolMessages.CreateTopicAdminResponse;
 import com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest;
+import com.minimq.protocol.message.ProtocolMessages.DeleteTopicRequest;
+import com.minimq.protocol.message.ProtocolMessages.DeleteTopicResponse;
 import com.minimq.protocol.message.ProtocolMessages.ConfigureTopicReliabilityRequest;
 import com.minimq.protocol.message.ProtocolMessages.ConfigureTopicReliabilityResponse;
+import com.minimq.protocol.message.ProtocolMessages.DescribeTopicRequest;
+import com.minimq.protocol.message.ProtocolMessages.DescribeTopicResponse;
 import com.minimq.protocol.message.ProtocolMessages.DiscoverControllerRequest;
 import com.minimq.protocol.message.ProtocolMessages.DiscoverControllerResponse;
 import com.minimq.protocol.message.ProtocolMessages.FetchRequest;
 import com.minimq.protocol.message.ProtocolMessages.FetchResponse;
+import com.minimq.protocol.message.ProtocolMessages.FetchV2Request;
+import com.minimq.protocol.message.ProtocolMessages.FetchV2Response;
+import com.minimq.protocol.message.ProtocolMessages.GroupStatusRequest;
+import com.minimq.protocol.message.ProtocolMessages.GroupStatusResponse;
 import com.minimq.protocol.message.ProtocolMessages.HeartbeatRequest;
+import com.minimq.protocol.message.ProtocolMessages.IncreasePartitionsRequest;
+import com.minimq.protocol.message.ProtocolMessages.IncreasePartitionsResponse;
 import com.minimq.protocol.message.ProtocolMessages.JoinGroupRequest;
 import com.minimq.protocol.message.ProtocolMessages.JoinGroupResponse;
+import com.minimq.protocol.message.ProtocolMessages.ListTopicsRequest;
+import com.minimq.protocol.message.ProtocolMessages.ListTopicsResponse;
 import com.minimq.protocol.message.ProtocolMessages.MaintenanceMetricsRequest;
 import com.minimq.protocol.message.ProtocolMessages.MaintenanceMetricsResponse;
 import com.minimq.protocol.message.ProtocolMessages.MaintenanceReportRequest;
@@ -38,25 +57,37 @@ import com.minimq.protocol.message.ProtocolMessages.MaintenanceRunRequest;
 import com.minimq.protocol.message.ProtocolMessages.MetadataRequest;
 import com.minimq.protocol.message.ProtocolMessages.MarkBrokerOfflineAdminRequest;
 import com.minimq.protocol.message.ProtocolMessages.MarkBrokerOfflineAdminResponse;
+import com.minimq.protocol.message.ProtocolMessages.MetadataV2Request;
+import com.minimq.protocol.message.ProtocolMessages.MetadataV2Response;
 import com.minimq.protocol.message.ProtocolMessages.OffsetCommitRequest;
 import com.minimq.protocol.message.ProtocolMessages.OffsetFetchRequest;
 import com.minimq.protocol.message.ProtocolMessages.OffsetFetchResponse;
+import com.minimq.protocol.message.ProtocolMessages.OpsStatusRequest;
+import com.minimq.protocol.message.ProtocolMessages.OpsStatusResponse;
 import com.minimq.protocol.message.ProtocolMessages.ProduceRecord;
 import com.minimq.protocol.message.ProtocolMessages.ProduceRequest;
 import com.minimq.protocol.message.ProtocolMessages.ProduceResponse;
+import com.minimq.protocol.message.ProtocolMessages.ProduceV2Request;
+import com.minimq.protocol.message.ProtocolMessages.ProduceV2Response;
 import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
 import com.minimq.protocol.message.ProtocolMessages.BrokerHeartbeatRequest;
 import com.minimq.protocol.message.ProtocolMessages.ReplicaFetchRequest;
 import com.minimq.protocol.message.ProtocolMessages.ReplicaFetchResponse;
+import com.minimq.protocol.message.ProtocolMessages.ReplicaFetchV2Request;
+import com.minimq.protocol.message.ProtocolMessages.ReplicaFetchV2Response;
 import com.minimq.protocol.message.ProtocolMessages.RuntimeMetricsRequest;
 import com.minimq.protocol.message.ProtocolMessages.RuntimeMetricsResponse;
 import com.minimq.protocol.message.ProtocolMessages.RuntimeMetricsV2Request;
 import com.minimq.protocol.message.ProtocolMessages.RuntimeMetricsV2Response;
+import com.minimq.protocol.message.ProtocolMessages.ScheduledProduceRecord;
 import com.minimq.protocol.message.ProtocolMessages.SyncGroupRequest;
 import com.minimq.protocol.message.ProtocolMessages.SyncGroupResponse;
+import com.minimq.protocol.message.ProtocolMessages.TopicDeleteAckRequest;
+import com.minimq.protocol.message.ProtocolMessages.TopicDeleteAckResponse;
 import com.minimq.protocol.message.ProtocolMessages.UpdateReplicaLeoRequest;
 import com.minimq.protocol.message.ProtocolMessages.UpdateReplicaStateV2Request;
 import com.minimq.protocol.message.ProtocolMessages.UpdateReplicaStateV2Response;
+import com.minimq.protocol.message.ProtocolMessages.V4BoundedList;
 import com.minimq.storage.CompactionPolicy;
 import com.minimq.storage.FlushPolicy;
 import com.minimq.storage.LogMaintenanceConfig;
@@ -65,15 +96,21 @@ import com.minimq.storage.LogManagerConfig;
 import com.minimq.storage.RetentionPolicy;
 import com.minimq.storage.SegmentedLogConfig;
 import io.netty.buffer.ByteBuf;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelOutboundHandlerAdapter;
+import io.netty.channel.ChannelPromise;
 import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.util.ReferenceCountUtil;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -193,6 +230,98 @@ class EmbeddedBrokerChannelTest {
                 new MarkBrokerOfflineAdminRequest(BrokerTestHarness.ADMIN_TOKEN, 99));
         assertEquals(ErrorCode.UNKNOWN_BROKER, unknown.header().errorCode());
         channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void deleteTopicWaitsForCleanupWithoutBlockingEventLoopOrReleasingPermit() throws Exception {
+        Path dataDir = tempDir.resolve("delete-topic-async");
+        BrokerConfig config = defaultConfig(dataDir, true);
+        ClusterController controller = new ClusterController(new MetadataStore(dataDir));
+        assertEquals(ErrorCode.NONE,
+                controller.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092)).errorCode());
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("orders", 1)));
+
+        GroupCoordinator groupCoordinator = new GroupCoordinator(controller);
+        PartitionManager partitionManager = new PartitionManager(new LogManager(dataDir));
+        BrokerAvailabilityGuard guard = new BrokerAvailabilityGuard();
+        guard.activate();
+        RequestThrottler throttler = new RequestThrottler(2);
+        MaintenanceAdminService maintenanceService =
+                new MaintenanceAdminService(OperatorAuthorizer.fromConfig(config), partitionManager);
+        TopicAdminService topicAdminService = new TopicAdminService(controller, 10_000L);
+        EmbeddedChannel channel = new EmbeddedChannel(
+                new MqDecoder(),
+                new MqRequestHandler(
+                        config,
+                        controller,
+                        groupCoordinator,
+                        partitionManager,
+                        new ReplicaStateManager(),
+                        new FetchTransferMetrics(),
+                        new ReplicaStateReporter(config, controller, guard),
+                        guard,
+                        maintenanceService,
+                        ControllerRole.legacy(config),
+                        OperatorAuthorizer.fromConfig(config),
+                        new BrokerRuntimeMetrics(),
+                        throttler,
+                        null,
+                        null,
+                        topicAdminService),
+                new MqEncoder());
+        try {
+            int deleteCorrelationId = 42;
+            channel.writeInbound(ProtocolSerdes.encodeRequest(
+                    new MqRequestHeader(ApiKeys.DELETE_TOPIC, deleteCorrelationId, "test"),
+                    new DeleteTopicRequest(BrokerTestHarness.ADMIN_TOKEN, "orders")));
+
+            ByteBuf earlyResponse = channel.readOutbound();
+            try {
+                assertNull(earlyResponse);
+            } finally {
+                if (earlyResponse != null) {
+                    earlyResponse.release();
+                }
+            }
+            assertEquals(1, throttler.inFlight());
+
+            MqDecoder.DecodedResponse discovery = send(
+                    channel, ApiKeys.DISCOVER_CONTROLLER, new DiscoverControllerRequest());
+            assertEquals(ErrorCode.NONE, discovery.header().errorCode());
+            assertNotNull(discovery.body());
+            assertEquals(1, throttler.inFlight());
+
+            var tombstone = controller.getTopicTombstone("orders");
+            var broker = controller.getBroker(0);
+            assertNotNull(tombstone);
+            assertNotNull(broker);
+            assertEquals(ErrorCode.NONE, controller.acknowledgeTopicDeletion(
+                    "orders",
+                    tombstone.tombstoneVersion,
+                    0,
+                    broker.brokerEpoch,
+                    controller.snapshot().controllerEpoch));
+
+            ByteBuf responseFrame = awaitOutbound(channel);
+            try {
+                MqDecoder.DecodedResponse response = MqDecoder.decodeResponse(
+                        unwrapPayload(responseFrame), ApiKeys.DELETE_TOPIC);
+                assertEquals(deleteCorrelationId, response.header().correlationId());
+                assertEquals(ErrorCode.NONE, response.header().errorCode());
+                DeleteTopicResponse body = (DeleteTopicResponse) response.body();
+                assertEquals("orders", body.topicName());
+                assertEquals("DELETED", body.tombstoneState());
+            } finally {
+                responseFrame.release();
+            }
+            assertEquals(0, throttler.inFlight());
+        } finally {
+            topicAdminService.close();
+            channel.runPendingTasks();
+            channel.finishAndReleaseAll();
+            maintenanceService.close();
+            partitionManager.close();
+        }
     }
 
     @Test
@@ -606,6 +735,590 @@ class EmbeddedBrokerChannelTest {
     }
 
     @Test
+    void replicaFetchV2FencesStaleBrokerEpochBeforeReturningRecords() {
+        Path dataDir = tempDir.resolve("replica-fetch-v2-fenced");
+        BrokerConfig config = defaultConfig(dataDir, true);
+        ClusterController controller =
+                new ClusterController(new MetadataStore(dataDir.resolve("metadata")));
+        assertEquals(ErrorCode.NONE,
+                controller.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092)).errorCode());
+        assertEquals(ErrorCode.NONE,
+                controller.registerBroker(new RegisterBrokerRequest(1, "127.0.0.1", 9093)).errorCode());
+        assertEquals(ErrorCode.NONE,
+                controller.createTopic(new CreateTopicRequest("orders", 1, 2)));
+        PartitionManager partitionManager = new PartitionManager(new LogManager(dataDir.resolve("log")));
+        ReplicaStateManager replicaStateManager = new ReplicaStateManager();
+        EmbeddedChannel channel = newChannel(
+                config,
+                controller,
+                partitionManager,
+                replicaStateManager,
+                ControllerRole.legacy(config),
+                new BrokerRuntimeMetrics());
+
+        try {
+            MqDecoder.DecodedResponse response = send(
+                    channel,
+                    ApiKeys.REPLICA_FETCH_V2,
+                    new ReplicaFetchV2Request(
+                            BrokerTestHarness.ADMIN_TOKEN,
+                            "orders",
+                            0,
+                            1,
+                            0L,
+                            0L,
+                            0L,
+                            9L,
+                            1_024));
+
+            assertEquals(ErrorCode.BROKER_FENCED, response.header().errorCode());
+            assertNull(response.body());
+            assertEquals(0L, replicaStateManager.replicaLeo("orders", 0, 1));
+        } finally {
+            channel.finishAndReleaseAll();
+            partitionManager.close();
+        }
+    }
+
+    @Test
+    void replicaFetchV2ChecksBrokerIdentityBeforeTopicRouting() {
+        Path dataDir = tempDir.resolve("replica-fetch-v2-identity-precedence");
+        BrokerConfig config = defaultConfig(dataDir, true);
+        ClusterController controller =
+                new ClusterController(new MetadataStore(dataDir.resolve("metadata")));
+        assertEquals(ErrorCode.NONE,
+                controller.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092)).errorCode());
+        PartitionManager partitionManager = new PartitionManager(new LogManager(dataDir.resolve("log")));
+        EmbeddedChannel channel = newChannel(
+                config,
+                controller,
+                partitionManager,
+                new ReplicaStateManager(),
+                ControllerRole.legacy(config),
+                new BrokerRuntimeMetrics());
+
+        try {
+            MqDecoder.DecodedResponse response = send(
+                    channel,
+                    ApiKeys.REPLICA_FETCH_V2,
+                    new ReplicaFetchV2Request(
+                            BrokerTestHarness.ADMIN_TOKEN,
+                            "missing",
+                            0,
+                            99,
+                            1L,
+                            0L,
+                            0L,
+                            0L,
+                            1_024));
+
+            assertEquals(ErrorCode.UNKNOWN_BROKER, response.header().errorCode());
+            assertNull(response.body());
+        } finally {
+            channel.finishAndReleaseAll();
+            partitionManager.close();
+        }
+    }
+
+    @Test
+    void replicaFetchV2ChecksBrokerIdentityBeforeTombstoneState() {
+        Path dataDir = tempDir.resolve("replica-fetch-v2-tombstone-precedence");
+        BrokerConfig config = defaultConfig(dataDir, true);
+        ClusterController controller =
+                new ClusterController(new MetadataStore(dataDir.resolve("metadata")));
+        assertEquals(ErrorCode.NONE,
+                controller.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092)).errorCode());
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("orders", 1)));
+        assertEquals(ErrorCode.NONE, controller.deleteTopic("orders", 1_000L));
+        PartitionManager partitionManager = new PartitionManager(new LogManager(dataDir.resolve("log")));
+        EmbeddedChannel channel = newChannel(
+                config,
+                controller,
+                partitionManager,
+                new ReplicaStateManager(),
+                ControllerRole.legacy(config),
+                new BrokerRuntimeMetrics());
+
+        try {
+            MqDecoder.DecodedResponse response = send(
+                    channel,
+                    ApiKeys.REPLICA_FETCH_V2,
+                    new ReplicaFetchV2Request(
+                            BrokerTestHarness.ADMIN_TOKEN,
+                            "orders",
+                            0,
+                            99,
+                            1L,
+                            0L,
+                            0L,
+                            0L,
+                            1_024));
+
+            assertEquals(ErrorCode.UNKNOWN_BROKER, response.header().errorCode());
+            assertNull(response.body());
+        } finally {
+            channel.finishAndReleaseAll();
+            partitionManager.close();
+        }
+    }
+
+    @Test
+    void fetchV2CapsNullPayloadRecordsAndReportsCandidateTotal() {
+        Path dataDir = tempDir.resolve("fetch-v2-cap");
+        BrokerConfig config = defaultConfig(dataDir, true);
+        ClusterController controller = new ClusterController(new MetadataStore(dataDir.resolve("metadata")));
+        assertEquals(ErrorCode.NONE,
+                controller.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092)).errorCode());
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("orders", 1)));
+        PartitionManager partitionManager = new PartitionManager(new LogManager(dataDir.resolve("log")));
+        for (int i = 0; i < 10_001; i++) {
+            partitionManager.append("orders", 0, null, null);
+        }
+        EmbeddedChannel channel = newChannel(
+                config,
+                controller,
+                partitionManager,
+                new ReplicaStateManager(),
+                ControllerRole.legacy(config),
+                new BrokerRuntimeMetrics());
+
+        try {
+            MqDecoder.DecodedResponse decoded = send(
+                    channel,
+                    ApiKeys.FETCH_V2,
+                    new FetchV2Request("orders", 0, 0L, 0L, 10_001 * 16));
+            FetchV2Response response = (FetchV2Response) decoded.body();
+
+            assertEquals(ErrorCode.NONE, decoded.header().errorCode());
+            assertEquals(10_001, response.records().total());
+            assertTrue(response.records().truncated());
+            assertEquals(10_000, response.records().items().size());
+            assertEquals(9_999L, response.records().items().get(9_999).offset());
+        } finally {
+            channel.finishAndReleaseAll();
+            partitionManager.close();
+        }
+    }
+
+    @Test
+    void fetchV2FailedWriteDoesNotRecordReturnedPayloadBytes() {
+        Path dataDir = tempDir.resolve("fetch-v2-failed-write");
+        BrokerConfig config = defaultConfig(dataDir, true);
+        ClusterController controller = new ClusterController(new MetadataStore(dataDir.resolve("metadata")));
+        assertEquals(ErrorCode.NONE,
+                controller.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092)).errorCode());
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("orders", 1)));
+        PartitionManager partitionManager = new PartitionManager(new LogManager(dataDir.resolve("log")));
+        partitionManager.append("orders", 0, "key".getBytes(), "value".getBytes());
+        BrokerRuntimeMetrics runtimeMetrics = new BrokerRuntimeMetrics();
+        EmbeddedChannel channel = newChannel(
+                config,
+                controller,
+                partitionManager,
+                new ReplicaStateManager(),
+                ControllerRole.legacy(config),
+                runtimeMetrics);
+        channel.pipeline().addBefore(
+                channel.pipeline().context(MqRequestHandler.class).name(),
+                "failing-outbound-write",
+                new ChannelOutboundHandlerAdapter() {
+                    @Override
+                    public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
+                        ReferenceCountUtil.release(msg);
+                        promise.setFailure(new IOException("simulated outbound write failure"));
+                    }
+                });
+
+        try {
+            channel.writeInbound(ProtocolSerdes.encodeRequest(
+                    new MqRequestHeader(ApiKeys.FETCH_V2, 11, "test"),
+                    new FetchV2Request("orders", 0, 0L, 0L, 1_024)));
+            channel.runPendingTasks();
+
+            assertNull(channel.readOutbound());
+            assertEquals(0L, runtimeMetrics.snapshot().fetchBytes());
+        } finally {
+            channel.finishAndReleaseAll();
+            partitionManager.close();
+        }
+    }
+
+    @Test
+    void fetchV2EncodingFailureDoesNotRecordReturnedPayloadBytes() {
+        Path dataDir = tempDir.resolve("fetch-v2-encoding-failure");
+        BrokerConfig config = defaultConfig(dataDir, true);
+        ClusterController controller = new ClusterController(new MetadataStore(dataDir.resolve("metadata")));
+        assertEquals(ErrorCode.NONE,
+                controller.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092)).errorCode());
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("orders", 1)));
+        PartitionManager partitionManager = new PartitionManager(new LogManager(dataDir.resolve("log")));
+        partitionManager.append("orders", 0, null, new byte[MqFrame.MAX_FRAME_BYTES - 64]);
+        BrokerRuntimeMetrics runtimeMetrics = new BrokerRuntimeMetrics();
+        EmbeddedChannel channel = newChannel(
+                config,
+                controller,
+                partitionManager,
+                new ReplicaStateManager(),
+                ControllerRole.legacy(config),
+                runtimeMetrics);
+
+        try {
+            channel.writeInbound(ProtocolSerdes.encodeRequest(
+                    new MqRequestHeader(ApiKeys.FETCH_V2, 11, "test"),
+                    new FetchV2Request("orders", 0, 0L, 0L, MqFrame.MAX_FRAME_BYTES)));
+            channel.runPendingTasks();
+
+            assertFalse(channel.isActive());
+            assertNull(channel.readOutbound());
+            assertEquals(0L, runtimeMetrics.snapshot().fetchBytes());
+        } finally {
+            channel.finishAndReleaseAll();
+            partitionManager.close();
+        }
+    }
+
+    @Test
+    void replicaFetchV2CapsCandidatesAndUpdatesFollowerLeoAfterFencing() {
+        Path dataDir = tempDir.resolve("replica-fetch-v2-cap");
+        BrokerConfig config = defaultConfig(dataDir, true);
+        ClusterController controller = new ClusterController(new MetadataStore(dataDir.resolve("metadata")));
+        assertEquals(ErrorCode.NONE,
+                controller.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092)).errorCode());
+        assertEquals(ErrorCode.NONE,
+                controller.registerBroker(new RegisterBrokerRequest(1, "127.0.0.1", 9093)).errorCode());
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("orders", 1, 2)));
+        PartitionManager partitionManager = new PartitionManager(new LogManager(dataDir.resolve("log")));
+        for (int i = 0; i < 10_002; i++) {
+            partitionManager.append("orders", 0, null, null);
+        }
+        ReplicaStateManager replicaStateManager = new ReplicaStateManager();
+        EmbeddedChannel channel = newChannel(
+                config,
+                controller,
+                partitionManager,
+                replicaStateManager,
+                ControllerRole.legacy(config),
+                new BrokerRuntimeMetrics());
+
+        try {
+            MqDecoder.DecodedResponse decoded = send(
+                    channel,
+                    ApiKeys.REPLICA_FETCH_V2,
+                    new ReplicaFetchV2Request(
+                            BrokerTestHarness.ADMIN_TOKEN,
+                            "orders",
+                            0,
+                            1,
+                            controller.getBroker(1).brokerEpoch,
+                            controller.snapshot().controllerEpoch,
+                            controller.getTopic("orders").partitions.get(0).leaderEpoch,
+                            1L,
+                            10_001 * 16));
+            ReplicaFetchV2Response response = (ReplicaFetchV2Response) decoded.body();
+
+            assertEquals(ErrorCode.NONE, decoded.header().errorCode());
+            assertEquals(1L, replicaStateManager.replicaLeo("orders", 0, 1));
+            assertEquals(10_001, response.records().total());
+            assertTrue(response.records().truncated());
+            assertEquals(10_000, response.records().items().size());
+            assertEquals(10_000L, response.records().items().get(9_999).offset());
+        } finally {
+            channel.finishAndReleaseAll();
+            partitionManager.close();
+        }
+    }
+
+    @Test
+    void metadataV2ReadsCurrentControllerOncePerResponse() {
+        Path dataDir = tempDir.resolve("metadata-v2-controller-snapshot");
+        BrokerConfig config = defaultConfig(dataDir, true);
+        ClusterController controller = new ClusterController(new MetadataStore(dataDir.resolve("metadata")));
+        AtomicInteger currentLeaderCalls = new AtomicInteger();
+        ControllerRole controllerRole = new ControllerRole() {
+            @Override
+            public boolean isActive() {
+                return true;
+            }
+
+            @Override
+            public ControllerIdentity currentLeader() {
+                currentLeaderCalls.incrementAndGet();
+                return new ControllerIdentity(0, "127.0.0.1", 9092, 0L, "test-session");
+            }
+        };
+        PartitionManager partitionManager = new PartitionManager(new LogManager(dataDir.resolve("log")));
+        EmbeddedChannel channel = newChannel(
+                config,
+                controller,
+                partitionManager,
+                new ReplicaStateManager(),
+                controllerRole,
+                new BrokerRuntimeMetrics());
+
+        try {
+            currentLeaderCalls.set(0);
+            MqDecoder.DecodedResponse decoded = send(
+                    channel, ApiKeys.METADATA_V2, new MetadataV2Request(null, 10, 10));
+            MetadataV2Response response = (MetadataV2Response) decoded.body();
+
+            assertEquals(ErrorCode.NONE, decoded.header().errorCode());
+            assertNotNull(response.controller());
+            assertEquals(1, currentLeaderCalls.get());
+        } finally {
+            channel.finishAndReleaseAll();
+            partitionManager.close();
+        }
+    }
+
+    @Test
+    void metadataV2IncludesTopicTombstonesAfterControllerDelete() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
+        assertEquals(ErrorCode.NONE, clusterController.registerBroker(
+                new RegisterBrokerRequest(0, "127.0.0.1", 9092)).errorCode());
+        assertEquals(ErrorCode.NONE, clusterController.createTopic(new CreateTopicRequest("orders", 2, 1)));
+        assertEquals(ErrorCode.NONE, clusterController.deleteTopic("orders", 1_234L));
+        EmbeddedChannel channel = newChannel(clusterController, true);
+
+        MqDecoder.DecodedResponse response = send(
+                channel, ApiKeys.METADATA_V2, new MetadataV2Request(null, 10, 10));
+
+        assertEquals(ErrorCode.NONE, response.header().errorCode());
+        MetadataV2Response body = (MetadataV2Response) response.body();
+        assertEquals(0, body.topics().items().size());
+        assertEquals(1, body.tombstones().total());
+        assertEquals("orders", body.tombstones().items().get(0).topicName());
+        assertEquals("DELETING", body.tombstones().items().get(0).tombstone().state());
+        assertEquals(List.of(0), body.tombstones().items().get(0).tombstone().pendingBrokerIds().items());
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void metadataV2AppliesIndependentTopicAndTombstoneCursors() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
+        assertEquals(ErrorCode.NONE, clusterController.registerBroker(
+                new RegisterBrokerRequest(0, "127.0.0.1", 9092)).errorCode());
+        for (String topicName : List.of("active-a", "active-b", "active-c")) {
+            assertEquals(ErrorCode.NONE, clusterController.createTopic(new CreateTopicRequest(topicName, 1, 1)));
+        }
+        for (String topicName : List.of("deleted-a", "deleted-b", "deleted-c")) {
+            assertEquals(ErrorCode.NONE, clusterController.createTopic(new CreateTopicRequest(topicName, 1, 1)));
+            assertEquals(ErrorCode.NONE, clusterController.deleteTopic(topicName, 1_234L));
+        }
+        EmbeddedChannel channel = newChannel(clusterController, true);
+
+        try {
+            MqDecoder.DecodedResponse response = send(
+                    channel,
+                    ApiKeys.METADATA_V2,
+                    new MetadataV2Request(null, "active-a", "deleted-a", 10, 10));
+
+            assertEquals(ErrorCode.NONE, response.header().errorCode());
+            MetadataV2Response body = (MetadataV2Response) response.body();
+            assertEquals(2, body.topics().total());
+            assertEquals(List.of("active-b", "active-c"),
+                    body.topics().items().stream().map(topic -> topic.topicName()).toList());
+            assertEquals(2, body.tombstones().total());
+            assertEquals(List.of("deleted-b", "deleted-c"),
+                    body.tombstones().items().stream().map(tombstone -> tombstone.topicName()).toList());
+        } finally {
+            channel.finishAndReleaseAll();
+        }
+    }
+
+    @Test
+    void operatorAdminStatusAndTopicApisReturnSuccessfulResponses() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
+        assertEquals(ErrorCode.NONE, clusterController.registerBroker(
+                new RegisterBrokerRequest(0, "127.0.0.1", 9092)).errorCode());
+        EmbeddedChannel channel = newChannel(clusterController, true);
+
+        MqDecoder.DecodedResponse create = send(
+                channel,
+                ApiKeys.CREATE_TOPIC_ADMIN,
+                new CreateTopicAdminRequest(BrokerTestHarness.ADMIN_TOKEN, "orders", 2, 1));
+        assertEquals(ErrorCode.NONE, create.header().errorCode());
+        assertEquals("orders", ((CreateTopicAdminResponse) create.body()).topicName());
+
+        MqDecoder.DecodedResponse list = send(
+                channel,
+                ApiKeys.LIST_TOPICS,
+                new ListTopicsRequest(BrokerTestHarness.ADMIN_TOKEN, 10));
+        assertEquals(ErrorCode.NONE, list.header().errorCode());
+        assertEquals(List.of("orders"), ((ListTopicsResponse) list.body()).topicNames().items());
+
+        MqDecoder.DecodedResponse describe = send(
+                channel,
+                ApiKeys.DESCRIBE_TOPIC,
+                new DescribeTopicRequest(BrokerTestHarness.ADMIN_TOKEN, "orders", 10, false));
+        assertEquals(ErrorCode.NONE, describe.header().errorCode());
+        DescribeTopicResponse described = (DescribeTopicResponse) describe.body();
+        assertTrue(described.active());
+        assertEquals(2, described.partitions().total());
+
+        MqDecoder.DecodedResponse increase = send(
+                channel,
+                ApiKeys.INCREASE_PARTITIONS,
+                new IncreasePartitionsRequest(BrokerTestHarness.ADMIN_TOKEN, "orders", 3));
+        assertEquals(ErrorCode.NONE, increase.header().errorCode());
+        IncreasePartitionsResponse increased = (IncreasePartitionsResponse) increase.body();
+        assertEquals(2, increased.previousPartitionCount());
+        assertEquals(3, increased.newPartitionCount());
+
+        MqDecoder.DecodedResponse ops = send(
+                channel,
+                ApiKeys.OPS_STATUS,
+                new OpsStatusRequest(BrokerTestHarness.ADMIN_TOKEN, 10, 10));
+        assertEquals(ErrorCode.NONE, ops.header().errorCode());
+        OpsStatusResponse opsBody = (OpsStatusResponse) ops.body();
+        assertEquals(0, opsBody.targetBrokerId());
+        assertEquals("CONTROLLER", opsBody.role());
+        assertTrue(opsBody.brokers().items().stream().anyMatch(broker -> broker.brokerId() == 0));
+
+        MqDecoder.DecodedResponse join = send(
+                channel,
+                ApiKeys.JOIN_GROUP,
+                new JoinGroupRequest("g1", "member-a", "orders"));
+        assertEquals(ErrorCode.NONE, join.header().errorCode());
+
+        MqDecoder.DecodedResponse group = send(
+                channel,
+                ApiKeys.GROUP_STATUS,
+                new GroupStatusRequest(BrokerTestHarness.ADMIN_TOKEN, "g1", null, 10, 10));
+        assertEquals(ErrorCode.NONE, group.header().errorCode());
+        GroupStatusResponse groupBody = (GroupStatusResponse) group.body();
+        assertEquals("g1", groupBody.groupId());
+        assertEquals("orders", groupBody.topicName());
+        assertEquals(1, groupBody.members().total());
+
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void produceV2CoversSuccessTruncationAndDeletedTopicPaths() {
+        Path dataDir = tempDir.resolve("produce-v2-paths");
+        BrokerConfig config = defaultConfig(dataDir, true);
+        ClusterController controller = new ClusterController(
+                new MetadataStore(dataDir.resolve("metadata")));
+        assertEquals(ErrorCode.NONE, controller.registerBroker(
+                new RegisterBrokerRequest(0, "127.0.0.1", 9092)).errorCode());
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("orders", 1)));
+        PartitionManager partitionManager =
+                new PartitionManager(new LogManager(dataDir.resolve("log")));
+        BrokerRuntimeMetrics runtimeMetrics = new BrokerRuntimeMetrics();
+        EmbeddedChannel channel = newChannel(
+                config,
+                controller,
+                partitionManager,
+                new ReplicaStateManager(),
+                ControllerRole.legacy(config),
+                runtimeMetrics);
+
+        try {
+            MqDecoder.DecodedResponse success = send(
+                    channel,
+                    ApiKeys.PRODUCE_V2,
+                    new ProduceV2Request(
+                            "orders",
+                            0,
+                            0L,
+                            new V4BoundedList<>(
+                                    2,
+                                    false,
+                                    List.of(
+                                            new ScheduledProduceRecord(
+                                                    "k1".getBytes(), "v1".getBytes(), 0L),
+                                            new ScheduledProduceRecord(
+                                                    null, "v2".getBytes(), 1L)))));
+            assertEquals(ErrorCode.NONE, success.header().errorCode());
+            assertEquals(0L, ((ProduceV2Response) success.body()).baseOffset());
+            assertEquals(6L, runtimeMetrics.snapshot().produceBytes());
+
+            MqDecoder.DecodedResponse truncated = send(
+                    channel,
+                    ApiKeys.PRODUCE_V2,
+                    new ProduceV2Request(
+                            "orders",
+                            0,
+                            0L,
+                            new V4BoundedList<>(
+                                    2,
+                                    true,
+                                    List.of(new ScheduledProduceRecord(null, null, 0L)))));
+            assertEquals(ErrorCode.INVALID_REQUEST, truncated.header().errorCode());
+
+            assertEquals(ErrorCode.NONE, controller.deleteTopic("orders", 123L));
+            MqDecoder.DecodedResponse deleted = send(
+                    channel,
+                    ApiKeys.PRODUCE_V2,
+                    new ProduceV2Request(
+                            "orders",
+                            0,
+                            0L,
+                            new V4BoundedList<>(0, false, List.of())));
+            assertEquals(ErrorCode.UNKNOWN_TOPIC, deleted.header().errorCode());
+        } finally {
+            channel.finishAndReleaseAll();
+            partitionManager.close();
+        }
+    }
+
+    @Test
+    void tombstoneFilterAndDeleteAckUseControllerPaths() {
+        Path dataDir = tempDir.resolve("tombstone-filter-ack");
+        BrokerConfig config = withLegacyApis(defaultConfig(dataDir, true));
+        ClusterController controller = new ClusterController(
+                new MetadataStore(dataDir.resolve("metadata")));
+        assertEquals(ErrorCode.NONE, controller.registerBroker(
+                new RegisterBrokerRequest(0, "127.0.0.1", 9092)).errorCode());
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("orders", 1)));
+        assertEquals(ErrorCode.NONE, controller.deleteTopic("orders", 123L));
+        ClusterMetadata.TopicTombstone tombstone = controller.getTopicTombstone("orders");
+        ClusterMetadata.BrokerEntry broker = controller.getBroker(0);
+        EmbeddedChannel channel = newChannel(config, controller);
+
+        MqDecoder.DecodedResponse filtered = send(
+                channel,
+                ApiKeys.METADATA_V2,
+                new MetadataV2Request("orders", 10, 10));
+        assertEquals(ErrorCode.UNKNOWN_TOPIC, filtered.header().errorCode());
+
+        MqDecoder.DecodedResponse acknowledged = send(
+                channel,
+                ApiKeys.TOPIC_DELETE_ACK,
+                new TopicDeleteAckRequest(
+                        config.clusterToken(),
+                        "orders",
+                        tombstone.tombstoneVersion,
+                        0,
+                        broker.brokerEpoch,
+                        controller.snapshot().controllerEpoch));
+        assertEquals(ErrorCode.NONE, acknowledged.header().errorCode());
+        assertTrue(acknowledged.body() instanceof TopicDeleteAckResponse);
+        assertEquals("DELETED", controller.getTopicTombstone("orders").state);
+
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void authStatusReturnsCanonicalGrantedScopes() {
+        EmbeddedChannel channel = newChannel(
+                new ClusterController(new MetadataStore(tempDir.resolve("auth-status"))),
+                true);
+
+        MqDecoder.DecodedResponse decoded = send(
+                channel,
+                ApiKeys.AUTH_STATUS,
+                new AuthStatusRequest(BrokerTestHarness.ADMIN_TOKEN));
+
+        assertEquals(ErrorCode.NONE, decoded.header().errorCode());
+        AuthStatusResponse response = (AuthStatusResponse) decoded.body();
+        assertEquals(0, response.targetBrokerId());
+        assertFalse(response.scopes().items().isEmpty());
+        assertEquals(response.scopes().items().size(), response.scopes().total());
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
     void configureTopicReliabilityRoutesThroughScopedAdminApi() {
         ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
         clusterController.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092));
@@ -882,6 +1595,33 @@ class EmbeddedBrokerChannelTest {
                 new MqEncoder());
     }
 
+    private EmbeddedChannel newChannel(
+            BrokerConfig config,
+            ClusterController clusterController,
+            PartitionManager partitionManager,
+            ReplicaStateManager replicaStateManager,
+            ControllerRole controllerRole,
+            BrokerRuntimeMetrics runtimeMetrics) {
+        BrokerAvailabilityGuard guard = new BrokerAvailabilityGuard();
+        guard.activate();
+        return new EmbeddedChannel(
+                new MqDecoder(),
+                new MqRequestHandler(
+                        config,
+                        clusterController,
+                        new GroupCoordinator(clusterController),
+                        partitionManager,
+                        replicaStateManager,
+                        new FetchTransferMetrics(),
+                        new ReplicaStateReporter(config, clusterController, guard),
+                        guard,
+                        maintenanceServiceFor(config, partitionManager),
+                        controllerRole,
+                        runtimeMetrics,
+                        new RequestThrottler(0)),
+                new MqEncoder());
+    }
+
     private static BrokerConfig defaultConfig(Path dataDir, boolean controller) {
         return defaultConfig(0, dataDir, controller);
     }
@@ -960,6 +1700,20 @@ class EmbeddedBrokerChannelTest {
         } finally {
             responseFrame.release();
         }
+    }
+
+    private static ByteBuf awaitOutbound(EmbeddedChannel channel) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        ByteBuf responseFrame;
+        while ((responseFrame = channel.readOutbound()) == null) {
+            channel.runPendingTasks();
+            channel.runScheduledPendingTasks();
+            if (System.nanoTime() >= deadline) {
+                throw new AssertionError("timed out waiting for broker response");
+            }
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));
+        }
+        return responseFrame;
     }
 
     private static MqDecoder.DecodedResponse sendHeaderOnly(EmbeddedChannel channel, short apiKey) {

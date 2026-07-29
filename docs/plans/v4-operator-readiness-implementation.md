@@ -1,7 +1,7 @@
 # V4.0 Operator Readiness Implementation Plan
 
 Date: 2026-07-22
-Status: Ready to execute against `docs/designs/v4-operator-readiness-design.md`.
+Status: Implemented. The local full-reactor release gate passed on 2026-07-29; the real-etcd gate remains environment-blocked because the Docker daemon is unavailable. See `docs/test-report-2026-07-22-v4.0.0-operator-readiness.md`.
 
 ## Objective
 
@@ -334,7 +334,9 @@ mvn -q -gs .mvn/settings.xml -s .mvn/settings.xml -pl "mq-broker,mq-client" -am 
   appends/forces commit, and checkpoints after commit. Match topics by parsed partition key, never by
   a raw path prefix.
 - Reconcile installed tombstones off the metadata-watch thread, remove Leader epoch files, and send
-  key 33 only after all local cleanup succeeds. Fence and retry with bounded backoff on failure.
+  key 33 only after all local cleanup succeeds. Local cleanup failure sets a sticky storage fence and
+  retries with bounded backoff; ACK rejection from a stale epoch only defers the acknowledgement, with
+  lease heartbeat/self-fencing responsible for broker isolation.
 - Authenticate key 33 with Broker/Controller epochs and cluster token. Apply the exact precedence for
   `UNKNOWN_BROKER`, fencing errors, and `STALE_TOMBSTONE`; transition to `DELETED` only after all
   required acknowledgements.
@@ -355,8 +357,9 @@ mvn -q -gs .mvn/settings.xml -s .mvn/settings.xml -pl "mq-storage,mq-broker" -am
 
 **Acceptance**
 
-- Delete returns `DELETING` on timeout and `DELETED` after all required acks; repeats cause no new
-  metadata mutation and return current state.
+- Delete returns current `DELETING` on a normal wait timeout and `DELETED` after all required acks;
+  repeats cause no new metadata mutation and return current state. If the mutation result cannot be
+  determined inside the shared deadline, return `CONTROLLER_NOT_READY` rather than replaying it.
 - Wrong tombstone versions never change acknowledgements. Offline/rejoining Brokers clean before
   ACTIVE, including Brokers outside the original required set.
 - Restart from any crash point around begin/file removal/commit cannot resurrect topic data.

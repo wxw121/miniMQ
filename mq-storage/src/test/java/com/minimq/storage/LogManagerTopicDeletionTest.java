@@ -10,14 +10,35 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class LogManagerTopicDeletionTest {
     @TempDir
     Path tempDir;
+
+    @Test
+    void rejectsTopicNamesThatEscapeTheSegmentsDirectory() {
+        Path dataDir = tempDir.resolve("nested").resolve("data");
+        LogManager manager = new LogManager(dataDir);
+        try {
+            assertThrows(IllegalArgumentException.class,
+                    () -> manager.append("../../../escaped", 0, bytes("a"), bytes("value")));
+            assertTrue(Files.notExists(tempDir.resolve("escaped-0")));
+        } finally {
+            manager.close();
+        }
+    }
 
     @Test
     void deletesOnlyExactLogicalTopicAndPersistsBeginCommit() throws Exception {
@@ -47,6 +68,61 @@ class LogManagerTopicDeletionTest {
             assertEquals(1, records.size());
         } finally {
             unaffected.close();
+        }
+    }
+
+    @Test
+    void deletedTopicPortableIdentityRemainsReservedAfterRestart() {
+        LogManager manager = new LogManager(tempDir);
+        manager.append("Orders", 0, bytes("key"), bytes("value"));
+        manager.deleteTopic("Orders", 21L);
+        manager.close();
+
+        LogManager recovered = new LogManager(tempDir);
+        try {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> recovered.getOrCreate("orders", 0));
+            assertTrue(failure.getMessage().contains("storage identity"), failure::getMessage);
+        } finally {
+            recovered.close();
+        }
+    }
+
+    @Test
+    void deleteSerializesWithNewPartitionOpen() throws Exception {
+        LogManager manager = new LogManager(tempDir);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        AtomicReference<Thread> openerThread = new AtomicReference<>();
+        try {
+            Future<PartitionLog> opening;
+            synchronized (manager) {
+                opening = executor.submit(() -> {
+                    openerThread.set(Thread.currentThread());
+                    return manager.getOrCreate("orders", 0);
+                });
+                long waitDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (!opening.isDone()
+                        && (openerThread.get() == null
+                        || openerThread.get().getState() != Thread.State.BLOCKED)
+                        && System.nanoTime() < waitDeadline) {
+                    Thread.onSpinWait();
+                }
+
+                assertFalse(opening.isDone(),
+                        "getOrCreate opened a partition while topic deletion held the manager lock");
+                assertEquals(Thread.State.BLOCKED, openerThread.get().getState());
+                manager.deleteTopic("orders", 41L);
+            }
+
+            ExecutionException failure = assertThrows(
+                    ExecutionException.class,
+                    () -> opening.get(5, TimeUnit.SECONDS));
+            assertTrue(failure.getCause() instanceof IllegalStateException);
+            assertTrue(Files.notExists(tempDir.resolve("segments").resolve("orders-0")));
+        } finally {
+            executor.shutdownNow();
+            manager.close();
         }
     }
 
@@ -104,6 +180,93 @@ class LogManagerTopicDeletionTest {
     }
 
     @Test
+    void scheduledCountPersistsPrunedVisibilityBeforeReturning() {
+        MutableClock clock = new MutableClock(1_000L);
+        LogManagerConfig config = new LogManagerConfig(
+                FlushPolicy.always(),
+                1,
+                SegmentedLogConfig.defaults(),
+                LogMaintenanceConfig.disabled(),
+                100);
+        LogManager manager = new LogManager(tempDir, config, clock);
+        manager.append("scheduled", 0, bytes("a"), bytes("future"), 5_000L);
+
+        clock.setMillis(6_000L);
+        assertEquals(0, manager.scheduledRecordCount());
+
+        clock.setMillis(1_000L);
+        LogManager recovered = new LogManager(tempDir, config, clock);
+        try {
+            assertEquals(1L, recovered.visibleHighWatermark("scheduled", 0));
+            assertEquals(-1L, recovered.nextVisibleAtEpochMs("scheduled", 0));
+        } finally {
+            recovered.close();
+            manager.close();
+        }
+    }
+
+    @Test
+    void returnsPhysicalVisibleAndNextVisibilityFromOneSnapshot() {
+        MutableClock clock = new MutableClock(1_000L);
+        LogManager manager = new LogManager(tempDir, LogManagerConfig.defaults(), clock);
+        try {
+            manager.append("scheduled", 0, bytes("a"), bytes("ready"));
+            manager.append("scheduled", 0, bytes("b"), bytes("future"), 5_000L);
+
+            LogManager.VisibilitySnapshot snapshot = manager.visibilitySnapshot("scheduled", 0);
+
+            assertEquals(2L, snapshot.physicalHighWatermark());
+            assertEquals(1L, snapshot.visibleHighWatermark());
+            assertEquals(5_000L, snapshot.nextVisibleAtEpochMs());
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void visibilitySnapshotUsesOneDeliveryTimeObservation() {
+        BoundaryClock clock = new BoundaryClock();
+        LogManager manager = new LogManager(tempDir, LogManagerConfig.defaults(), clock);
+        try {
+            manager.append("scheduled", 0, bytes("a"), bytes("future"), 5_000L);
+            clock.armBoundary();
+
+            LogManager.VisibilitySnapshot snapshot = manager.visibilitySnapshot("scheduled", 0);
+
+            assertEquals(1L, snapshot.physicalHighWatermark());
+            assertEquals(0L, snapshot.visibleHighWatermark());
+            assertEquals(5_000L, snapshot.nextVisibleAtEpochMs());
+            assertEquals(1, clock.boundaryReadCount());
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void visibilitySnapshotAndCheckpointShareTheSameDeliveryTimeObservation() {
+        BoundaryClock clock = new BoundaryClock();
+        LogManager manager = new LogManager(tempDir, LogManagerConfig.defaults(), clock);
+        try {
+            manager.append("scheduled", 0, bytes("a"), bytes("first"), 4_000L);
+            manager.append("scheduled", 0, bytes("b"), bytes("second"), 5_000L);
+            clock.armBoundary();
+
+            LogManager.VisibilitySnapshot snapshot = manager.visibilitySnapshot("scheduled", 0);
+            RecoveryCheckpoint checkpoint = new CheckpointStore(tempDir).load().orElseThrow();
+
+            assertEquals(2L, snapshot.physicalHighWatermark());
+            assertEquals(1L, snapshot.visibleHighWatermark());
+            assertEquals(5_000L, snapshot.nextVisibleAtEpochMs());
+            assertEquals(
+                    Map.of(1L, 5_000L),
+                    checkpoint.scheduledDeliveries.get("scheduled-0"));
+            assertEquals(1L, checkpoint.visibleDeliveryWatermarks.get("scheduled-0"));
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
     void replicatedFutureDeliveryPersistsScheduledWalAndSurvivesRestart() throws Exception {
         MutableClock clock = new MutableClock(1_000L);
         LogManagerConfig config = new LogManagerConfig(
@@ -141,7 +304,7 @@ class LogManagerTopicDeletionTest {
     }
 
     @Test
-    void maintenanceSkipsPartitionWithFutureScheduledRecord() {
+    void maintenanceProtectsOnlySegmentsContainingFutureScheduledRecords() {
         MutableClock clock = new MutableClock(1_000L);
         LogMaintenanceConfig maintenance = LogMaintenanceConfig.of(
                 RetentionPolicy.of(0, 1),
@@ -155,15 +318,33 @@ class LogManagerTopicDeletionTest {
                 100);
         LogManager manager = new LogManager(tempDir, config, clock);
         try {
-            manager.append("scheduled", 0, bytes("a"), bytes("future"), 50_000L);
-            manager.append("scheduled", 0, bytes("b"), bytes("ready"));
+            manager.append("scheduled", 0, bytes("ready-0"), bytes("ready-0"));
+            manager.append("scheduled", 0, bytes("ready-1"), bytes("ready-1"));
+            manager.append("scheduled", 0, bytes("future-2"), bytes("future-2"), 50_000L);
+            manager.append("scheduled", 0, bytes("ready-3"), bytes("ready-3"));
+            manager.append("scheduled", 0, bytes("future-4"), bytes("future-4"), 60_000L);
+
+            Path partitionDir = tempDir.resolve("segments").resolve("scheduled-0");
+            LogMaintenanceReport preview = manager.dryRunMaintenance();
+
+            assertEquals(List.of(0L, 1L, 3L), preview.segmentReports().stream()
+                    .map(MaintenanceSegmentReport::baseOffset)
+                    .toList());
+            assertTrue(List.of(0L, 1L, 2L, 3L, 4L).stream()
+                    .allMatch(baseOffset -> Files.exists(SegmentFile.logPath(partitionDir, baseOffset))));
 
             LogMaintenanceReport report = manager.maintain();
 
-            assertEquals(MaintenanceStatus.NOOP, report.status());
-            assertEquals(List.of(0L, 1L), manager.getOrCreate("scheduled", 0).read(0, 4_096)
+            assertEquals(preview.segmentReports(), report.segmentReports());
+            assertEquals(MaintenanceStatus.SUCCESS, report.status());
+            assertEquals(List.of(2L, 4L), manager.getOrCreate("scheduled", 0).read(0, 4_096)
                     .stream().map(Record::offset).toList());
-            assertEquals(0L, manager.visibleHighWatermark("scheduled", 0));
+            assertTrue(List.of(0L, 1L, 3L).stream()
+                    .noneMatch(baseOffset -> Files.exists(SegmentFile.logPath(partitionDir, baseOffset))));
+            assertTrue(List.of(2L, 4L).stream()
+                    .allMatch(baseOffset -> Files.exists(SegmentFile.logPath(partitionDir, baseOffset))));
+            assertEquals(2L, manager.visibleHighWatermark("scheduled", 0));
+            assertEquals(50_000L, manager.nextVisibleAtEpochMs("scheduled", 0));
         } finally {
             manager.close();
         }
@@ -306,6 +487,36 @@ class LogManagerTopicDeletionTest {
         @Override
         public Instant instant() {
             return Instant.ofEpochMilli(epochMillis);
+        }
+    }
+
+    private static final class BoundaryClock extends Clock {
+        private int boundaryReads = -1;
+
+        private void armBoundary() {
+            boundaryReads = 0;
+        }
+
+        private int boundaryReadCount() {
+            return boundaryReads;
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneId.of("UTC");
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            if (boundaryReads < 0) {
+                return Instant.ofEpochMilli(1_000L);
+            }
+            return Instant.ofEpochMilli(boundaryReads++ < 2 ? 4_999L : 5_000L);
         }
     }
 }

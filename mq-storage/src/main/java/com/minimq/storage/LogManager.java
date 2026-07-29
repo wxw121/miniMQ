@@ -1,5 +1,7 @@
 package com.minimq.storage;
 
+import com.minimq.common.validation.TopicNames;
+
 import java.io.IOException;
 import java.time.Clock;
 import java.nio.file.Files;
@@ -29,6 +31,7 @@ public class LogManager implements AutoCloseable {
     private final Set<Path> pendingLegacyCleanup = new HashSet<>();
     /** Names deleted by a durable tombstone stay blocked for this process. */
     private final Set<String> deletedTopics = ConcurrentHashMap.newKeySet();
+    private final Map<String, String> topicStorageOwners = new ConcurrentHashMap<>();
     private long successfulAppends;
     private long lastFlushEpochMs;
     private long maintenanceRuns;
@@ -66,11 +69,12 @@ public class LogManager implements AutoCloseable {
         }
     }
 
-    public PartitionLog getOrCreate(String topic, int partitionId) {
+    public synchronized PartitionLog getOrCreate(String topic, int partitionId) {
         ensureOpen();
-        if (topic == null || topic.isBlank() || partitionId < 0) {
+        if (!TopicNames.isValidReference(topic) || partitionId < 0) {
             throw new IllegalArgumentException("invalid topic partition");
         }
+        registerTopicStorageOwner(topic);
         if (deletedTopics.contains(topic)) {
             throw new IllegalStateException("Topic has been deleted: " + topic);
         }
@@ -84,9 +88,10 @@ public class LogManager implements AutoCloseable {
      */
     public synchronized void deleteTopic(String topic, long tombstoneVersion) {
         ensureOpen();
-        if (topic == null || topic.isBlank() || tombstoneVersion < 0) {
+        if (!TopicNames.isValidReference(topic) || tombstoneVersion < 0) {
             throw new IllegalArgumentException("invalid topic deletion marker");
         }
+        registerTopicStorageOwner(topic);
         if (deletedTopics.contains(topic)) {
             return;
         }
@@ -214,23 +219,27 @@ public class LogManager implements AutoCloseable {
     }
 
     public synchronized long visibleHighWatermark(String topic, int partitionId) {
-        ensureOpen();
-        PartitionLog log = getOrCreate(topic, partitionId);
-        long physicalHighWatermark = log.highWatermark();
-        if (deliverySchedule.pruneDue(topic, partitionId, physicalHighWatermark) > 0) {
-            saveCheckpoint();
-        }
-        return deliverySchedule.visibleHighWatermark(topic, partitionId, physicalHighWatermark);
+        return visibilitySnapshot(topic, partitionId).visibleHighWatermark();
     }
 
     public synchronized long nextVisibleAtEpochMs(String topic, int partitionId) {
+        return visibilitySnapshot(topic, partitionId).nextVisibleAtEpochMs();
+    }
+
+    public synchronized VisibilitySnapshot visibilitySnapshot(String topic, int partitionId) {
         ensureOpen();
         PartitionLog log = getOrCreate(topic, partitionId);
         long physicalHighWatermark = log.highWatermark();
-        if (deliverySchedule.pruneDue(topic, partitionId, physicalHighWatermark) > 0) {
-            saveCheckpoint();
+        long now = clock.millis();
+        DeliverySchedule.VisibilityUpdate visibility = deliverySchedule.pruneAndGetVisibilityAt(
+                topic, partitionId, physicalHighWatermark, now);
+        if (visibility.prunedCount() > 0) {
+            saveCheckpoint(now);
         }
-        return deliverySchedule.nextVisibleAtEpochMs(topic, partitionId, physicalHighWatermark);
+        return new VisibilitySnapshot(
+                physicalHighWatermark,
+                visibility.visibleHighWatermark(),
+                visibility.nextVisibleAtEpochMs());
     }
 
     public synchronized long deliveryAtEpochMs(String topic, int partitionId, long offset) {
@@ -240,7 +249,9 @@ public class LogManager implements AutoCloseable {
 
     public synchronized int scheduledRecordCount() {
         ensureOpen();
-        pruneDueDeliveries(highWatermarks());
+        if (pruneDueDeliveries(highWatermarks()) > 0) {
+            saveCheckpoint();
+        }
         return deliverySchedule.count();
     }
 
@@ -256,7 +267,9 @@ public class LogManager implements AutoCloseable {
         if (maxScheduledRecords == 0) {
             throw new ScheduledCapacityExceededException("Scheduled delivery is disabled");
         }
-        pruneDueDeliveries(highWatermarks());
+        if (pruneDueDeliveries(highWatermarks()) > 0) {
+            saveCheckpoint();
+        }
         int requestedScheduledRecords = deliverySchedule.count() + futureRecordCount;
         if (requestedScheduledRecords > maxScheduledRecords) {
             throw new ScheduledCapacityExceededException("Scheduled delivery capacity exceeded: "
@@ -274,13 +287,12 @@ public class LogManager implements AutoCloseable {
         List<LogMaintenanceReport> reports = new ArrayList<>();
         for (Map.Entry<String, PartitionLog> entry : logs.entrySet()) {
             if (entry.getValue() instanceof SegmentedPartitionLog segmented) {
-                if (!partitionHasProtectedFutureDelivery(entry)) {
-                    reports.add(segmented.previewMaintenance(
-                            entry.getKey(),
-                            config.maintenanceConfig().retentionPolicy(),
-                            config.maintenanceConfig().compactionPolicy(),
-                            clock.millis()));
-                }
+                reports.add(segmented.previewMaintenance(
+                        entry.getKey(),
+                        config.maintenanceConfig().retentionPolicy(),
+                        config.maintenanceConfig().compactionPolicy(),
+                        clock.millis(),
+                        protectedFutureOffsets(entry)));
             }
         }
         LogMaintenanceReport report = aggregateReport(true, reports);
@@ -300,13 +312,12 @@ public class LogManager implements AutoCloseable {
             List<LogMaintenanceReport> reports = new ArrayList<>();
             for (Map.Entry<String, PartitionLog> entry : logs.entrySet()) {
                 if (entry.getValue() instanceof SegmentedPartitionLog segmented) {
-                    if (!partitionHasProtectedFutureDelivery(entry)) {
-                        reports.add(segmented.applyMaintenanceWithReport(
-                                entry.getKey(),
-                                config.maintenanceConfig().retentionPolicy(),
-                                config.maintenanceConfig().compactionPolicy(),
-                                clock.millis()));
-                    }
+                    reports.add(segmented.applyMaintenanceWithReport(
+                            entry.getKey(),
+                            config.maintenanceConfig().retentionPolicy(),
+                            config.maintenanceConfig().compactionPolicy(),
+                            clock.millis(),
+                            protectedFutureOffsets(entry)));
                 }
             }
             LogMaintenanceReport report = aggregateReport(false, reports);
@@ -403,19 +414,21 @@ public class LogManager implements AutoCloseable {
     private void replayWal() {
         // Scan all markers before opening any partition log. This handles a
         // stale or lost checkpoint and permanently blocks deleted names.
-        List<WalRecord> allRecords = writeAheadLog.readAll();
-        Set<String> begunDeletes = new HashSet<>();
+        Map<String, Long> begunDeletes = new HashMap<>();
         Set<String> committedDeletes = new HashSet<>();
-        for (WalRecord record : allRecords) {
+        writeAheadLog.scanFrom(0L, record -> {
             if (record.type() == WalRecordType.TOPIC_DELETE_BEGIN) {
-                begunDeletes.add(record.topic());
+                begunDeletes.merge(record.topic(), record.offset(), Math::max);
             } else if (record.type() == WalRecordType.TOPIC_DELETE_COMMIT) {
                 committedDeletes.add(record.topic());
             }
-        }
-        Set<String> deletedInWal = new HashSet<>(begunDeletes);
+        });
+        Set<String> deletedInWal = new HashSet<>(begunDeletes.keySet());
         deletedInWal.addAll(committedDeletes);
         for (String topic : deletedInWal) {
+            // Keep the portable identity reserved across restarts, just as it is
+            // during the original delete operation.
+            registerTopicStorageOwner(topic);
             deleteTopicFiles(topic);
             deletedTopics.add(topic);
         }
@@ -426,10 +439,9 @@ public class LogManager implements AutoCloseable {
         long position = checkpoint
                 .map(loaded -> loaded.walPosition)
                 .orElse(0L);
-        List<WalRecord> records = writeAheadLog.readFrom(position);
-        for (WalRecord record : records) {
+        writeAheadLog.scanFrom(position, record -> {
             if (deletedTopics.contains(record.topic())) {
-                continue;
+                return;
             }
             PartitionLog log = getOrCreate(record.topic(), record.partitionId());
             switch (record.type()) {
@@ -449,18 +461,14 @@ public class LogManager implements AutoCloseable {
                 case TOPIC_DELETE_BEGIN, TOPIC_DELETE_COMMIT -> { }
                 default -> throw new IllegalStateException("Unsupported WAL replay type " + record.type());
             }
-        }
+        });
         // A crash after a forced begin but before cleanup/commit is repaired
         // idempotently before the manager can become active.
-        for (String topic : begunDeletes) {
+        for (Map.Entry<String, Long> begunDelete : begunDeletes.entrySet()) {
+            String topic = begunDelete.getKey();
             if (!committedDeletes.contains(topic)) {
-                long version = allRecords.stream()
-                        .filter(record -> record.type() == WalRecordType.TOPIC_DELETE_BEGIN
-                                && record.topic().equals(topic))
-                        .mapToLong(WalRecord::offset)
-                        .max()
-                        .orElseThrow();
-                writeAheadLog.append(WalRecord.topicDeleteCommit(topic, version), true);
+                writeAheadLog.append(
+                        WalRecord.topicDeleteCommit(topic, begunDelete.getValue()), true);
             }
         }
     }
@@ -603,9 +611,13 @@ public class LogManager implements AutoCloseable {
     }
 
     private void saveCheckpoint() {
+        saveCheckpoint(clock.millis());
+    }
+
+    private void saveCheckpoint(long now) {
         flushAll();
         Map<String, Long> highWatermarks = highWatermarks();
-        pruneDueDeliveries(highWatermarks);
+        pruneDueDeliveries(highWatermarks, now);
         checkpointStore.save(checkpointStore.checkpoint(
                 writeAheadLog.size(),
                 highWatermarks,
@@ -631,27 +643,41 @@ public class LogManager implements AutoCloseable {
         }
     }
 
-    private boolean partitionHasProtectedFutureDelivery(Map.Entry<String, PartitionLog> entry) {
+    private List<Long> protectedFutureOffsets(Map.Entry<String, PartitionLog> entry) {
         PartitionRef partitionRef = tryParsePartitionKey(entry.getKey());
-        return partitionRef != null
-                && deliverySchedule.hasFutureDelivery(
-                        partitionRef.topic(),
-                        partitionRef.partitionId(),
-                        entry.getValue().highWatermark());
+        if (partitionRef == null) {
+            return List.of();
+        }
+        return deliverySchedule.futureOffsets(
+                partitionRef.topic(),
+                partitionRef.partitionId(),
+                entry.getValue().highWatermark());
     }
 
     private int pruneDueDeliveries(Map<String, Long> highWatermarks) {
+        return pruneDueDeliveries(highWatermarks, clock.millis());
+    }
+
+    private int pruneDueDeliveries(Map<String, Long> highWatermarks, long now) {
         int pruned = 0;
         for (Map.Entry<String, Long> entry : highWatermarks.entrySet()) {
             PartitionRef partitionRef = tryParsePartitionKey(entry.getKey());
             if (partitionRef != null) {
-                pruned += deliverySchedule.pruneDue(
-                        partitionRef.topic(),
-                        partitionRef.partitionId(),
-                        entry.getValue());
+                pruned += deliverySchedule.pruneDueAt(
+                        partitionRef.topic(), partitionRef.partitionId(), entry.getValue(), now);
             }
         }
         return pruned;
+    }
+
+    private void registerTopicStorageOwner(String topic) {
+        String identity = TopicNames.portableStorageIdentity(topic);
+        String existing = topicStorageOwners.putIfAbsent(identity, topic);
+        if (existing != null && !existing.equals(topic)) {
+            throw new IllegalArgumentException(
+                    "Topic names '" + existing + "' and '" + topic
+                            + "' share the same portable storage identity");
+        }
     }
 
     private void checkpointAfterAppendIfNeeded() {
@@ -753,6 +779,24 @@ public class LogManager implements AutoCloseable {
         public AppendRecord {
             if (deliverAtEpochMs < 0) {
                 throw new IllegalArgumentException("delivery time must be non-negative");
+            }
+        }
+    }
+
+    public record VisibilitySnapshot(
+            long physicalHighWatermark,
+            long visibleHighWatermark,
+            long nextVisibleAtEpochMs) {
+        public VisibilitySnapshot {
+            if (physicalHighWatermark < 0L
+                    || visibleHighWatermark < 0L
+                    || visibleHighWatermark > physicalHighWatermark) {
+                throw new IllegalArgumentException("invalid visibility watermarks");
+            }
+            if (visibleHighWatermark == physicalHighWatermark
+                    ? nextVisibleAtEpochMs != -1L
+                    : nextVisibleAtEpochMs < 0L) {
+                throw new IllegalArgumentException("invalid next visibility timestamp");
             }
         }
     }

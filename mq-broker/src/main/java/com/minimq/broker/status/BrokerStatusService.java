@@ -144,7 +144,9 @@ public final class BrokerStatusService {
     }
 
     static V4BoundedList<Integer> fullIntList(List<Integer> values) {
-        List<Integer> items = values == null ? List.of() : List.copyOf(values);
+        List<Integer> items = values == null
+                ? List.of()
+                : values.stream().sorted().toList();
         return new V4BoundedList<>(items.size(), false, items);
     }
 

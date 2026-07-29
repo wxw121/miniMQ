@@ -217,6 +217,8 @@ public final class ProtocolSerdes {
                     payload.readInt());
             case ApiKeys.METADATA_V2 -> new MetadataV2Request(
                     readOptionalString(payload, "topic filter"),
+                    readOptionalString(payload, "topic start-after"),
+                    readOptionalString(payload, "tombstone start-after"),
                     payload.readInt(),
                     payload.readInt());
             case ApiKeys.RUNTIME_METRICS_V2 -> new RuntimeMetricsV2Request(
@@ -530,6 +532,8 @@ public final class ProtocolSerdes {
             case ApiKeys.METADATA_V2 -> {
                 MetadataV2Request req = (MetadataV2Request) body;
                 writeOptionalString(buf, req.topicFilter());
+                writeOptionalString(buf, req.topicStartAfter());
+                writeOptionalString(buf, req.tombstoneStartAfter());
                 buf.writeInt(req.topicLimit());
                 buf.writeInt(req.partitionLimit());
             }
@@ -1525,6 +1529,17 @@ public final class ProtocolSerdes {
                 "tombstone pending broker ids");
     }
 
+    private static TopicTombstoneSummary readTopicTombstoneSummary(ByteBuf buf) {
+        return new TopicTombstoneSummary(
+                readV4String(buf, "tombstone topic name"),
+                readTopicTombstoneInfo(buf));
+    }
+
+    private static void writeTopicTombstoneSummary(ByteBuf buf, TopicTombstoneSummary summary) {
+        ByteBufSerde.writeString(buf, summary.topicName());
+        writeTopicTombstoneInfo(buf, summary.tombstone());
+    }
+
     private static FailoverAuditResponse decodeFailoverAuditResponse(ByteBuf buf) {
         return new FailoverAuditResponse(
                 buf.readInt(),
@@ -1656,11 +1671,16 @@ public final class ProtocolSerdes {
                 readBoundedList(buf, "metadata v2 brokers", ProtocolSerdes::readOpsBrokerInfo);
         V4BoundedList<TopicSummary> topics =
                 readBoundedList(buf, "metadata v2 topics", ProtocolSerdes::readTopicSummary);
+        V4BoundedList<TopicTombstoneSummary> tombstones =
+                readBoundedList(
+                        buf,
+                        "metadata v2 tombstones",
+                        ProtocolSerdes::readTopicTombstoneSummary);
         ControllerMetadata controller = readBoolean(buf, "controller present")
                 ? readV4ControllerMetadata(buf)
                 : null;
         return new MetadataV2Response(
-                brokers, topics, controller, buf.readLong(), buf.readInt());
+                brokers, topics, tombstones, controller, buf.readLong(), buf.readInt());
     }
 
     private static void writeMetadataV2Response(ByteBuf buf, MetadataV2Response res) {
@@ -1674,6 +1694,11 @@ public final class ProtocolSerdes {
                 res.topics(),
                 "metadata v2 topics",
                 ProtocolSerdes::writeTopicSummary);
+        writeBoundedList(
+                buf,
+                res.tombstones(),
+                "metadata v2 tombstones",
+                ProtocolSerdes::writeTopicTombstoneSummary);
         writeBoolean(buf, res.controller() != null);
         if (res.controller() != null) {
             writeControllerMetadata(buf, res.controller());

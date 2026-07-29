@@ -1,50 +1,196 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MiniMQ FRONT PANEL</title>
+  <title>MiniMQ Operator Console</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <main class="page-grid">
-    <section class="hero-block">
-      <p class="eyebrow">RAW / BROKER / TEST</p>
-      <h1>MiniMQ FRONT PANEL</h1>
-      <p>用一个高对比、零圆角、强边框的前端直接测试 MiniMQ 主流程：创建 Topic、生产消息、消费消息。</p>
-    </section>
+  <header class="app-header">
+    <h1>MiniMQ FRONT PANEL</h1>
+  </header>
 
-    <section class="control-block" aria-labelledby="flow-title">
-      <div class="block-title" id="flow-title">MAIN FLOW</div>
-      <label>Mode / 模式
-        <select id="mode" data-testid="mode">
-          <option value="auto">AUTO: real then mock fallback</option>
-          <option value="real">REAL: MiniMQ broker required</option>
-          <option value="mock">MOCK: frontend-safe demo</option>
-        </select>
-      </label>
-      <label>Bootstrap Servers
-        <input id="bootstrapServers" data-testid="bootstrap" value="127.0.0.1:19092">
-      </label>
-      <label>Topic
-        <input id="topic" data-testid="topic" value="web-orders">
-      </label>
-      <label>Message
-        <input id="message" data-testid="message" value="hello-minimq">
-      </label>
-      <button id="runFlow" data-testid="run-flow" type="button">RUN CREATE / PRODUCE / CONSUME</button>
-    </section>
+  <main class="page-shell">
+    <div class="primary-grid">
+      <section class="panel flow-panel" aria-labelledby="flow-title">
+        <div class="section-heading">
+          <h2 id="flow-title">Main flow</h2>
+          <span class="step-label">01</span>
+        </div>
 
-    <section class="result-block" aria-live="polite">
-      <div class="block-title">RESULT</div>
-      <div class="status-grid">
-        <div><strong id="status">IDLE</strong><span>status / 状态</span></div>
-        <div><strong id="modeResult">-</strong><span>mode / 模式</span></div>
-        <div><strong id="offset">-</strong><span>offset / 位点</span></div>
+        <div class="field-grid field-grid-two">
+          <label>Mode
+            <select id="mode" data-testid="mode">
+              <option value="auto">Auto / real with mock fallback</option>
+              <option value="real">Real broker</option>
+              <option value="mock">Mock demo</option>
+            </select>
+          </label>
+          <label>Bootstrap servers
+            <input id="bootstrapServers" data-testid="bootstrap" value="" autocomplete="off">
+          </label>
+          <label>Topic
+            <input id="topic" data-testid="topic" value="web-orders" autocomplete="off">
+          </label>
+          <label>Consumer group
+            <input id="groupId" value="web-ui-group" autocomplete="off">
+          </label>
+          <label>Message key
+            <input id="key" value="web-key" autocomplete="off">
+          </label>
+          <label>Message
+            <input id="message" data-testid="message" value="hello-minimq" autocomplete="off">
+          </label>
+        </div>
+
+        <button class="primary-action" id="runFlow" data-testid="run-flow" type="button">
+          Run create / produce / consume
+        </button>
+      </section>
+
+      <section class="panel result-panel" aria-live="polite" aria-labelledby="flow-result-title">
+        <div class="section-heading compact-heading">
+          <h2 id="flow-result-title">Flow output</h2>
+          <span class="step-label">02</span>
+        </div>
+
+        <div class="status-grid">
+          <div><span>Status</span><strong id="status">IDLE</strong></div>
+          <div><span>Mode</span><strong id="modeResult">-</strong></div>
+          <div><span>Offset</span><strong id="offset">-</strong></div>
+        </div>
+        <pre id="log" data-testid="log">Waiting for the main flow.</pre>
+      </section>
+    </div>
+
+    <section class="operator-workspace" aria-labelledby="operator-title">
+      <div class="workspace-heading">
+        <h2 id="operator-title">Operator workflows</h2>
       </div>
-      <pre id="log" data-testid="log">等待运行主流程。</pre>
+
+      <div class="operator-grid">
+        <div class="operator-column">
+          <section class="tool-section" aria-labelledby="observe-title">
+            <div class="tool-heading">
+              <h3 id="observe-title">Observe</h3>
+            </div>
+            <div class="field-grid field-grid-two compact-fields">
+              <label>Broker target
+                <select id="operatorBroker" aria-label="Broker target"></select>
+              </label>
+              <label>Result limit
+                <input id="limit" type="number" min="1" max="1000" value="100" inputmode="numeric">
+              </label>
+              <label>Partition limit
+                <input id="partitionLimit" type="number" min="1" max="1000" value="100" inputmode="numeric">
+              </label>
+            </div>
+            <div class="action-grid">
+              <button type="button" data-endpoint="/api/ops-status">Ops status</button>
+              <button type="button" data-endpoint="/api/runtime-metrics">Runtime metrics</button>
+              <button type="button" data-endpoint="/api/auth-status">Auth status</button>
+              <button type="button" data-endpoint="/api/failover-audit">Failover audit</button>
+              <button type="button" data-endpoint="/api/group-status">Group status</button>
+            </div>
+          </section>
+
+          <section class="tool-section" aria-labelledby="topic-tools-title">
+            <div class="tool-heading">
+              <h3 id="topic-tools-title">Topics</h3>
+            </div>
+            <div class="field-grid field-grid-three compact-fields">
+              <label>Partitions
+                <input id="partitions" type="number" min="1" value="1" inputmode="numeric">
+              </label>
+              <label>Replication factor
+                <input id="replicationFactor" type="number" min="1" value="1" inputmode="numeric">
+              </label>
+              <label>Target partitions
+                <input id="targetPartitionCount" type="number" min="2" value="2" inputmode="numeric">
+              </label>
+            </div>
+            <label class="check-row">
+              <input id="includeDeleted" type="checkbox">
+              <span>Include deleted topics in describe</span>
+            </label>
+            <div class="action-grid">
+              <button type="button" data-endpoint="/api/topics">List topics</button>
+              <button type="button" data-endpoint="/api/topic/create">Create topic</button>
+              <button type="button" data-endpoint="/api/topic/describe">Describe topic</button>
+              <button type="button" data-endpoint="/api/topic/increase">Increase partitions</button>
+              <button class="danger-action" type="button" data-endpoint="/api/topic/delete">Delete topic</button>
+            </div>
+          </section>
+
+          <section class="tool-section" aria-labelledby="broker-tools-title">
+            <div class="tool-heading">
+              <h3 id="broker-tools-title">Broker control</h3>
+            </div>
+            <div class="field-action-row">
+              <label>Broker ID
+                <input id="brokerId" type="number" min="0" value="0" inputmode="numeric">
+              </label>
+              <button class="danger-action" type="button" data-endpoint="/api/broker/offline">Mark broker offline</button>
+            </div>
+          </section>
+        </div>
+
+        <div class="operator-column">
+          <section class="tool-section" aria-labelledby="reliability-title">
+            <div class="tool-heading">
+              <h3 id="reliability-title">Topic reliability</h3>
+            </div>
+            <div class="field-grid field-grid-two compact-fields">
+              <label>Retry topic
+                <input id="retryTopic" value="web-orders-retry" autocomplete="off">
+              </label>
+              <label>Dead-letter topic
+                <input id="deadLetterTopic" value="web-orders-dlq" autocomplete="off">
+              </label>
+            </div>
+            <div class="check-grid">
+              <label class="check-row">
+                <input id="clearRetry" type="checkbox">
+                <span>Clear retry link</span>
+              </label>
+              <label class="check-row">
+                <input id="clearDeadLetter" type="checkbox">
+                <span>Clear dead-letter link</span>
+              </label>
+            </div>
+            <button type="button" data-endpoint="/api/topic/reliability">Apply reliability links</button>
+          </section>
+
+          <section class="tool-section" aria-labelledby="delivery-title">
+            <div class="tool-heading">
+              <h3 id="delivery-title">Special delivery</h3>
+            </div>
+            <label>Deliver at epoch ms
+              <input id="deliverAtEpochMs" type="number" min="0" inputmode="numeric">
+            </label>
+            <div class="action-grid delivery-actions">
+              <button type="button" data-endpoint="/api/delayed-produce">Delayed produce</button>
+              <button type="button" data-endpoint="/api/retry-produce">Retry produce</button>
+              <button type="button" data-endpoint="/api/dead-letter-produce">Dead-letter produce</button>
+            </div>
+          </section>
+
+          <section class="tool-section output-section" aria-live="polite" aria-labelledby="operator-output-title">
+            <div class="tool-heading output-heading">
+              <div>
+                <h3 id="operator-output-title">Operator output</h3>
+                <span id="operatorEndpoint">No request</span>
+              </div>
+              <strong id="operatorStatus" data-state="idle">IDLE</strong>
+            </div>
+            <pre id="operatorLog" data-testid="operator-log">No operator result.</pre>
+          </section>
+        </div>
+      </div>
     </section>
   </main>
+
   <script src="/app.js"></script>
 </body>
 </html>

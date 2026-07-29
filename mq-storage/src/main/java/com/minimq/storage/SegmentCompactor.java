@@ -18,28 +18,38 @@ final class SegmentCompactor {
 
     static List<SegmentReplacement> plan(List<SegmentFile> orderedSegments, CompactionPolicy policy)
             throws IOException {
+        return plan(orderedSegments, policy, Set.of());
+    }
+
+    static List<SegmentReplacement> plan(
+            List<SegmentFile> orderedSegments,
+            CompactionPolicy policy,
+            Set<Long> protectedBases) throws IOException {
         if (policy == null || !policy.enabled() || orderedSegments.size() <= 1) {
             return List.of();
         }
         int sealedCount = orderedSegments.size() - 1;
-        int selectedCount = selectedCount(orderedSegments, policy, sealedCount);
-        if (selectedCount <= 0) {
+        List<SegmentFile> selectedSegments = selectedSegments(
+                orderedSegments, policy, protectedBases, sealedCount);
+        if (selectedSegments.isEmpty()) {
             return List.of();
         }
 
+        Set<SegmentFile> selectedSet = new HashSet<>(selectedSegments);
         Set<ByteArrayKey> newerKeys = new HashSet<>();
-        for (int i = selectedCount; i < orderedSegments.size(); i++) {
-            for (Record record : readAll(orderedSegments.get(i))) {
-                if (record.key() != null) {
-                    newerKeys.add(new ByteArrayKey(record.key()));
-                }
-            }
-        }
-
         List<SegmentReplacement> reversed = new ArrayList<>();
-        for (int i = selectedCount - 1; i >= 0; i--) {
+        for (int i = orderedSegments.size() - 1; i >= 0; i--) {
             SegmentFile segment = orderedSegments.get(i);
             List<Record> records = readAll(segment);
+            if (!selectedSet.contains(segment)) {
+                for (Record record : records) {
+                    if (record.key() != null) {
+                        newerKeys.add(new ByteArrayKey(record.key()));
+                    }
+                }
+                continue;
+            }
+
             List<Record> retained = new ArrayList<>();
             for (int recordIndex = records.size() - 1; recordIndex >= 0; recordIndex--) {
                 Record record = records.get(recordIndex);
@@ -62,25 +72,28 @@ final class SegmentCompactor {
         return List.copyOf(replacements);
     }
 
-    private static int selectedCount(
+    private static List<SegmentFile> selectedSegments(
             List<SegmentFile> orderedSegments,
             CompactionPolicy policy,
+            Set<Long> protectedBases,
             int sealedCount) {
         int maxSegments = Math.min(policy.maxSegmentsPerRun(), sealedCount);
-        if (policy.maxBytesPerRun() == 0) {
-            return maxSegments;
-        }
-        int selectedCount = 0;
+        List<SegmentFile> selected = new ArrayList<>();
         long selectedBytes = 0;
-        for (int i = 0; i < maxSegments; i++) {
-            long nextSize = orderedSegments.get(i).size();
-            if (selectedBytes + nextSize > policy.maxBytesPerRun()) {
+        for (int i = 0; i < sealedCount && selected.size() < maxSegments; i++) {
+            SegmentFile segment = orderedSegments.get(i);
+            if (protectedBases.contains(segment.baseOffset())) {
+                continue;
+            }
+            long nextSize = segment.size();
+            if (policy.maxBytesPerRun() > 0
+                    && selectedBytes + nextSize > policy.maxBytesPerRun()) {
                 break;
             }
+            selected.add(segment);
             selectedBytes += nextSize;
-            selectedCount++;
         }
-        return selectedCount;
+        return selected;
     }
 
     private static List<Record> readAll(SegmentFile segment) throws IOException {

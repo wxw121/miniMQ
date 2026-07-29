@@ -9,9 +9,9 @@ MiniMQ is a modular Java message queue. It separates shared models, protocol enc
 
 MiniMQ 是一个多模块 Java 消息队列系统。它把公共模型、协议编解码、本地存储、Broker 运行时、客户端 SDK、Demo CLI 拆成独立 Maven 模块。项目规模不大，但保留了分区消息系统的核心结构：Producer 按 Topic/Partition 写入消息，Consumer 按 Offset 拉取消息，Controller 维护元数据并指导客户端把请求路由到正确的 Leader Broker。
 
-The architecture now supports partition replicas, ISR-aware high watermarks, persisted replica LEO, Broker heartbeat leases, and automatic LEO-aware Leader failover under one static Controller. It remains an educational architecture rather than a production quorum system: Controller HA, data-plane Leader epochs, unclean election, and failover log truncation are not implemented.
+The architecture supports partition replicas, physical and visible ISR-aware watermarks, persisted replica state, Broker heartbeat leases, etcd-backed Controller election, exact data-plane Leader epochs, crash-safe failover truncation, and automatic clean Leader failover. It remains an educational architecture rather than a production quorum system: unclean election, transactions, and exactly-once semantics are not implemented.
 
-当前架构已经支持分区副本、ISR 感知 high watermark、持久化副本 LEO、Broker 心跳租约和静态 Controller 下的 LEO 感知自动故障转移。它仍是教学型架构，不是生产级 quorum 系统：Controller 高可用、数据面 Leader epoch、unclean election 和故障转移日志截断尚未实现。
+当前架构支持分区副本、ISR 感知的物理/可见 high watermark、持久化副本状态、Broker 心跳租约、etcd Controller 选举、精确数据面 Leader epoch、崩溃安全故障转移截断和 clean Leader 自动故障转移。它仍是教学型架构，不是生产级 quorum 系统：unclean election、事务和 exactly-once 语义尚未实现。
 
 ## 2. Module Architecture / 模块架构
 
@@ -54,9 +54,9 @@ flowchart TB
 
 ## 3. Runtime Topology / 运行时拓扑
 
-The common demo topology uses three brokers. Broker 0 starts as controller. Broker 1 and Broker 2 register with the controller and fetch metadata. Topic partitions are assigned round-robin across online brokers when the topic is created.
+The common demo topology uses three brokers and a three-member etcd cluster. Every Broker campaigns for the lease-bound Controller role; Broker 0 only initializes a new empty cluster and is not a permanently assigned Controller. Clients use any bootstrap Broker to discover the current Controller. Topic partitions are assigned round-robin across online brokers when the topic is created.
 
-常见 Demo 拓扑为 3 个 Broker。Broker 0 作为 Controller 启动。Broker 1 和 Broker 2 向 Controller 注册，并拉取元数据。创建 Topic 时，Controller 会把分区按照在线 Broker 列表做轮询分配。
+常见 Demo 拓扑为 3 个 Broker 和 3 个 etcd 成员。每个 Broker 都竞选 lease-bound Controller；Broker 0 只负责初始化全新空集群，并不是固定 Controller。客户端通过任意 bootstrap Broker 发现当前 Controller。创建 Topic 时，Controller 会把分区按照在线 Broker 列表做轮询分配。
 
 ```mermaid
 flowchart LR
@@ -65,22 +65,23 @@ flowchart LR
     consumer2[Consumer SDK<br/>消费者 B]
 
     subgraph Cluster[MiniMQ Cluster / 集群]
-        b0[Broker 0<br/>Controller / 控制器<br/>Partition Leader / 分区 Leader]
-        b1[Broker 1<br/>Partition Leader / 分区 Leader]
-        b2[Broker 2<br/>Partition Leader / 分区 Leader]
+        b0[Broker 0<br/>Controller candidate / 候选<br/>Partition Leader / 分区 Leader]
+        b1[Broker 1<br/>Controller candidate / 候选<br/>Partition Leader / 分区 Leader]
+        b2[Broker 2<br/>Controller candidate / 候选<br/>Partition Leader / 分区 Leader]
+        etcd[(3-member etcd<br/>election + metadata CAS)]
     end
 
     disk0[(broker-0 data<br/>数据目录)]
     disk1[(broker-1 data<br/>数据目录)]
     disk2[(broker-2 data<br/>数据目录)]
 
-    producer -- metadata/create-topic/group APIs<br/>元数据/建 Topic/消费组 API --> b0
+    producer -- bootstrap discovery + routed control APIs<br/>发现并路由控制面 API --> b0
     producer -- produce to leader<br/>向 leader 生产 --> b0
     producer -- produce to leader<br/>向 leader 生产 --> b1
     producer -- produce to leader<br/>向 leader 生产 --> b2
 
-    consumer1 -- join/sync/offset APIs<br/>加组/同步/offset API --> b0
-    consumer2 -- join/sync/offset APIs<br/>加组/同步/offset API --> b0
+    consumer1 -- discovery + join/sync/offset APIs<br/>发现并路由组 API --> b0
+    consumer2 -- discovery + join/sync/offset APIs<br/>发现并路由组 API --> b0
     consumer1 -- fetch assigned partitions<br/>拉取已分配分区 --> b0
     consumer1 -- fetch assigned partitions<br/>拉取已分配分区 --> b1
     consumer2 -- fetch assigned partitions<br/>拉取已分配分区 --> b2
@@ -88,6 +89,9 @@ flowchart LR
     b0 --> disk0
     b1 --> disk1
     b2 --> disk2
+    b0 <--> etcd
+    b1 <--> etcd
+    b2 <--> etcd
 ```
 
 ## 4. Request Flow / 请求流
@@ -151,9 +155,9 @@ MiniMQ 可以从概念上拆成两个面：
 | Control plane / 控制面 | `CREATE_TOPIC`, `METADATA`, `JOIN_GROUP`, `SYNC_GROUP`, `HEARTBEAT`, `OFFSET_COMMIT`, `OFFSET_FETCH`, `REGISTER_BROKER` | Handles metadata, group membership, assignments, offsets, and broker registration. / 处理元数据、组成员、分配、offset 和 Broker 注册。 |
 | Data plane / 数据面 | `PRODUCE`, `FETCH` | Handles record writes and reads against partition logs. / 处理分区日志上的消息写入与读取。 |
 
-The controller broker currently serves all control-plane APIs. Data-plane APIs are served by the leader broker of each partition. This is a clean split for readers: controller code lives mainly in `ClusterController` and `GroupCoordinator`; data access flows through `MqRequestHandler`, `PartitionManager`, `LogManager`, the independent WAL/checkpoint layer, and `SegmentedPartitionLog`.
+The currently elected Controller Broker serves controller-scoped APIs. Controller-aware clients discover it through the complete bootstrap list and retry a stale route once. Broker-local status, maintenance, audit, auth, and runtime-metrics APIs target exactly one Broker. Data-plane APIs are served by each partition's Leader. Controller code lives mainly in `ControllerRuntime`, `ClusterController`, and `GroupCoordinator`; data access flows through `MqRequestHandler`, `PartitionManager`, `LogManager`, the WAL/checkpoint layer, and `SegmentedPartitionLog`.
 
-Controller Broker 当前承载所有控制面 API。数据面 API 则由对应分区的 Leader Broker 承载。对读代码的人来说，这条边界很清楚：控制面主要在 `ClusterController` 与 `GroupCoordinator`，数据面主要经过 `MqRequestHandler`、`PartitionManager`、`LogManager`、独立 WAL/checkpoint 层和 `SegmentedPartitionLog`。
+当前选举出的 Controller Broker 承载 Controller-scoped API。Controller-aware 客户端通过完整 bootstrap 列表发现它，并对过期路由重试一次。Broker-local 状态、维护、审计、鉴权和 runtime metrics API 只访问一个明确 Broker。数据面 API 由对应分区的 Leader Broker 承载。控制面主要在 `ControllerRuntime`、`ClusterController` 与 `GroupCoordinator`，数据面主要经过 `MqRequestHandler`、`PartitionManager`、`LogManager`、WAL/checkpoint 层和 `SegmentedPartitionLog`。
 
 ## 6. Storage Architecture / 存储架构
 
@@ -173,6 +177,10 @@ Each topic-partition now has one segmented directory under the broker data direc
 `LogManager` still accepts old single-file `{topic}-{partitionId}.log` data during startup and migrates it into the segmented directory. WAL replay and checkpoint validation run before request handling, so the broker opens request traffic only after the partition logs have caught up or been replayed idempotently.
 
 `LogManager` 在启动时仍会接受旧单文件 `{topic}-{partitionId}.log` 数据，并迁移到分段目录。WAL 重放和 checkpoint 校验会在开放请求处理之前完成，因此 Broker 只有在分区日志追上或完成幂等重放后才对外处理流量。
+
+V4 delayed records use WAL type 8 (`SCHEDULED_DATA_APPEND`) and the ordinary segmented log. A persisted delivery schedule exposes one contiguous visible prefix per partition. Client fetches never cross that prefix, while replica fetches continue to copy physical records and delivery timestamps. Retention and compaction protect only segments containing not-yet-visible records, so unrelated sealed segments remain maintainable.
+
+V4 延迟消息使用 WAL type 8（`SCHEDULED_DATA_APPEND`）和普通分段日志。持久化 delivery schedule 为每个分区维护连续可见前缀；客户端 FETCH 不会越过该前缀，副本 FETCH 仍复制物理记录及投递时间。Retention/compaction 只保护含未到期记录的 segment，不会阻塞无关 sealed segment 的维护。
 
 V2.1.1 maintenance runs after recovery on the same segmented catalog. Retention removes only sealed segments by age or total sealed bytes, compaction rewrites only sealed segments by latest key, and read snapshots delay physical deletion until in-flight fetches leave their segment view. WAL replay skips records below `logStartOffset`, so retained-away offsets are not restored on restart.
 
@@ -202,19 +210,19 @@ flowchart LR
 
 ## 7. Deployment Shape / 部署形态
 
-MiniMQ 3.0 is launched with an etcd endpoint on every Broker. Brokers campaign for one lease-bound Controller role; only the first node of a new cluster uses `--initialize-empty-cluster` (or `--initialize-cluster-from-local` for an explicit 2.x import).
+MiniMQ 4.0 is launched with etcd endpoints on every Broker. Brokers campaign for one lease-bound Controller role; only the first node of a new cluster uses `--initialize-empty-cluster` (or `--initialize-cluster-from-local` for an explicit 2.x import).
 
-MiniMQ 3.0 的每个 Broker 都配置 etcd endpoint，并竞选唯一的 lease-bound Controller。全新集群只有首节点使用 `--initialize-empty-cluster`；显式导入 2.x 本地元数据时改用 `--initialize-cluster-from-local`。
+MiniMQ 4.0 的每个 Broker 都配置 etcd endpoints，并竞选唯一的 lease-bound Controller。全新集群只有首节点使用 `--initialize-empty-cluster`；显式导入 2.x 本地元数据时改用 `--initialize-cluster-from-local`。
 
 | Broker / 节点 | Example role / 示例角色 | Example port / 示例端口 | Data dir / 数据目录 |
 | --- | --- | ---: | --- |
-| Broker 0 | Controller + leader candidate / Controller 与 leader 候选节点 | 9092 | `./data/broker-0` |
+| Broker 0 | Cluster initializer + Controller/leader candidate / 集群初始化节点与 Controller/leader 候选节点 | 9092 | `./data/broker-0` |
 | Broker 1 | Broker + leader candidate / Broker 与 leader 候选节点 | 9093 | `./data/broker-1` |
 | Broker 2 | Broker + leader candidate / Broker 与 leader 候选节点 | 9094 | `./data/broker-2` |
 
-Each Broker owns a `BrokerLeaseService` and `BrokerAvailabilityGuard`. Startup binds the client port while state is `STARTING`, registers and synchronizes metadata, confirms the epoch with a heartbeat, then moves to `ACTIVE`. Loss of Controller contact moves the Broker to `FENCED` before the Controller lease expires; recovery uses `RECOVERING` and must obtain a newer valid registration before returning to `ACTIVE`.
+Each Broker owns a `BrokerLeaseService` and `BrokerAvailabilityGuard`. Startup binds the client port while state is `STARTING`, installs an initial metadata revision, reconciles every installed topic tombstone against local storage, registers, and confirms the epoch with a heartbeat before moving to `ACTIVE`. A tombstone-cleanup failure keeps a sticky storage fence. Loss of Controller contact moves the Broker to `FENCED` before the Controller lease expires; recovery uses `RECOVERING` and must obtain a newer valid registration before returning to `ACTIVE`.
 
-每个 Broker 拥有一个 `BrokerLeaseService` 和 `BrokerAvailabilityGuard`。启动时先绑定客户端端口并保持 `STARTING`，完成注册、元数据同步和 epoch 确认心跳后进入 `ACTIVE`。与 Controller 失联时，Broker 会在 Controller 租约到期前进入 `FENCED`；恢复过程使用 `RECOVERING`，只有重新获得有效注册后才能回到 `ACTIVE`。
+每个 Broker 拥有一个 `BrokerLeaseService` 和 `BrokerAvailabilityGuard`。启动时先绑定客户端端口并保持 `STARTING`，安装初始 metadata revision、将其中全部 Topic tombstone 与本地存储对账、完成注册和 epoch 确认心跳后才进入 `ACTIVE`。tombstone 清理失败会保留 sticky storage fence。与 Controller 失联时，Broker 会在 Controller 租约到期前进入 `FENCED`；恢复过程使用 `RECOVERING`，只有重新获得有效注册后才能回到 `ACTIVE`。
 
 The timing contract is `broker heartbeat interval < broker self-fence timeout < controller broker lease timeout`, configured by `--broker-heartbeat-interval-ms`, `--broker-self-fence-timeout-ms`, and `--controller-broker-lease-timeout-ms`.
 
@@ -226,6 +234,8 @@ The timing contract is `broker heartbeat interval < broker self-fence timeout < 
 4. Consumer group rebalancing is simplified. There is no full Kafka-style rebalance protocol, session management, or cooperative assignment. / 消费组再均衡经过简化，还没有完整 Kafka 风格的 rebalance 协议、会话管理或协作式分配。
 5. The client SDK cycles the complete bootstrap list, discovers the current Controller through any Broker, rejects older metadata versions, carries the routed Leader epoch, and retries one stale route. The SDK has no etcd dependency. / 客户端 SDK 轮询完整 bootstrap 列表、通过任意 Broker 发现当前 Controller、拒绝较旧 metadata version、携带路由时的 Leader epoch，并对过期路由重试一次；SDK 不依赖 etcd。
 6. Maintenance report, execution, and metrics are exposed through token-protected admin APIs and single-target CLI commands. Destructive maintenance remains opt-in and Broker-local. / 维护报告、执行和指标已通过令牌保护的管理 API 与单目标 CLI 命令开放；破坏性维护仍需显式触发，并且只作用于本地 Broker。
+7. V3 clients remain wire-compatible because API keys 0-19 retain their positional layouts. V3/V4 mixed Broker clusters are unsupported because only V4 internal replication preserves delayed-delivery state. / API 0-19 的位置布局保持不变，因此 V3 客户端仍兼容；但 V3/V4 Broker 混合集群不受支持，只有 V4 内部复制会保留延迟投递状态。
+8. Topic names are portable path-safe identifiers: 1..249 characters from `[A-Za-z0-9._-]`, excluding `.` and `..`. Deletion is a durable `DELETING -> DELETED` state machine, and tombstoned names remain reserved. / Topic 名称是可移植且路径安全的标识符：长度 1..249，只能使用 `[A-Za-z0-9._-]`，且不能是 `.` 或 `..`；删除是持久化的 `DELETING -> DELETED` 状态机，tombstone 名称永久保留。
 
 ## 9. Architecture Glossary / 架构名词表
 

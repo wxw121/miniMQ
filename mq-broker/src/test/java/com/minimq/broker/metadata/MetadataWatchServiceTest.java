@@ -22,6 +22,50 @@ import static org.mockito.Mockito.*;
 
 class MetadataWatchServiceTest {
     @Test
+    void initialLoadRetriesOneRepositoryReadFailure() throws Exception {
+        FakeRepository repository = new FakeRepository(version(5));
+        repository.readFailures = 1;
+        FakeSource source = new FakeSource();
+
+        try (MetadataWatchService service = new MetadataWatchService(
+                repository, source, ignored -> { })) {
+            service.start();
+
+            assertEquals(5L, service.initialLoad().toCompletableFuture().get(3, TimeUnit.SECONDS));
+            source.awaitStarted();
+            assertEquals(2, repository.reads);
+        }
+    }
+
+    @Test
+    void initialLoadCompletesOnlyAfterInitialRevisionIsInstalled() throws Exception {
+        FakeRepository repository = new FakeRepository(version(7));
+        FakeSource source = new FakeSource();
+        CountDownLatch installerEntered = new CountDownLatch(1);
+        CountDownLatch releaseInstaller = new CountDownLatch(1);
+        try (MetadataWatchService service = new MetadataWatchService(repository, source, value -> {
+            installerEntered.countDown();
+            try {
+                assertTrue(releaseInstaller.await(3, TimeUnit.SECONDS));
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(interrupted);
+            }
+        })) {
+            service.start();
+            assertTrue(installerEntered.await(3, TimeUnit.SECONDS));
+            assertFalse(service.initialLoad().toCompletableFuture().isDone());
+
+            releaseInstaller.countDown();
+
+            assertEquals(7L, service.initialLoad().toCompletableFuture().get(3, TimeUnit.SECONDS));
+            source.awaitStarted();
+        } finally {
+            releaseInstaller.countDown();
+        }
+    }
+
+    @Test
     void installsOnlyMonotonicallyIncreasingRevisionsOnInstallerThread() throws Exception {
         FakeRepository repository = new FakeRepository(version(1));
         FakeSource source = new FakeSource();
@@ -66,6 +110,49 @@ class MetadataWatchServiceTest {
     }
 
     @Test
+    void retriesReloadAfterOneRepositoryReadFailure() throws Exception {
+        FakeRepository repository = new FakeRepository(version(5));
+        FakeSource source = new FakeSource();
+        CountDownLatch latch = new CountDownLatch(2);
+        List<Long> installed = new CopyOnWriteArrayList<>();
+        try (MetadataWatchService service = new MetadataWatchService(repository, source, value -> {
+            installed.add(value.revision());
+            latch.countDown();
+        })) {
+            service.start();
+            source.awaitStarted();
+            repository.current = version(8);
+            repository.readFailures = 1;
+
+            source.fail();
+
+            assertTrue(latch.await(3, TimeUnit.SECONDS));
+            assertEquals(List.of(5L, 8L), installed);
+            assertEquals(2, source.starts);
+            assertEquals(9, source.revision);
+        }
+    }
+
+    @Test
+    void errorAfterInitialLoadDoesNotEnterReloadLoop() throws Exception {
+        FakeRepository repository = new FakeRepository(version(5));
+        FakeSource source = new FakeSource();
+        try (MetadataWatchService service = new MetadataWatchService(
+                repository, source, ignored -> { })) {
+            service.start();
+            assertEquals(5L, service.initialLoad().toCompletableFuture().get(3, TimeUnit.SECONDS));
+            source.awaitStarted();
+            repository.readErrors = 1;
+
+            source.fail();
+
+            assertTrue(repository.errorRead.await(3, TimeUnit.SECONDS));
+            assertFalse(source.restarted.await(500, TimeUnit.MILLISECONDS));
+            assertEquals(2, repository.reads);
+        }
+    }
+
+    @Test
     void etcdSourceParsesEventsAndClosesWatcher() throws Exception {
         FakeRepository repository = new FakeRepository(version(1));
         Watch watch = mock(Watch.class);
@@ -80,11 +167,17 @@ class MetadataWatchServiceTest {
         }).when(watch).watch(any(ByteSequence.class), any(WatchOption.class),
                 any(Consumer.class), any(Consumer.class), any(Runnable.class));
         CountDownLatch installed = new CountDownLatch(2);
+        java.util.concurrent.atomic.AtomicReference<ClusterMetadata> lastInstalled =
+                new java.util.concurrent.atomic.AtomicReference<>();
         try (MetadataWatchService service = new MetadataWatchService(
-                repository, watch, "demo", ignored -> installed.countDown())) {
+                repository, watch, "demo", value -> {
+                    lastInstalled.set(value.metadata());
+                    installed.countDown();
+                })) {
             service.start();
             assertTrue(watching.await(3, TimeUnit.SECONDS));
             ClusterMetadata metadata = new ClusterMetadata();
+            metadata.metadataFormatVersion = 3;
             metadata.metadataVersion = 2;
             KeyValue keyValue = mock(KeyValue.class);
             when(keyValue.getValue()).thenReturn(ByteSequence.from(
@@ -99,12 +192,14 @@ class MetadataWatchServiceTest {
 
             assertTrue(installed.await(3, TimeUnit.SECONDS));
             assertEquals(2, service.installedRevision());
+            assertEquals(ClusterMetadata.CURRENT_FORMAT_VERSION,
+                    lastInstalled.get().metadataFormatVersion);
         }
         verify(watcher).close();
     }
 
     @Test
-    void etcdSourceReportsInvalidSnapshotOnlyOnce() throws Exception {
+    void etcdSourceRejectsStructurallyInvalidSnapshotOnlyOnce() throws Exception {
         FakeRepository repository = new FakeRepository(version(1));
         Watch watch = mock(Watch.class);
         Watch.Watcher watcher = mock(Watch.Watcher.class);
@@ -131,18 +226,28 @@ class MetadataWatchServiceTest {
                 Thread.sleep(1);
             }
             assertEquals(1, watching.getCount());
+            Consumer<Throwable> firstError = errors.get();
+            Runnable firstCompletion = completed.get();
+            ClusterMetadata invalid = new ClusterMetadata();
+            ClusterMetadata.TopicEntry topic = new ClusterMetadata.TopicEntry();
+            topic.topicName = "CON";
+            invalid.topics.put(topic.topicName, topic);
             KeyValue keyValue = mock(KeyValue.class);
-            when(keyValue.getValue()).thenReturn(ByteSequence.from(new byte[] {1}));
+            when(keyValue.getValue()).thenReturn(ByteSequence.from(
+                    new ObjectMapper().writeValueAsBytes(invalid)));
+            when(keyValue.getModRevision()).thenReturn(2L);
             WatchEvent event = mock(WatchEvent.class);
             when(event.getKeyValue()).thenReturn(keyValue);
             WatchResponse response = mock(WatchResponse.class);
             when(response.getEvents()).thenReturn(List.of(event));
 
             events.get().accept(response);
-            errors.get().accept(new RuntimeException("closed"));
-            completed.get().run();
-
             assertTrue(watching.await(3, TimeUnit.SECONDS));
+            firstError.accept(new RuntimeException("closed"));
+            firstCompletion.run();
+            Thread.sleep(150);
+            verify(watch, times(2)).watch(any(ByteSequence.class), any(WatchOption.class),
+                    any(Consumer.class), any(Consumer.class), any(Runnable.class));
         }
     }
 
@@ -186,10 +291,40 @@ class MetadataWatchServiceTest {
 
     private static final class FakeRepository implements ClusterMetadataRepository {
         volatile VersionedClusterMetadata current;
+        volatile int readFailures;
+        volatile int readErrors;
+        volatile int reads;
+        final CountDownLatch errorRead = new CountDownLatch(1);
         FakeRepository(VersionedClusterMetadata current) { this.current = current; }
-        @Override public VersionedClusterMetadata read() { return current; }
+        @Override public synchronized VersionedClusterMetadata read() {
+            reads++;
+            if (readErrors > 0) {
+                readErrors--;
+                errorRead.countDown();
+                throw new AssertionError("simulated fatal metadata read failure");
+            }
+            if (readFailures > 0) {
+                readFailures--;
+                throw new IllegalStateException("simulated metadata read failure");
+            }
+            return current;
+        }
+        @Override public synchronized VersionedClusterMetadata read(java.time.Duration timeout) {
+            if (timeout == null || timeout.isZero() || timeout.isNegative()) {
+                throw new IllegalArgumentException("timeout must be positive");
+            }
+            return read();
+        }
         @Override public UpdateResult initialize(ClusterMetadata metadata) { throw new UnsupportedOperationException(); }
+        @Override public UpdateResult initialize(
+                ClusterMetadata metadata, java.time.Duration timeout) {
+            throw new UnsupportedOperationException();
+        }
         @Override public UpdateResult compareAndSet(long expectedRevision, ClusterMetadata metadata) { throw new UnsupportedOperationException(); }
+        @Override public UpdateResult compareAndSet(
+                long expectedRevision, ClusterMetadata metadata, java.time.Duration timeout) {
+            throw new UnsupportedOperationException();
+        }
     }
 
     private static final class FakeSource implements MetadataWatchService.Source {
@@ -198,6 +333,7 @@ class MetadataWatchServiceTest {
         volatile long revision;
         volatile int starts;
         final CountDownLatch started = new CountDownLatch(1);
+        final CountDownLatch restarted = new CountDownLatch(1);
         @Override public MetadataWatchService.Subscription watch(long startRevision,
                 Consumer<VersionedClusterMetadata> event, Runnable failure) {
             this.revision = startRevision;
@@ -205,6 +341,9 @@ class MetadataWatchServiceTest {
             this.failure = failure;
             starts++;
             started.countDown();
+            if (starts > 1) {
+                restarted.countDown();
+            }
             return () -> { };
         }
         void awaitStarted() throws InterruptedException { assertTrue(started.await(3, TimeUnit.SECONDS)); }

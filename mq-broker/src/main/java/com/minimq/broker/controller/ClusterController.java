@@ -9,12 +9,12 @@ import com.minimq.broker.metadata.ClusterMetadata.TopicEntry;
 import com.minimq.broker.metadata.ClusterMetadataRepository;
 import com.minimq.broker.metadata.VersionedClusterMetadata;
 import com.minimq.common.error.ErrorCode;
+import com.minimq.common.validation.TopicNames;
 import com.minimq.protocol.message.ProtocolMessages.BrokerMetadata;
 import com.minimq.protocol.message.ProtocolMessages.BrokerHeartbeatRequest;
 import com.minimq.protocol.message.ProtocolMessages.ConfigureTopicReliabilityRequest;
 import com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest;
 import com.minimq.protocol.message.ProtocolMessages.CreateTopicAdminRequest;
-import com.minimq.protocol.message.ProtocolMessages.ConfigureTopicReliabilityRequest;
 import com.minimq.protocol.message.ProtocolMessages.MetadataRequest;
 import com.minimq.protocol.message.ProtocolMessages.MetadataResponse;
 import com.minimq.protocol.message.ProtocolMessages.PartitionMetadata;
@@ -23,6 +23,7 @@ import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerResponse;
 import com.minimq.protocol.message.ProtocolMessages.TopicMetadata;
 import com.minimq.protocol.message.ProtocolMessages.LeaderReadyRequest;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -48,6 +49,7 @@ public class ClusterController {
     private final long leaseTimeoutMs;
     private final LongSupplier nanoTime;
     private final FailoverAuditLog auditLog;
+    private final Object brokerLeaseLock = new Object();
     private final Map<Integer, BrokerLease> brokerLeases = new HashMap<>();
     private ClusterMetadata metadata;
     private long metadataRevision;
@@ -119,18 +121,24 @@ public class ClusterController {
         this.metadataRevision = loaded.revision();
         normalizeMetadata();
         long deadline = deadlineFrom(nanoTime.getAsLong());
-        metadata.brokers.values().stream()
-                .filter(broker -> broker.online)
-                .forEach(broker -> brokerLeases.put(
-                        broker.brokerId, new BrokerLease(broker.brokerEpoch, deadline)));
+        synchronized (brokerLeaseLock) {
+            metadata.brokers.values().stream()
+                    .filter(broker -> broker.online)
+                    .forEach(broker -> brokerLeases.put(
+                            broker.brokerId, new BrokerLease(broker.brokerEpoch, deadline)));
+        }
     }
 
     // Public controller methods are synchronized to keep in-memory and persisted metadata ordered consistently.
     public synchronized BrokerRegistration registerBroker(RegisterBrokerRequest request) {
         long now = nanoTime.getAsLong();
         BrokerEntry current = metadata.brokers.get(request.brokerId());
-        BrokerLease currentLease = brokerLeases.get(request.brokerId());
-        boolean expectedRecovery = recovering && awaitingRecoveryBrokers.contains(request.brokerId());
+        BrokerLease currentLease;
+        boolean expectedRecovery;
+        synchronized (brokerLeaseLock) {
+            currentLease = brokerLeases.get(request.brokerId());
+            expectedRecovery = recovering && awaitingRecoveryBrokers.contains(request.brokerId());
+        }
         if (!expectedRecovery && current != null && current.online && currentLease != null
                 && now < currentLease.deadlineNanos()) {
             return BrokerRegistration.failed(ErrorCode.BROKER_ID_IN_USE);
@@ -148,23 +156,28 @@ public class ClusterController {
         if (commitError != ErrorCode.NONE) {
             return BrokerRegistration.failed(commitError);
         }
-        brokerLeases.put(request.brokerId(), new BrokerLease(entry.brokerEpoch, deadlineFrom(now)));
-        awaitingRecoveryBrokers.remove(request.brokerId());
+        synchronized (brokerLeaseLock) {
+            brokerLeases.put(
+                    request.brokerId(), new BrokerLease(entry.brokerEpoch, deadlineFrom(now)));
+            awaitingRecoveryBrokers.remove(request.brokerId());
+        }
         return new BrokerRegistration(
                 ErrorCode.NONE, new RegisterBrokerResponse(entry.brokerEpoch, leaseTimeoutMs));
     }
 
-    public synchronized ErrorCode heartbeatBroker(BrokerHeartbeatRequest request) {
-        BrokerEntry broker = metadata.brokers.get(request.brokerId());
-        BrokerLease lease = brokerLeases.get(request.brokerId());
-        long now = nanoTime.getAsLong();
-        if (broker == null || !broker.online || broker.brokerEpoch != request.brokerEpoch()
-                || lease == null || lease.brokerEpoch() != request.brokerEpoch()
-                || now >= lease.deadlineNanos()) {
-            return ErrorCode.BROKER_FENCED;
+    public ErrorCode heartbeatBroker(BrokerHeartbeatRequest request) {
+        synchronized (brokerLeaseLock) {
+            BrokerLease lease = brokerLeases.get(request.brokerId());
+            long now = nanoTime.getAsLong();
+            if (lease == null || lease.brokerEpoch() != request.brokerEpoch()
+                    || now >= lease.deadlineNanos()) {
+                return ErrorCode.BROKER_FENCED;
+            }
+            brokerLeases.put(
+                    request.brokerId(), new BrokerLease(request.brokerEpoch(), deadlineFrom(now)));
+            awaitingRecoveryBrokers.remove(request.brokerId());
+            return ErrorCode.NONE;
         }
-        brokerLeases.put(request.brokerId(), new BrokerLease(request.brokerEpoch(), deadlineFrom(now)));
-        return ErrorCode.NONE;
     }
 
     public synchronized int expireOverdueBrokerLeases() {
@@ -172,10 +185,13 @@ public class ClusterController {
             return 0;
         }
         long now = nanoTime.getAsLong();
-        List<BrokerLeaseKey> expired = brokerLeases.entrySet().stream()
-                .filter(entry -> now >= entry.getValue().deadlineNanos())
-                .map(entry -> new BrokerLeaseKey(entry.getKey(), entry.getValue().brokerEpoch()))
-                .toList();
+        List<BrokerLeaseKey> expired;
+        synchronized (brokerLeaseLock) {
+            expired = brokerLeases.entrySet().stream()
+                    .filter(entry -> now >= entry.getValue().deadlineNanos())
+                    .map(entry -> new BrokerLeaseKey(entry.getKey(), entry.getValue().brokerEpoch()))
+                    .toList();
+        }
         int applied = 0;
         for (BrokerLeaseKey key : expired) {
             if (expireBrokerLease(key.brokerId(), key.brokerEpoch())) {
@@ -187,13 +203,18 @@ public class ClusterController {
 
     public synchronized boolean expireBrokerLease(int brokerId, long expectedEpoch) {
         BrokerEntry current = metadata.brokers.get(brokerId);
-        BrokerLease lease = brokerLeases.get(brokerId);
+        BrokerLease lease;
+        synchronized (brokerLeaseLock) {
+            lease = brokerLeases.get(brokerId);
+        }
         if (current == null || current.brokerEpoch != expectedEpoch
                 || lease == null || lease.brokerEpoch() != expectedEpoch) {
             return false;
         }
         if (!current.online) {
-            brokerLeases.remove(brokerId, lease);
+            synchronized (brokerLeaseLock) {
+                brokerLeases.remove(brokerId, lease);
+            }
             return false;
         }
         if (nanoTime.getAsLong() < lease.deadlineNanos()) {
@@ -233,7 +254,9 @@ public class ClusterController {
         if (commit(next) != ErrorCode.NONE) {
             return false;
         }
-        brokerLeases.remove(brokerId, lease);
+        synchronized (brokerLeaseLock) {
+            brokerLeases.remove(brokerId, lease);
+        }
         audit(
                 FailoverAuditEventType.BROKER_LEASE_EXPIRED,
                 brokerId,
@@ -249,12 +272,13 @@ public class ClusterController {
         if (recovering) {
             return ErrorCode.CONTROLLER_NOT_READY;
         }
-        if (request.topicName() == null || request.topicName().isBlank()
+        if (!TopicNames.isValid(request.topicName())
                 || request.numPartitions() <= 0 || request.replicationFactor() <= 0) {
             return ErrorCode.INVALID_REQUEST;
         }
         if (metadata.topics.containsKey(request.topicName())
-                || metadata.topicTombstones.containsKey(request.topicName())) {
+                || metadata.topicTombstones.containsKey(request.topicName())
+                || hasPortableTopicNameCollision(request.topicName())) {
             return ErrorCode.INVALID_REQUEST;
         }
         List<BrokerEntry> onlineBrokers = metadata.brokers.values().stream()
@@ -324,7 +348,9 @@ public class ClusterController {
         if (commitError != ErrorCode.NONE) {
             return commitError;
         }
-        brokerLeases.remove(brokerId);
+        synchronized (brokerLeaseLock) {
+            brokerLeases.remove(brokerId);
+        }
         return ErrorCode.NONE;
     }
 
@@ -408,8 +434,7 @@ public class ClusterController {
     /** Creates a topic through the V4 scoped-admin API. */
     public synchronized ErrorCode createTopicAdmin(CreateTopicAdminRequest request) {
         if (request == null
-                || request.topicName() == null
-                || request.topicName().isBlank()
+                || !TopicNames.isValid(request.topicName())
                 || request.numPartitions() < 1
                 || request.numPartitions() > 10_000
                 || request.replicationFactor() < 1
@@ -427,8 +452,7 @@ public class ClusterController {
             return reliabilityResult(ErrorCode.CONTROLLER_NOT_READY, request);
         }
         if (request == null
-                || request.sourceTopicName() == null
-                || request.sourceTopicName().isBlank()) {
+                || !TopicNames.isValidReference(request.sourceTopicName())) {
             return new ReliabilityConfigResult(ErrorCode.INVALID_REQUEST, null, null, metadata.metadataVersion);
         }
         String sourceTopic = request.sourceTopicName();
@@ -569,7 +593,7 @@ public class ClusterController {
         if (!supplied) {
             return ErrorCode.NONE;
         }
-        if (targetTopic == null || targetTopic.isBlank()) {
+        if (!TopicNames.isValidReference(targetTopic)) {
             return ErrorCode.INVALID_REQUEST;
         }
         if (!metadata.topics.containsKey(targetTopic)) {
@@ -641,10 +665,32 @@ public class ClusterController {
      * deletion CAS, not the later DELETED transition version.
      */
     public synchronized ErrorCode deleteTopic(String topicName, long deletedAtEpochMs) {
-        if (topicName == null || topicName.isBlank() || deletedAtEpochMs < 0) {
+        return deleteTopicInternal(topicName, deletedAtEpochMs, null);
+    }
+
+    public ErrorCode deleteTopic(
+            String topicName, long deletedAtEpochMs, Duration timeout) {
+        if (timeout == null) {
+            throw new IllegalArgumentException("timeout must not be null");
+        }
+        long deadlineNanos = mutationDeadline(timeout);
+        synchronized (this) {
+            return deleteTopicInternal(topicName, deletedAtEpochMs, deadlineNanos);
+        }
+    }
+
+    private ErrorCode deleteTopicInternal(
+            String topicName, long deletedAtEpochMs, Long deadlineNanos) {
+        if (!TopicNames.isValidReference(topicName) || deletedAtEpochMs < 0) {
             return ErrorCode.INVALID_REQUEST;
         }
-        if (metadata.topicTombstones.containsKey(topicName)) {
+        ClusterMetadata.TopicTombstone existing = metadata.topicTombstones.get(topicName);
+        if (existing != null) {
+            if ("DELETING".equals(existing.state) && existing.requiredBrokerIds.isEmpty()) {
+                ClusterMetadata terminal = copyMetadata(metadata);
+                terminal.topicTombstones.get(topicName).state = "DELETED";
+                return commit(terminal, deadlineNanos);
+            }
             return ErrorCode.NONE;
         }
         if (!metadata.topics.containsKey(topicName)) {
@@ -662,7 +708,7 @@ public class ClusterController {
         ClusterMetadata.TopicTombstone tombstone = new ClusterMetadata.TopicTombstone();
         tombstone.topicName = topicName;
         tombstone.state = "DELETING";
-        tombstone.tombstoneVersion = Math.addExact(metadataRevision, 1L);
+        tombstone.tombstoneVersion = Math.addExact(metadata.metadataVersion, 1L);
         tombstone.deletedAtEpochMs = deletedAtEpochMs;
         metadata.brokers.values().stream()
                 .filter(broker -> broker.online)
@@ -670,7 +716,7 @@ public class ClusterController {
                 .sorted()
                 .forEach(tombstone.requiredBrokerIds::add);
         next.topicTombstones.put(topicName, tombstone);
-        ErrorCode error = commit(next);
+        ErrorCode error = commit(next, deadlineNanos);
         if (error != ErrorCode.NONE || !tombstone.requiredBrokerIds.isEmpty()) {
             return error;
         }
@@ -678,7 +724,7 @@ public class ClusterController {
         // state as a second CAS so clients can query DELETED durably.
         ClusterMetadata terminal = copyMetadata(metadata);
         terminal.topicTombstones.get(topicName).state = "DELETED";
-        return commit(terminal);
+        return commit(terminal, deadlineNanos);
     }
 
     /** Applies one broker's idempotent local-cleanup acknowledgement. */
@@ -726,14 +772,22 @@ public class ClusterController {
         if (graceMs < 0) {
             throw new IllegalArgumentException("recovery grace must be non-negative");
         }
+        long now = nanoTime.getAsLong();
         recovering = true;
         recoveryDeadlineNanos = Math.addExact(
-                nanoTime.getAsLong(), TimeUnit.MILLISECONDS.toNanos(graceMs));
-        awaitingRecoveryBrokers.clear();
-        metadata.brokers.values().stream()
-                .filter(broker -> broker.online)
-                .map(broker -> broker.brokerId)
-                .forEach(awaitingRecoveryBrokers::add);
+                now, TimeUnit.MILLISECONDS.toNanos(graceMs));
+        synchronized (brokerLeaseLock) {
+            brokerLeases.clear();
+            awaitingRecoveryBrokers.clear();
+            metadata.brokers.values().stream()
+                    .filter(broker -> broker.online)
+                    .forEach(broker -> {
+                        brokerLeases.put(
+                                broker.brokerId,
+                                new BrokerLease(broker.brokerEpoch, deadlineFrom(now)));
+                        awaitingRecoveryBrokers.add(broker.brokerId);
+                    });
+        }
     }
 
     /** Ends recovery when due and expires only brokers that did not re-register. */
@@ -743,12 +797,17 @@ public class ClusterController {
         }
         recovering = false;
         long now = nanoTime.getAsLong();
-        List<Integer> missing = List.copyOf(awaitingRecoveryBrokers);
-        awaitingRecoveryBrokers.clear();
+        List<Integer> missing;
+        synchronized (brokerLeaseLock) {
+            missing = List.copyOf(awaitingRecoveryBrokers);
+            awaitingRecoveryBrokers.clear();
+        }
         for (int brokerId : missing) {
             BrokerEntry broker = metadata.brokers.get(brokerId);
             if (broker != null && broker.online) {
-                brokerLeases.put(brokerId, new BrokerLease(broker.brokerEpoch, now));
+                synchronized (brokerLeaseLock) {
+                    brokerLeases.put(brokerId, new BrokerLease(broker.brokerEpoch, now));
+                }
                 expireBrokerLease(brokerId, broker.brokerEpoch);
             }
         }
@@ -964,9 +1023,25 @@ public class ClusterController {
     }
 
     private ErrorCode commit(ClusterMetadata next) {
+        return applyCommitResult(
+                metadataRepository.compareAndSet(metadataRevision, next));
+    }
+
+    private ErrorCode commit(ClusterMetadata next, Long deadlineNanos) {
+        if (deadlineNanos == null) {
+            return commit(next);
+        }
+        long remainingNanos = deadlineNanos - nanoTime.getAsLong();
+        if (remainingNanos <= 0L) {
+            return ErrorCode.CONTROLLER_NOT_READY;
+        }
+        return applyCommitResult(
+                metadataRepository.compareAndSet(
+                        metadataRevision, next, Duration.ofNanos(remainingNanos)));
+    }
+
+    private ErrorCode applyCommitResult(ClusterMetadataRepository.UpdateResult result) {
         ClusterMetadata previous = metadata;
-        ClusterMetadataRepository.UpdateResult result =
-                metadataRepository.compareAndSet(metadataRevision, next);
         if (result.errorCode() != ErrorCode.NONE) {
             return result.errorCode();
         }
@@ -978,6 +1053,24 @@ public class ClusterController {
             // A malformed diagnostic projection must not report a committed mutation as failed.
         }
         return ErrorCode.NONE;
+    }
+
+    private long mutationDeadline(Duration timeout) {
+        if (timeout.isZero() || timeout.isNegative()) {
+            throw new IllegalArgumentException("timeout must be positive");
+        }
+        long timeoutNanos;
+        try {
+            timeoutNanos = timeout.toNanos();
+        } catch (ArithmeticException overflow) {
+            timeoutNanos = Long.MAX_VALUE;
+        }
+        long now = nanoTime.getAsLong();
+        try {
+            return Math.addExact(now, timeoutNanos);
+        } catch (ArithmeticException overflow) {
+            return Long.MAX_VALUE;
+        }
     }
 
     /**
@@ -1200,6 +1293,95 @@ public class ClusterController {
             return ErrorCode.NONE;
         }
         return commit(next);
+    }
+
+    private boolean hasPortableTopicNameCollision(String candidate) {
+        String identity = TopicNames.portableStorageIdentity(candidate);
+        return metadata.topics.keySet().stream()
+                .anyMatch(existing -> TopicNames.portableStorageIdentity(existing).equals(identity))
+                || metadata.topicTombstones.keySet().stream()
+                .anyMatch(existing -> TopicNames.portableStorageIdentity(existing).equals(identity));
+    }
+
+    public synchronized ErrorCode validateReplicaFetchV2(
+            String topicName,
+            int partitionId,
+            int leaderBrokerId,
+            int replicaBrokerId,
+            long brokerEpoch,
+            long controllerEpoch,
+            long leaderEpoch) {
+        ErrorCode identityError = validateReplicaFetchV2Identity(
+                topicName,
+                partitionId,
+                replicaBrokerId,
+                brokerEpoch,
+                controllerEpoch);
+        if (identityError != ErrorCode.NONE) {
+            return identityError;
+        }
+        PartitionEntry partition = getPartitionEntry(topicName, partitionId);
+        if (partition == null) {
+            return metadata.topics.containsKey(topicName)
+                    ? ErrorCode.UNKNOWN_PARTITION
+                    : ErrorCode.UNKNOWN_TOPIC;
+        }
+        if (partition.leaderBrokerId != leaderBrokerId) {
+            return ErrorCode.NOT_LEADER;
+        }
+        if (replicaBrokerId == leaderBrokerId
+                || !partition.replicaBrokerIds.contains(replicaBrokerId)) {
+            return ErrorCode.INVALID_REQUEST;
+        }
+        if (partition.frozen || !partition.leaderReady) {
+            return ErrorCode.LEADER_NOT_READY;
+        }
+        if (leaderEpoch != partition.leaderEpoch) {
+            auditStaleEpoch(
+                    topicName,
+                    partitionId,
+                    replicaBrokerId,
+                    leaderEpoch,
+                    partition.leaderEpoch,
+                    "leader epoch rejected for V2 replica fetch");
+            return ErrorCode.STALE_LEADER_EPOCH;
+        }
+        return ErrorCode.NONE;
+    }
+
+    public synchronized ErrorCode validateReplicaFetchV2Identity(
+            String topicName,
+            int partitionId,
+            int replicaBrokerId,
+            long brokerEpoch,
+            long controllerEpoch) {
+        BrokerEntry broker = metadata.brokers.get(replicaBrokerId);
+        if (broker == null) {
+            return ErrorCode.UNKNOWN_BROKER;
+        }
+        if (!broker.online || broker.brokerEpoch != brokerEpoch) {
+            if (broker.brokerEpoch != brokerEpoch) {
+                auditStaleEpoch(
+                        topicName,
+                        partitionId,
+                        replicaBrokerId,
+                        brokerEpoch,
+                        broker.brokerEpoch,
+                        "broker epoch rejected for V2 replica fetch");
+            }
+            return ErrorCode.BROKER_FENCED;
+        }
+        if (controllerEpoch != metadata.controllerEpoch) {
+            auditStaleEpoch(
+                    topicName,
+                    partitionId,
+                    replicaBrokerId,
+                    controllerEpoch,
+                    metadata.controllerEpoch,
+                    "controller epoch rejected for V2 replica fetch");
+            return ErrorCode.CONTROLLER_FENCED;
+        }
+        return ErrorCode.NONE;
     }
 
     public synchronized ErrorCode validateLeaderEpoch(
