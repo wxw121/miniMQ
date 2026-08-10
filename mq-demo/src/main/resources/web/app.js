@@ -10,7 +10,8 @@ const fields = {
   status: document.querySelector('#status'),
   modeResult: document.querySelector('#modeResult'),
   offset: document.querySelector('#offset'),
-  log: document.querySelector('#log')
+  log: document.querySelector('#flowRawJson'),
+  error: document.querySelector('#flowError')
 };
 
 const operatorFields = {
@@ -41,7 +42,9 @@ const connectionState = document.querySelector('#connectionState');
 const overviewConfiguration = document.querySelector('#overviewConfiguration');
 const overviewBroker = document.querySelector('#overviewBroker');
 const overviewLastRequest = document.querySelector('#overviewLastRequest');
-let hasSuccessfulOperatorResult = false;
+const viewResultState = new Map();
+let activeViewName = 'overview';
+let hasSuccessfulFlowResult = false;
 
 function activateView(name) {
   const target = views.find((view) => view.dataset.view === name);
@@ -60,6 +63,8 @@ function activateView(name) {
   });
   const label = viewButtons.find((button) => button.dataset.viewTarget === name)?.textContent.trim();
   document.title = `${label || 'Operator'} · MiniMQ Operator Console`;
+  activeViewName = name;
+  restoreOperatorResult(name);
 }
 
 function displayName(value) {
@@ -187,7 +192,24 @@ function renderStructuredResult(result) {
   operatorFields.structured.replaceChildren(renderValue(result));
   operatorFields.log.textContent = JSON.stringify(result, null, 2);
   operatorFields.error.hidden = true;
-  hasSuccessfulOperatorResult = true;
+}
+
+function restoreOperatorResult(viewName) {
+  const state = viewResultState.get(viewName);
+  operatorFields.error.hidden = true;
+  if (!state) {
+    operatorFields.status.textContent = 'IDLE';
+    operatorFields.status.dataset.state = 'idle';
+    operatorFields.endpoint.textContent = 'No request';
+    operatorFields.structured.classList.add('empty-state');
+    operatorFields.structured.textContent = 'Run an operator action to see its result.';
+    operatorFields.log.textContent = 'No operator result.';
+    return;
+  }
+  operatorFields.status.textContent = 'PASS';
+  operatorFields.status.dataset.state = 'pass';
+  operatorFields.endpoint.textContent = `POST ${state.endpoint}`;
+  renderStructuredResult(state.result);
 }
 
 function requiredValue(input, label) {
@@ -412,7 +434,10 @@ async function loadRuntimeConfig() {
 
 async function runMainFlow() {
   fields.status.textContent = 'RUNNING';
-  fields.log.textContent = 'Sending the main flow request...';
+  fields.error.hidden = true;
+  if (!hasSuccessfulFlowResult) {
+    fields.log.textContent = 'Sending the main flow request...';
+  }
   fields.button.disabled = true;
 
   try {
@@ -437,17 +462,23 @@ async function runMainFlow() {
     fields.modeResult.textContent = String(result.mode || fields.mode.value).toUpperCase();
     fields.offset.textContent = String(result.offset ?? '-');
     fields.log.textContent = JSON.stringify(result, null, 2);
+    hasSuccessfulFlowResult = true;
   } catch (error) {
     fields.status.textContent = 'ERROR';
-    fields.modeResult.textContent = '-';
-    fields.offset.textContent = '-';
-    fields.log.textContent = error.stack || error.message;
+    fields.error.textContent = error.message || String(error);
+    fields.error.hidden = false;
+    if (!hasSuccessfulFlowResult) {
+      fields.modeResult.textContent = '-';
+      fields.offset.textContent = '-';
+      fields.log.textContent = error.stack || error.message;
+    }
   } finally {
     fields.button.disabled = false;
   }
 }
 
 async function runOperator(endpoint, button) {
+  const requestView = activeViewName;
   operatorFields.status.textContent = 'RUNNING';
   operatorFields.status.dataset.state = 'running';
   operatorFields.endpoint.textContent = `POST ${endpoint}`;
@@ -467,16 +498,28 @@ async function runOperator(endpoint, button) {
     if (!response.ok || result.ok === false) {
       throw new Error(result.error || `HTTP ${response.status}`);
     }
-    operatorFields.status.textContent = 'PASS';
-    operatorFields.status.dataset.state = 'pass';
-    renderStructuredResult(result);
+    viewResultState.set(requestView, { endpoint, result });
+    if (activeViewName === requestView) {
+      operatorFields.status.textContent = 'PASS';
+      operatorFields.status.dataset.state = 'pass';
+      renderStructuredResult(result);
+    }
     return result;
   } catch (error) {
-    operatorFields.status.textContent = 'ERROR';
-    operatorFields.status.dataset.state = 'error';
-    operatorFields.error.textContent = error.message || String(error);
-    operatorFields.error.hidden = false;
-    if (!hasSuccessfulOperatorResult) {
+    const previousState = viewResultState.get(requestView);
+    if (activeViewName === requestView && previousState) {
+      restoreOperatorResult(requestView);
+      operatorFields.status.textContent = 'ERROR';
+      operatorFields.status.dataset.state = 'error';
+      operatorFields.endpoint.textContent = `POST ${endpoint}`;
+    }
+    if (activeViewName === requestView) {
+      operatorFields.status.textContent = 'ERROR';
+      operatorFields.status.dataset.state = 'error';
+      operatorFields.error.textContent = error.message || String(error);
+      operatorFields.error.hidden = false;
+    }
+    if (activeViewName === requestView && !previousState) {
       operatorFields.structured.classList.add('empty-state');
       operatorFields.structured.textContent = error.message || String(error);
     }
@@ -490,7 +533,8 @@ async function runOperator(endpoint, button) {
 
 function confirmOperatorAction(endpoint) {
   if (endpoint === '/api/topic/delete') {
-    return window.confirm('Delete this topic? This action cannot be undone.');
+    const topic = fields.topic.value.trim();
+    return !topic || window.confirm(`Delete topic ${topic}? This action cannot be undone.`);
   }
   if (endpoint === '/api/broker/offline') {
     return window.confirm('Mark this broker offline?');

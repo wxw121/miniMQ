@@ -596,6 +596,11 @@ class MiniMqWebAppTest {
             }
             assertTrue(html.body().contains("id=\"structuredResult\""));
             assertTrue(html.body().contains("id=\"rawJson\""));
+            assertTrue(html.body().contains("id=\"flowRawJson\""));
+            assertTrue(html.body().contains("id=\"flowError\""));
+            assertTrue(html.body().indexOf("id=\"topic\"")
+                    < html.body().indexOf("data-view=\"overview\""),
+                    "Topic target must remain visible in the shared request context");
             assertEquals(200, css.statusCode());
             assertTrue(css.body().contains("--accent: #ff4f00"));
             assertTrue(css.body().contains("grid-template-columns: 232px minmax(0, 1fr)"));
@@ -607,6 +612,10 @@ class MiniMqWebAppTest {
             assertTrue(js.body().contains("renderStructuredResult"));
             assertTrue(js.body().contains("renderValue"));
             assertTrue(js.body().contains("window.confirm"));
+            assertTrue(js.body().contains("viewResultState"));
+            assertTrue(js.body().contains("restoreOperatorResult"));
+            assertTrue(js.body().contains("hasSuccessfulFlowResult"));
+            assertTrue(js.body().contains("Delete topic ${topic}?"));
             assertTrue(html.body().contains("data-testid=\"operator-log\""));
             for (String endpoint : List.of(
                     "/api/ops-status",

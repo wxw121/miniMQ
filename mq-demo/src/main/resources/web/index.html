@@ -43,6 +43,9 @@
         <label>Broker target
           <select id="operatorBroker" aria-label="Broker target"></select>
         </label>
+        <label>Topic
+          <input id="topic" data-testid="topic" value="web-orders" autocomplete="off">
+        </label>
         <label>Result limit
           <input id="limit" type="number" min="1" max="1000" value="100" inputmode="numeric">
         </label>
@@ -88,7 +91,6 @@
                   <option value="mock">Mock demo</option>
                 </select>
               </label>
-              <label>Topic<input id="topic" data-testid="topic" value="web-orders" autocomplete="off"></label>
               <label>Consumer group<input id="groupId" value="web-ui-group" autocomplete="off"></label>
               <label>Partitions<input id="partitions" type="number" min="1" value="1" inputmode="numeric"></label>
               <label>Message key<input id="key" value="web-key" autocomplete="off"></label>
@@ -98,12 +100,16 @@
           </section>
           <section class="flow-result" aria-live="polite">
             <div class="panel-heading"><div><h2>Flow result</h2><p>Latest create, produce, and consume response.</p></div></div>
+            <p id="flowError" class="request-error" hidden></p>
             <div class="metric-strip compact">
               <div><span>Status</span><strong id="status">IDLE</strong></div>
               <div><span>Mode</span><strong id="modeResult">—</strong></div>
               <div><span>Offset</span><strong id="offset">—</strong></div>
             </div>
-            <pre id="log" data-testid="log">Waiting for the main flow.</pre>
+            <details class="raw-result flow-raw-result">
+              <summary>Raw JSON</summary>
+              <pre id="flowRawJson" data-testid="log">Waiting for the main flow.</pre>
+            </details>
           </section>
         </div>
         <section class="content-panel">
