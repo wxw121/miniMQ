@@ -134,6 +134,7 @@ class MiniMqWebAppTest {
             assertEquals(403, crossOrigin.statusCode(), crossOrigin.body());
             assertEquals(200, sameOrigin.statusCode(), sameOrigin.body());
             assertTrue(sameOrigin.body().contains("\"mode\":\"mock\""));
+            assertTrue(sameOrigin.body().contains("\"message\":\"Mock main flow completed\""));
             assertFalse(crossOrigin.headers().firstValue("Access-Control-Allow-Origin").isPresent());
             assertFalse(sameOrigin.headers().firstValue("Access-Control-Allow-Origin").isPresent());
         }
@@ -811,6 +812,7 @@ class MiniMqWebAppTest {
             assertTrue(response.body().contains("\"topic\":\"web-orders-real\""));
             assertTrue(response.body().contains("\"consumedValue\":\"hello-from-web\""));
             assertTrue(response.body().contains("\"offset\":0"));
+            assertTrue(response.body().contains("\"message\":\"MiniMQ main flow completed\""));
         }
     }
 
@@ -999,6 +1001,7 @@ class MiniMqWebAppTest {
             assertTrue(response.body().contains("\"mode\":\"mock\""));
             assertTrue(response.body().contains("\"fallback\":true"));
             assertTrue(response.body().contains("\"consumedValue\":\"mock-message\""));
+            assertTrue(response.body().contains("\"message\":\"Broker unavailable; switched to mock main flow\""));
         }
     }
 

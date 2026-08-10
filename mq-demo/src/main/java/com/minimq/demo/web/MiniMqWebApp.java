@@ -758,7 +758,10 @@ public final class MiniMqWebApp implements AutoCloseable {
 
     private FlowResult runMockFlow(FlowRequest request, boolean fallback, String reason) {
         return new FlowResult(true, "mock", fallback, request.topic(), 0,
-                request.message(), fallback ? "Broker 不可用，已切换 mock 主流程" : "mock 主流程通过", reason);
+                request.message(), fallback
+                        ? "Broker unavailable; switched to mock main flow"
+                        : "Mock main flow completed",
+                reason);
     }
 
     private record RealFlowKey(String bootstrapServers, String topic, String groupId) {
@@ -860,7 +863,7 @@ public final class MiniMqWebApp implements AutoCloseable {
                 ConsumerRecord consumed = pollProducedRecord(offset);
                 consumer.commitSync(consumed.topic(), consumed.partition(), consumed.offset() + 1);
                 return new FlowResult(true, "real", false, request.topic(), offset,
-                        new String(consumed.value(), StandardCharsets.UTF_8), "真实 MiniMQ 主流程通过", null);
+                        new String(consumed.value(), StandardCharsets.UTF_8), "MiniMQ main flow completed", null);
             } catch (InterruptedException interrupted) {
                 throw interrupted;
             } catch (Exception failure) {
