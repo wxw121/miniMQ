@@ -575,7 +575,7 @@ class MiniMqWebAppTest {
     }
 
     @Test
-    void servesBrutalistFrontendAssets() throws Exception {
+    void servesOperatorConsoleFrontendAssets() throws Exception {
         try (MiniMqWebApp app = MiniMqWebApp.start(0, "127.0.0.1:65535")) {
             String baseUrl = "http://127.0.0.1:" + app.port();
 
@@ -585,16 +585,28 @@ class MiniMqWebAppTest {
             HttpResponse<String> favicon = get(baseUrl + "/favicon.ico");
 
             assertEquals(200, html.statusCode());
-            assertTrue(html.body().contains("MiniMQ FRONT PANEL"));
+            assertTrue(html.body().contains("MiniMQ Operator Console"));
             assertTrue(html.body().contains("data-testid=\"run-flow\""));
             assertTrue(html.body().contains("id=\"bootstrapServers\""));
             assertFalse(html.body().contains("value=\"127.0.0.1:19092\""));
+            for (String view : List.of(
+                    "overview", "messages", "topics", "groups", "brokers", "tools")) {
+                assertTrue(html.body().contains("data-view-target=\"" + view + "\""),
+                        "HTML missing view " + view);
+            }
+            assertTrue(html.body().contains("id=\"structuredResult\""));
+            assertTrue(html.body().contains("id=\"rawJson\""));
             assertEquals(200, css.statusCode());
-            assertTrue(css.body().contains("border: 3px solid #000"));
-            assertTrue(css.body().contains("border-radius: 0"));
+            assertTrue(css.body().contains("--accent: #ff4f00"));
+            assertTrue(css.body().contains("grid-template-columns: 232px minmax(0, 1fr)"));
+            assertTrue(css.body().contains("font-variant-numeric: tabular-nums"));
             assertEquals(200, js.statusCode());
             assertTrue(js.body().contains("runMainFlow"));
             assertTrue(js.body().contains("fetch('/api/config'"));
+            assertTrue(js.body().contains("activateView"));
+            assertTrue(js.body().contains("renderStructuredResult"));
+            assertTrue(js.body().contains("renderValue"));
+            assertTrue(js.body().contains("window.confirm"));
             assertTrue(html.body().contains("data-testid=\"operator-log\""));
             for (String endpoint : List.of(
                     "/api/ops-status",

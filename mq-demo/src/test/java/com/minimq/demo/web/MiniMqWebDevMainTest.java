@@ -38,7 +38,7 @@ class MiniMqWebDevMainTest {
                     """);
 
             assertEquals(200, html.statusCode());
-            assertTrue(html.body().contains("MiniMQ FRONT PANEL"));
+            assertTrue(html.body().contains("MiniMQ Operator Console"));
             assertEquals(200, flow.statusCode());
             assertTrue(flow.body().contains("\"mode\":\"real\""));
             assertTrue(flow.body().contains("\"consumedValue\":\"hello-dev-launcher\""));

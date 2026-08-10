@@ -28,10 +28,167 @@ const operatorFields = {
   deliverAtEpochMs: document.querySelector('#deliverAtEpochMs'),
   status: document.querySelector('#operatorStatus'),
   endpoint: document.querySelector('#operatorEndpoint'),
-  log: document.querySelector('#operatorLog')
+  log: document.querySelector('#rawJson'),
+  structured: document.querySelector('#structuredResult'),
+  error: document.querySelector('#requestError')
 };
 
 const operatorButtons = [...document.querySelectorAll('[data-endpoint]')];
+const viewButtons = [...document.querySelectorAll('[data-view-target]')];
+const views = [...document.querySelectorAll('[data-view]')];
+const connectionSummary = document.querySelector('#connectionSummary');
+const connectionState = document.querySelector('#connectionState');
+const overviewConfiguration = document.querySelector('#overviewConfiguration');
+const overviewBroker = document.querySelector('#overviewBroker');
+const overviewLastRequest = document.querySelector('#overviewLastRequest');
+let hasSuccessfulOperatorResult = false;
+
+function activateView(name) {
+  const target = views.find((view) => view.dataset.view === name);
+  if (!target) {
+    return;
+  }
+  views.forEach((view) => {
+    view.hidden = view !== target;
+  });
+  viewButtons.forEach((button) => {
+    if (button.dataset.viewTarget === name) {
+      button.setAttribute('aria-current', 'page');
+    } else {
+      button.removeAttribute('aria-current');
+    }
+  });
+  const label = viewButtons.find((button) => button.dataset.viewTarget === name)?.textContent.trim();
+  document.title = `${label || 'Operator'} · MiniMQ Operator Console`;
+}
+
+function displayName(value) {
+  return String(value)
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .replace(/^./, (character) => character.toUpperCase());
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function scalarText(value) {
+  if (value === null || value === undefined) {
+    return '—';
+  }
+  if (typeof value === 'boolean') {
+    return value ? 'Yes' : 'No';
+  }
+  if (typeof value === 'object') {
+    return JSON.stringify(value);
+  }
+  return String(value);
+}
+
+function renderObjectTable(rows) {
+  const columns = [...new Set(rows.flatMap((row) => Object.keys(row)))];
+  const wrapper = document.createElement('div');
+  wrapper.className = 'result-table-wrap';
+  const table = document.createElement('table');
+  table.className = 'result-table';
+  const thead = document.createElement('thead');
+  const headingRow = document.createElement('tr');
+  columns.forEach((column) => {
+    const heading = document.createElement('th');
+    heading.scope = 'col';
+    heading.textContent = displayName(column);
+    headingRow.append(heading);
+  });
+  thead.append(headingRow);
+  const tbody = document.createElement('tbody');
+  rows.forEach((row) => {
+    const tableRow = document.createElement('tr');
+    columns.forEach((column) => {
+      const cell = document.createElement('td');
+      cell.textContent = scalarText(row[column]);
+      tableRow.append(cell);
+    });
+    tbody.append(tableRow);
+  });
+  table.append(thead, tbody);
+  wrapper.append(table);
+  return wrapper;
+}
+
+function renderObject(value) {
+  const entries = Object.entries(value);
+  if (entries.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'empty-state';
+    empty.textContent = 'No data returned.';
+    return empty;
+  }
+
+  const container = document.createElement('div');
+  const scalarEntries = entries.filter(([, entry]) => !entry || typeof entry !== 'object');
+  const nestedEntries = entries.filter(([, entry]) => entry && typeof entry === 'object');
+  if (scalarEntries.length > 0) {
+    const list = document.createElement('dl');
+    list.className = 'result-grid';
+    scalarEntries.forEach(([key, entry]) => {
+      const field = document.createElement('div');
+      field.className = 'result-field';
+      const term = document.createElement('dt');
+      term.textContent = displayName(key);
+      const description = document.createElement('dd');
+      description.textContent = scalarText(entry);
+      field.append(term, description);
+      list.append(field);
+    });
+    container.append(list);
+  }
+  nestedEntries.forEach(([key, entry]) => {
+    const group = document.createElement('section');
+    group.className = 'result-group';
+    const heading = document.createElement('h3');
+    heading.textContent = displayName(key);
+    group.append(heading, renderValue(entry));
+    container.append(group);
+  });
+  return container;
+}
+
+function renderValue(value) {
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'empty-state';
+      empty.textContent = 'No data returned.';
+      return empty;
+    }
+    if (value.every(isPlainObject)) {
+      return renderObjectTable(value);
+    }
+    const list = document.createElement('ul');
+    list.className = 'primitive-list';
+    value.forEach((entry) => {
+      const item = document.createElement('li');
+      item.textContent = scalarText(entry);
+      list.append(item);
+    });
+    return list;
+  }
+  if (isPlainObject(value)) {
+    return renderObject(value);
+  }
+  const text = document.createElement('p');
+  text.textContent = scalarText(value);
+  return text;
+}
+
+function renderStructuredResult(result) {
+  operatorFields.structured.classList.remove('empty-state');
+  operatorFields.structured.replaceChildren(renderValue(result));
+  operatorFields.log.textContent = JSON.stringify(result, null, 2);
+  operatorFields.error.hidden = true;
+  hasSuccessfulOperatorResult = true;
+}
 
 function requiredValue(input, label) {
   const value = input.value.trim();
@@ -61,7 +218,10 @@ function bootstrapBrokers() {
 
 function syncOperatorBrokers() {
   const selected = operatorFields.broker.value;
-  const brokers = bootstrapBrokers();
+  const rawBootstrap = fields.bootstrapServers.value.trim();
+  const brokers = rawBootstrap
+    ? rawBootstrap.split(',').map((broker) => broker.trim()).filter(Boolean)
+    : [];
   const options = brokers.map((broker) => {
     const option = document.createElement('option');
     option.value = broker;
@@ -72,6 +232,7 @@ function syncOperatorBrokers() {
   if (brokers.includes(selected)) {
     operatorFields.broker.value = selected;
   }
+  overviewBroker.textContent = operatorFields.broker.value || '—';
 }
 
 function selectedBroker() {
@@ -235,9 +396,17 @@ async function loadRuntimeConfig() {
     }
     fields.bootstrapServers.value = config.bootstrapServers;
     syncOperatorBrokers();
+    connectionSummary.textContent = config.bootstrapServers;
+    connectionState.textContent = 'Configured';
+    connectionState.dataset.state = 'ready';
+    overviewConfiguration.textContent = 'Ready';
   } catch (error) {
     fields.status.textContent = 'ERROR';
     fields.log.textContent = error.stack || error.message;
+    connectionSummary.textContent = 'Configuration unavailable';
+    connectionState.textContent = 'Configuration error';
+    connectionState.dataset.state = 'error';
+    overviewConfiguration.textContent = 'Error';
   }
 }
 
@@ -282,7 +451,8 @@ async function runOperator(endpoint, button) {
   operatorFields.status.textContent = 'RUNNING';
   operatorFields.status.dataset.state = 'running';
   operatorFields.endpoint.textContent = `POST ${endpoint}`;
-  operatorFields.log.textContent = 'Sending operator request...';
+  operatorFields.error.hidden = true;
+  overviewLastRequest.textContent = endpoint.replace('/api/', '');
   if (button) {
     button.disabled = true;
   }
@@ -299,18 +469,33 @@ async function runOperator(endpoint, button) {
     }
     operatorFields.status.textContent = 'PASS';
     operatorFields.status.dataset.state = 'pass';
-    operatorFields.log.textContent = JSON.stringify(result, null, 2);
+    renderStructuredResult(result);
     return result;
   } catch (error) {
     operatorFields.status.textContent = 'ERROR';
     operatorFields.status.dataset.state = 'error';
-    operatorFields.log.textContent = error.stack || error.message;
+    operatorFields.error.textContent = error.message || String(error);
+    operatorFields.error.hidden = false;
+    if (!hasSuccessfulOperatorResult) {
+      operatorFields.structured.classList.add('empty-state');
+      operatorFields.structured.textContent = error.message || String(error);
+    }
     return null;
   } finally {
     if (button) {
       button.disabled = false;
     }
   }
+}
+
+function confirmOperatorAction(endpoint) {
+  if (endpoint === '/api/topic/delete') {
+    return window.confirm('Delete this topic? This action cannot be undone.');
+  }
+  if (endpoint === '/api/broker/offline') {
+    return window.confirm('Mark this broker offline?');
+  }
+  return true;
 }
 
 function bindClearToggle(toggle, target) {
@@ -323,13 +508,28 @@ function bindClearToggle(toggle, target) {
 
 operatorFields.deliverAtEpochMs.value = String(Date.now() + 60_000);
 loadRuntimeConfig();
-fields.bootstrapServers.addEventListener('input', syncOperatorBrokers);
+fields.bootstrapServers.addEventListener('input', () => {
+  syncOperatorBrokers();
+  connectionSummary.textContent = fields.bootstrapServers.value.trim() || 'No bootstrap server';
+});
+operatorFields.broker.addEventListener('change', () => {
+  overviewBroker.textContent = operatorFields.broker.value || '—';
+});
 bindClearToggle(operatorFields.clearRetry, operatorFields.retryTopic);
 bindClearToggle(operatorFields.clearDeadLetter, operatorFields.deadLetterTopic);
 fields.button.addEventListener('click', runMainFlow);
 operatorButtons.forEach((button) => {
-  button.addEventListener('click', () => runOperator(button.dataset.endpoint, button));
+  button.addEventListener('click', () => {
+    if (confirmOperatorAction(button.dataset.endpoint)) {
+      runOperator(button.dataset.endpoint, button);
+    }
+  });
 });
+viewButtons.forEach((button) => {
+  button.addEventListener('click', () => activateView(button.dataset.viewTarget));
+});
+activateView('overview');
 
 window.runMainFlow = runMainFlow;
 window.runOperator = runOperator;
+window.activateView = activateView;
