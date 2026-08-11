@@ -506,6 +506,7 @@ async function runOperator(endpoint, button) {
     }
     return result;
   } catch (error) {
+    const errorMessage = friendlyOperatorError(endpoint, error);
     const previousState = viewResultState.get(requestView);
     if (activeViewName === requestView && previousState) {
       restoreOperatorResult(requestView);
@@ -516,12 +517,12 @@ async function runOperator(endpoint, button) {
     if (activeViewName === requestView) {
       operatorFields.status.textContent = 'ERROR';
       operatorFields.status.dataset.state = 'error';
-      operatorFields.error.textContent = error.message || String(error);
+      operatorFields.error.textContent = errorMessage;
       operatorFields.error.hidden = false;
     }
     if (activeViewName === requestView && !previousState) {
       operatorFields.structured.classList.add('empty-state');
-      operatorFields.structured.textContent = error.message || String(error);
+      operatorFields.structured.textContent = errorMessage;
     }
     return null;
   } finally {
@@ -531,13 +532,22 @@ async function runOperator(endpoint, button) {
   }
 }
 
+function friendlyOperatorError(endpoint, error) {
+  const message = error?.message || String(error);
+  if (endpoint === '/api/broker/offline' && message.includes('INVALID_REQUEST')) {
+    return 'This broker cannot be marked offline while it is the last in-sync leader. Add another online broker and retry.';
+  }
+  return message;
+}
+
 function confirmOperatorAction(endpoint) {
   if (endpoint === '/api/topic/delete') {
     const topic = fields.topic.value.trim();
     return !topic || window.confirm(`Delete topic ${topic}? This action cannot be undone.`);
   }
   if (endpoint === '/api/broker/offline') {
-    return window.confirm('Mark this broker offline?');
+    const brokerId = operatorFields.brokerId.value.trim();
+    return window.confirm(`Mark broker ${brokerId || '0'} offline? Keep another online broker available if it is the last in-sync leader.`);
   }
   return true;
 }

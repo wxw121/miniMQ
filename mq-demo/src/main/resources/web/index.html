@@ -178,7 +178,7 @@
           <p>Inspect the selected target or mark a broker offline.</p>
         </div>
         <section class="content-panel narrow-panel">
-          <div class="panel-heading"><div><h2>Broker control</h2><p>Marking a broker offline changes cluster availability and requires confirmation.</p></div></div>
+          <div class="panel-heading"><div><h2>Broker control</h2><p>Marking a broker offline changes cluster availability and requires confirmation. MiniMQ rejects taking the last in-sync leader offline; keep another online broker available.</p></div></div>
           <div class="inline-form">
             <label>Broker ID<input id="brokerId" type="number" min="0" value="0" inputmode="numeric"></label>
             <button class="danger-action" type="button" data-endpoint="/api/broker/offline">Mark broker offline</button>

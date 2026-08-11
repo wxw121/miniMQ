@@ -617,6 +617,11 @@ class MiniMqWebAppTest {
             assertTrue(js.body().contains("restoreOperatorResult"));
             assertTrue(js.body().contains("hasSuccessfulFlowResult"));
             assertTrue(js.body().contains("Delete topic ${topic}?"));
+            assertTrue(html.body().contains(
+                    "MiniMQ rejects taking the last in-sync leader offline"));
+            assertTrue(js.body().contains("friendlyOperatorError"));
+            assertTrue(js.body().contains(
+                    "Add another online broker and retry"));
             assertTrue(html.body().contains("data-testid=\"operator-log\""));
             for (String endpoint : List.of(
                     "/api/ops-status",
