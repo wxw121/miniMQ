@@ -28,6 +28,7 @@ import java.util.function.Function;
  */
 public class Consumer implements AutoCloseable {
     public static final long DEFAULT_METADATA_CACHE_MAX_AGE_MS = 30_000L;
+    private static final long MIN_POLL_RPC_NANOS = TimeUnit.MILLISECONDS.toNanos(1L);
     private final ControllerAwareNetworkClient controllerClient;
     private final Function<String, NetworkClient> brokerClientFactory;
     private final String groupId;
@@ -118,7 +119,12 @@ public class Consumer implements AutoCloseable {
         long deadlineNanos = NetworkClient.deadlineNanos(currentTimeNanos(),
                 Duration.ofNanos(timeoutNanos));
         List<ConsumerRecord> result = new ArrayList<>();
-        MetadataResponse metadata = cachedMetadata(topic, deadlineNanos);
+        MetadataResponse metadata;
+        try {
+            metadata = cachedMetadata(topic, deadlineNanos);
+        } catch (MiniMqRequestTimeoutException timeoutExpired) {
+            return result;
+        }
         do {
             long nextVisibleAtEpochMs = -1L;
             for (int partition : assignedPartitions) {
@@ -227,6 +233,9 @@ public class Consumer implements AutoCloseable {
                         deadlineNanos);
             } catch (MiniMqRequestTimeoutException failure) {
                 invalidateBrokerClient(route.leader().brokerId(), deadlineNanos);
+                if (!hasPollTimeRemaining(deadlineNanos)) {
+                    return new FetchPartitionResult(metadata, -1L);
+                }
                 throw failure;
             } catch (MiniMqConnectionException failure) {
                 invalidateMetadata(topic);
@@ -370,7 +379,7 @@ public class Consumer implements AutoCloseable {
     }
 
     private boolean hasPollTimeRemaining(long deadlineNanos) {
-        return deadlineNanos - currentTimeNanos() > 0L;
+        return deadlineNanos - currentTimeNanos() >= MIN_POLL_RPC_NANOS;
     }
 
     private Duration requirePollTimeRemaining(long deadlineNanos, String operation) {
