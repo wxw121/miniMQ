@@ -192,11 +192,19 @@ public final class MiniMqWebApp implements AutoCloseable {
     }
 
     private void handleIndex(HttpExchange exchange) throws IOException {
-        if (!"/".equals(exchange.getRequestURI().getPath())) {
+        if (!isIndexPath(exchange.getRequestURI().getPath())) {
             sendJson(exchange, 404, Map.of("ok", false, "error", "Not found"));
             return;
         }
         handleStatic(exchange, "web/index.html", "text/html; charset=utf-8");
+    }
+
+    static boolean isIndexPath(String path) {
+        if (path == null) {
+            return true;
+        }
+        String normalized = path.trim();
+        return normalized.isEmpty() || "/".equals(normalized);
     }
 
     private void handleStatic(HttpExchange exchange, String resource, String contentType) throws IOException {

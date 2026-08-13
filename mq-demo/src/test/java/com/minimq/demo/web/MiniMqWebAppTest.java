@@ -1128,6 +1128,16 @@ class MiniMqWebAppTest {
         assertEquals("invalid", normalized.mode());
     }
 
+    @Test
+    void indexPathTreatsEmptyJava21RequestTargetAsTheFrontPanel() {
+        assertTrue(MiniMqWebApp.isIndexPath("/"));
+        assertTrue(MiniMqWebApp.isIndexPath(""));
+        assertTrue(MiniMqWebApp.isIndexPath(" / "));
+        assertTrue(MiniMqWebApp.isIndexPath(null));
+        assertFalse(MiniMqWebApp.isIndexPath("/app.js"));
+        assertFalse(MiniMqWebApp.isIndexPath("/api/config"));
+    }
+
     private HttpResponse<String> get(String url) throws Exception {
         return http.send(HttpRequest.newBuilder(URI.create(url)).GET().build(), HttpResponse.BodyHandlers.ofString());
     }
