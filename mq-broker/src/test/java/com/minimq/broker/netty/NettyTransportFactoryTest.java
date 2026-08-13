@@ -6,6 +6,8 @@ import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -44,6 +46,56 @@ class NettyTransportFactoryTest {
 
         assertEquals("Epoll transport requested but unavailable: test unavailable",
                 failure.getMessage());
+    }
+
+    @Test
+    void defaultFactoryProbesRealNativeSupportWithoutFailingAutoMode() throws InterruptedException {
+        NettyTransport transport = new NettyTransportFactory().create(NetworkTransportMode.AUTO);
+        try {
+            NetworkTransportMode selected = transport.selectedMode();
+            if (selected == NetworkTransportMode.EPOLL) {
+                assertEquals("io.netty.channel.epoll.EpollServerSocketChannel",
+                        transport.serverChannelClass().getName());
+            } else {
+                assertEquals(NetworkTransportMode.NIO, selected);
+                assertEquals(NioServerSocketChannel.class, transport.serverChannelClass());
+            }
+        } finally {
+            transport.shutdown();
+        }
+    }
+
+    @Test
+    void reflectionNativeSupportSurfacesEpollProbeAndConstructionPaths() {
+        NettyTransportFactory.NativeSupport nativeSupport = reflectionNativeSupport();
+        boolean available = nativeSupport.epollAvailable();
+        String reason = nativeSupport.epollUnavailableReason();
+        if (available) {
+            EventLoopGroup group = nativeSupport.newEpollEventLoopGroup(1);
+            try {
+                assertEquals("io.netty.channel.epoll.EpollEventLoopGroup", group.getClass().getName());
+                assertEquals("io.netty.channel.epoll.EpollServerSocketChannel",
+                        nativeSupport.epollServerChannelClass().getName());
+            } finally {
+                group.shutdownGracefully();
+            }
+        } else {
+            assertThrows(IllegalStateException.class, () -> nativeSupport.newEpollEventLoopGroup(1));
+            assertThrows(IllegalStateException.class, nativeSupport::epollServerChannelClass);
+            if (reason != null) {
+                assertEquals(String.class, reason.getClass());
+            }
+        }
+    }
+
+    private static NettyTransportFactory.NativeSupport reflectionNativeSupport() {
+        try {
+            Field field = NettyTransportFactory.class.getDeclaredField("nativeSupport");
+            field.setAccessible(true);
+            return (NettyTransportFactory.NativeSupport) field.get(new NettyTransportFactory());
+        } catch (ReflectiveOperationException failure) {
+            throw new IllegalStateException(failure);
+        }
     }
 
     private static NettyTransportFactory.NativeSupport unavailableNativeSupport() {
