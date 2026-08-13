@@ -1,6 +1,6 @@
 # MiniMQ Project Context Index / 项目上下文索引
 
-> Last updated / 最后更新：2026-07-29
+> Last updated / 最后更新：2026-08-13
 > Audience / 适用对象（英文）：new contributors, reviewers, and operators
 > 适用对象：新贡献者、代码审查者与运维/排障读者
 
@@ -26,6 +26,7 @@ The current V4 layer is implemented in source: operator APIs expose status, grou
 | 4 | [Roadmap](roadmap.md) / [代办与路线图](roadmap.md) | Understand known limitations, backlog items, version features, and recommended next tasks. / 理解已知限制、待办事项、版本功能与推荐下一步任务。 |
 | 5 | [Code Review Fix Log](code-review-2026-07-02.md) / [代码审查修复记录](code-review-2026-07-02.md) | See recently fixed bugs and why they mattered. / 查看近期修复的问题以及它们的重要性。 |
 | 5b | [V2.3 Code Review Fix Log](code-review-2026-07-17-v2.3-replication.md) / [V2.3 代码审查修复记录](code-review-2026-07-17-v2.3-replication.md) | See V2.3 replication review findings, `2.3.0` fixes, and `2.3.1` backlog. / 查看 V2.3 副本审查问题、`2.3.0` 修复与 `2.3.1` 待办。 |
+| 5c | [V4.0.0 Full Code Review](code-review-2026-08-13-v4.0.0-full-review.md) / [V4.0.0 全量代码审查](code-review-2026-08-13-v4.0.0-full-review.md) | See the 2026-08-13 full-tree findings, landed P1 fixes, and remaining crash-window / HA items. / 查看 2026-08-13 全量审查结论、已合入的 P1 修复，以及仍开放的崩溃窗口与 HA 项。 |
 | 6 | [Test Report](test-report-2026-07-10-v2-storage.md) / [测试报告](test-report-2026-07-10-v2-storage.md) | See the V2.0 storage recovery closeout results. / 查看 V2.0 存储恢复收口测试结果。 |
 | 7 | [V2.3 Replication Test Report](test-report-2026-07-17-v2.3-replication.md) / [V2.3 副本机制测试报告](test-report-2026-07-17-v2.3-replication.md) | See the V2.3 replication release verification. / 查看 V2.3 副本机制发布验证。 |
 | 7b | [V2.3.1 Replication Hardening Test Report](test-report-2026-07-18-v2.3.1-replication-hardening.md) | See the V2.3.1 replication hardening release verification. |
@@ -38,7 +39,8 @@ The current V4 layer is implemented in source: operator APIs expose status, grou
 | 7i | [V4 Operator Readiness Implementation Plan](plans/v4-operator-readiness-implementation.md) | Historical implementation checklist; use source and focused tests as current truth. |
 | 7j | [V3.3-V3.5 Production Hardening Test Report](test-report-2026-07-21-v3.3-v3.5-production-hardening.md) | See runtime metrics export, resilience matrix, benchmark transport selector, and bounded verification evidence. |
 | 7k | [Future Storage Notes](roadmap.md#future-version-notes) | Review deferred experimental storage work after V4 is complete. |
-| 7l | [V4.0.0 Operator Readiness Test Report](test-report-2026-07-22-v4.0.0-operator-readiness.md) | See the fresh full-reactor test counts, coverage, review regressions, and Docker-gated etcd status. |
+| 7l | [V4.0.0 Operator Readiness Test Report](test-report-2026-07-22-v4.0.0-operator-readiness.md) | See the 2026-07-29 full-reactor test counts, coverage, review regressions, and Docker-gated etcd status. |
+| 7m | [V4.0.0 Full Verification Test Report](test-report-2026-08-13-v4.0.0-full-verification.md) | See the 2026-08-13 full `mvn clean verify`, JaCoCo gate, review-fix regressions, and Web operator console browser results. |
 | 8 | [Troubleshooting Guide](troubleshooting.md) / [故障排查指南](troubleshooting.md) | Resolve common Maven, port, Windows, test report, and GitHub/SSH issues. / 排查 Maven、端口、Windows、测试报告、GitHub/SSH 常见问题。 |
 
 ## 3. Current Snapshot / 当前快照
@@ -56,7 +58,7 @@ The current V4 layer is implemented in source: operator APIs expose status, grou
 | Coverage / 覆盖率 | JaCoCo |
 | Latest milestone tag | Not cut for the current working tree; Maven project version is 4.0.0 |
 | Latest release | V4 operator readiness in the working tree: operator APIs, bounded metrics V2, topic admin, failover audit, reliability links, delayed delivery, and FETCH_V2 visibility |
-| Latest evidence | [V4.0.0 operator readiness test report](test-report-2026-07-22-v4.0.0-operator-readiness.md): 712 tests, zero failures/errors/skips, 91.17% overall line coverage, and every module above 90% |
+| Latest evidence | [V4.0.0 full verification](test-report-2026-08-13-v4.0.0-full-verification.md): 718 tests, 0 failures/errors, 6 Linux-skipped Windows cases, 91.32% overall line coverage, every module above 90%, and a passing Web operator console browser run. Docker/etcd ITs remain unrun. |
 
 ## 4. Module Map / 模块地图
 
@@ -208,7 +210,7 @@ replicas to enter ISR before stopping the initial Leader.
 2. Read `architecture.md` for module boundaries and runtime topology. / 阅读 `architecture.md`，理解模块边界和运行时拓扑。
 3. Read `design.md` before changing protocol, storage, metadata, or consumer group logic. / 修改协议、存储、元数据或消费组逻辑前先阅读 `design.md`。
 4. Run `mvn verify -gs .mvn/settings.xml -s .mvn/settings.xml` before and after changes. / 修改前后都运行完整 Maven 测试命令。
-5. Check `docs/test-report-2026-07-22-v4.0.0-operator-readiness.md` for the current closeout baseline. / 查看 `docs/test-report-2026-07-22-v4.0.0-operator-readiness.md` 了解当前收口基线。
+5. Check `docs/test-report-2026-08-13-v4.0.0-full-verification.md` for the current closeout baseline, and `docs/code-review-2026-08-13-v4.0.0-full-review.md` for open P1/P2 items. / 查看 `docs/test-report-2026-08-13-v4.0.0-full-verification.md` 了解当前收口基线，并查看 `docs/code-review-2026-08-13-v4.0.0-full-review.md` 了解仍开放的 P1/P2。
 6. Do not treat target files as source of truth; source lives under `src/main/java` and `src/test/java`. / 不要把 `target` 目录当作事实来源，源码位于 `src/main/java` 和 `src/test/java`。
 7. Keep JaCoCo overall line coverage at or above 90%. / 保持 JaCoCo 总体行覆盖率不低于 90%。
 8. If changing protocol fields, update both `ProtocolSerdesTest` and the design document. / 如果修改协议字段，同时更新 `ProtocolSerdesTest` 和设计文档。

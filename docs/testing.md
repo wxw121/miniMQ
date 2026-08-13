@@ -54,37 +54,41 @@ Latest release-gate command / 最新发布门禁命令：
 mvn clean verify -gs .mvn/settings.xml -s .mvn/settings.xml
 ```
 
-Latest V4.0.0 result / 最新 V4.0.0 结果：
+Latest V4.0.0 result / 最新 V4.0.0 结果（2026-08-13, OpenJDK 21, Linux）：
 
 | Metric / 指标 | Value / 数值 |
 | --- | ---: |
-| Tests run / 测试总数 | 712 |
+| Tests run / 测试总数 | 718 |
 | Failures / 失败数 | 0 |
 | Errors / 错误数 | 0 |
-| Skipped / 跳过数 | 0 |
-| Overall line coverage / 总体行覆盖率 | 91.17% (`10999 / 12064`) |
-| Overall instruction coverage / 总体指令覆盖率 | 92.01% (`50235 / 54598`) |
-| Overall branch coverage / 总体分支覆盖率 | 78.72% (`4061 / 5159`) |
-| Overall method coverage / 总体方法覆盖率 | 94.84% (`1819 / 1918`) |
-| Overall class coverage / 总体类覆盖率 | 99.34% (`303 / 305`) |
+| Skipped / 跳过数 | 6 (`@DisabledOnOs(LINUX)` Windows script/ownership cases) |
+| Overall line coverage / 总体行覆盖率 | 91.32% (`11032 / 12080`) |
+| Overall instruction coverage / 总体指令覆盖率 | 92.18% (`50400 / 54676`) |
+| Overall branch coverage / 总体分支覆盖率 | 78.64% (`4062 / 5165`) |
+| Overall method coverage / 总体方法覆盖率 | 95.10% (`1826 / 1920`) |
+| Overall class coverage / 总体类覆盖率 | 99.67% (`304 / 305`) |
+
+Evidence / 验证证据：`docs/test-report-2026-08-13-v4.0.0-full-verification.md`. The 2026-07-29 closeout (`712` tests, `91.17%` line) remains in `docs/test-report-2026-07-22-v4.0.0-operator-readiness.md`. Docker/etcd Failsafe suites were not run in either pass on machines without Docker.
+
+验证证据见 `docs/test-report-2026-08-13-v4.0.0-full-verification.md`。2026-07-29 收口（712 tests、91.17% 行覆盖）仍保留在 `docs/test-report-2026-07-22-v4.0.0-operator-readiness.md`。两次验证都未在无 Docker 的机器上跑 etcd Failsafe。
 
 ## 5. Coverage By Module / 模块覆盖率
 
 | Module / 模块 | Instruction / 指令 | Branch / 分支 | Line / 行 | Method / 方法 | Class / 类 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `mq-broker` | 90.92% | 76.81% | 90.09% | 94.08% | 98.97% |
-| `mq-client` | 90.77% | 74.86% | 90.36% | 94.12% | 100.00% |
+| `mq-broker` | 91.21% | 76.51% | 90.30% | 94.65% | 100.00% |
+| `mq-client` | 90.90% | 75.56% | 90.56% | 94.15% | 100.00% |
 | `mq-common` | 97.92% | 92.96% | 98.40% | 100.00% | 100.00% |
-| `mq-demo` | 94.93% | 77.30% | 92.86% | 93.85% | 100.00% |
+| `mq-demo` | 94.98% | 77.88% | 92.98% | 93.89% | 100.00% |
 | `mq-protocol` | 94.97% | 81.70% | 94.92% | 94.27% | 100.00% |
-| `mq-storage` | 90.87% | 81.54% | 90.04% | 97.29% | 98.00% |
+| `mq-storage` | 90.98% | 81.54% | 90.20% | 97.29% | 98.00% |
 
 ```mermaid
 xychart-beta
     title "Line Coverage By Module / 模块行覆盖率"
     x-axis ["broker/代理", "client/客户端", "common/公共", "demo/演示", "protocol/协议", "storage/存储"]
     y-axis "Line % / 行覆盖率 %" 0 --> 100
-    bar [90.09, 90.36, 98.40, 92.86, 94.92, 90.04]
+    bar [90.30, 90.56, 98.40, 92.98, 94.92, 90.20]
 ```
 
 ```mermaid
@@ -92,15 +96,15 @@ xychart-beta
     title "Overall Coverage / 总体覆盖率"
     x-axis ["Instruction/指令", "Branch/分支", "Line/行", "Method/方法", "Class/类"]
     y-axis "Coverage % / 覆盖率 %" 0 --> 100
-    bar [92.01, 78.72, 91.17, 94.84, 99.34]
+    bar [92.18, 78.64, 91.32, 95.10, 99.67]
 ```
 
 
 ## 6. Key Flow Test Evidence / 关键流程测试结果截图
 
-The [V4.0.0 closeout report](test-report-2026-07-22-v4.0.0-operator-readiness.md) is the source of truth for the latest verified Surefire and JaCoCo results. The screenshots below remain historical visual aids for the core flows, so a new reader can inspect the main testing shape without opening every `target` report directory.
+The [2026-08-13 full verification report](test-report-2026-08-13-v4.0.0-full-verification.md) is the source of truth for the latest verified Surefire, JaCoCo, and Web operator console browser results. The screenshots below remain historical visual aids for the core flows, so a new reader can inspect the main testing shape without opening every `target` report directory.
 
-最终 [V4.0.0 收口报告](test-report-2026-07-22-v4.0.0-operator-readiness.md) 是最新 Surefire 与 JaCoCo 结果的事实来源。下面截图保留为核心流程的历史可视化辅助，新读者无需逐个打开 `target` 报告目录，也能快速看到关键测试形态。
+最终 [2026-08-13 全量验证报告](test-report-2026-08-13-v4.0.0-full-verification.md) 是最新 Surefire、JaCoCo 与 Web 操作台浏览器结果的事实来源。下面截图保留为核心流程的历史可视化辅助，新读者无需逐个打开 `target` 报告目录，也能快速看到关键测试形态。
 
 ### 6.1 Full Build Verification / 完整构建验证
 
@@ -326,9 +330,9 @@ The current agreed gate is:
 Per-module line coverage >= 90% for modules covered by JaCoCo check / 接入 JaCoCo check 的模块行覆盖率均 >= 90%
 ```
 
-JaCoCo `check` is bound to Maven `verify`. The 2026-07-29 V4.0.0 release run passed with every module above the 90% line rule and 91.17% overall line coverage. Blocking process entrypoints (`BrokerMain`, `MiniMqWebMain`, and `MiniMqWebDevMain`) are excluded from the report and gate because their behavior is covered indirectly through CLI, broker integration, and Web launcher tests.
+JaCoCo `check` is bound to Maven `verify`. The 2026-08-13 V4.0.0 full verification passed with every module above the 90% line rule and 91.32% overall line coverage. Blocking process entrypoints (`BrokerMain`, `MiniMqWebMain`, and `MiniMqWebDevMain`) are excluded from the report and gate because their behavior is covered indirectly through CLI, broker integration, and Web launcher tests. Do not lower the 90% line gate to paper over Java 21 vs 17 instruction differences.
 
-JaCoCo `check` 已绑定到 Maven `verify`。2026-07-29 的 V4.0.0 发布验证中，每个模块均超过 90% 行覆盖率，总体行覆盖率为 91.17%。阻塞式进程入口（`BrokerMain`、`MiniMqWebMain`、`MiniMqWebDevMain`）的行为已通过 CLI、Broker 集成测试和 Web 启动器测试间接覆盖，因此从报告和门禁统计中排除。
+JaCoCo `check` 已绑定到 Maven `verify`。2026-08-13 的 V4.0.0 全量验证中，每个模块均超过 90% 行覆盖率，总体行覆盖率为 91.32%。阻塞式进程入口（`BrokerMain`、`MiniMqWebMain`、`MiniMqWebDevMain`）的行为已通过 CLI、Broker 集成测试和 Web 启动器测试间接覆盖，因此从报告和门禁统计中排除。不要为了抹平 Java 21 与 17 的指令差异而降低 90% 行覆盖门槛。
 
 ## 10. Slow Tests / 慢测试说明
 

@@ -120,6 +120,10 @@ Leader 写入会检查延迟消息容量，follower 复制路径不会，副本�
 | Web SSRF / JSON | Bootstrap allowlist, Host/Origin checks, duplicate-key and unknown-field rejection are covered by `MiniMqWebAppTest`. |
 | scripts/*.ps1 | Ownership markers, PID+start-time manifests, and bounded stop timeouts look correct. |
 
+Verification of the landed P1 fixes is in [test-report-2026-08-13-v4.0.0-full-verification.md](test-report-2026-08-13-v4.0.0-full-verification.md): `mvn clean verify` passed (718 / 0 / 0 / 6 skip), every module stayed above the 90% line gate, and the Web operator console browser path passed on a live `MiniMqWebDevMain`.
+
+已合入 P1 的验证见 [test-report-2026-08-13-v4.0.0-full-verification.md](test-report-2026-08-13-v4.0.0-full-verification.md)：全量 `mvn clean verify` 通过（718 / 0 / 0 / 6 skip），各模块行覆盖率仍 ≥ 90%，现场 Web 操作台浏览器主流程通过。
+
 ## Residual operational risks / 运行风险（非新 bug）
 
 1. Real-etcd Failsafe (`-Petcd-it`) remains environment-gated. This machine has no Docker. Do not mark `ControllerFailoverIT` / `LeaderEpochFailoverIT` passed.
