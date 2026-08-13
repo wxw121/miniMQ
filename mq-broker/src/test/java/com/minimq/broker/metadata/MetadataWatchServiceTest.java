@@ -193,7 +193,7 @@ class MetadataWatchServiceTest {
             events.get().accept(response);
 
             assertTrue(installed.await(3, TimeUnit.SECONDS));
-            assertEquals(2, service.installedRevision());
+            awaitInstalledRevision(service, 2L);
             assertEquals(ClusterMetadata.CURRENT_FORMAT_VERSION,
                     lastInstalled.get().metadataFormatVersion);
         }
@@ -283,6 +283,15 @@ class MetadataWatchServiceTest {
         } finally {
             Thread.interrupted();
         }
+    }
+
+    private static void awaitInstalledRevision(MetadataWatchService service, long revision)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        while (service.installedRevision() != revision && System.nanoTime() < deadline) {
+            Thread.sleep(1);
+        }
+        assertEquals(revision, service.installedRevision());
     }
 
     private static VersionedClusterMetadata version(long revision) {
