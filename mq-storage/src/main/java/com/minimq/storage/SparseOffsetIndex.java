@@ -6,6 +6,7 @@ import java.nio.channels.ClosedChannelException;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
@@ -17,7 +18,7 @@ final class SparseOffsetIndex implements AutoCloseable {
     static final int ENTRY_BYTES = Long.BYTES * 2;
 
     private final Path path;
-    private final FileChannel channel;
+    private FileChannel channel;
     private final List<IndexEntry> entries;
     private boolean closed;
 
@@ -32,6 +33,7 @@ final class SparseOffsetIndex implements AutoCloseable {
         if (parent != null) {
             Files.createDirectories(parent);
         }
+        Files.deleteIfExists(tempPath(path));
         FileChannel channel = FileChannel.open(path,
                 StandardOpenOption.CREATE,
                 StandardOpenOption.READ,
@@ -89,11 +91,41 @@ final class SparseOffsetIndex implements AutoCloseable {
         ensureOpenUnchecked();
         List<IndexEntry> validated = List.copyOf(replacement);
         validateReplacement(validated);
+        Path tempFile = tempPath(path);
         try {
-            channel.truncate(0);
-            channel.position(0);
-            for (IndexEntry entry : validated) {
-                writeEntry(channel, entry);
+            Files.deleteIfExists(tempFile);
+            try (FileChannel tempChannel = FileChannel.open(
+                    tempFile,
+                    StandardOpenOption.CREATE_NEW,
+                    StandardOpenOption.READ,
+                    StandardOpenOption.WRITE)) {
+                for (IndexEntry entry : validated) {
+                    writeEntry(tempChannel, entry);
+                }
+                tempChannel.force(false);
+            }
+            channel.close();
+            try {
+                try {
+                    Files.move(tempFile, path,
+                            StandardCopyOption.ATOMIC_MOVE,
+                            StandardCopyOption.REPLACE_EXISTING);
+                } catch (IOException atomicFailure) {
+                    Files.move(tempFile, path, StandardCopyOption.REPLACE_EXISTING);
+                }
+                channel = FileChannel.open(path, StandardOpenOption.READ, StandardOpenOption.WRITE);
+                channel.position(channel.size());
+            } catch (IOException publishFailure) {
+                try {
+                    Files.deleteIfExists(tempFile);
+                } catch (IOException ignored) {
+                    // best-effort leftover cleanup
+                }
+                if (!channel.isOpen()) {
+                    channel = FileChannel.open(path, StandardOpenOption.READ, StandardOpenOption.WRITE);
+                    channel.position(channel.size());
+                }
+                throw publishFailure;
             }
             entries.clear();
             entries.addAll(validated);
@@ -223,6 +255,10 @@ final class SparseOffsetIndex implements AutoCloseable {
         if (closed || !channel.isOpen()) {
             throw new ClosedChannelException();
         }
+    }
+
+    private static Path tempPath(Path path) {
+        return path.resolveSibling(path.getFileName() + ".tmp");
     }
 
     record IndexEntry(long offset, long filePosition) {

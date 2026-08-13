@@ -191,6 +191,9 @@ public class LogManager implements AutoCloseable {
         }
         long now = clock.millis();
         long persistedDeliverAtEpochMs = deliverAtEpochMs > now ? deliverAtEpochMs : 0L;
+        if (persistedDeliverAtEpochMs > 0) {
+            ensureScheduledCapacity(1);
+        }
         PartitionLog log = getOrCreate(topic, partitionId);
         writeAheadLog.append(WalRecord.dataAppend(
                 topic, partitionId, offset, key, value, persistedDeliverAtEpochMs), false);

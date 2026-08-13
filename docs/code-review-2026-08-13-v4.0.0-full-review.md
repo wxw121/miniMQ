@@ -37,38 +37,15 @@ The previous V4 pass left protocol V4, topic tombstones, client correlation/clea
 | R4-P1-12 | Maven resource timestamps / 资源时间戳 | Checkout files keep `mtime` 1970 (`lastModified == 0`). `maven-resources-plugin` 2.6 then skips `web/index.html` / `app.js` / `styles.css`, so GET `/` returned 404 `Resource not found`. / 源文件时间为 epoch 时插件跳过复制，静态资源进不了 classpath。 | Use resources-plugin 3.3.1 with `overwrite=true`. / 升级插件并强制覆盖复制。 |
 | R4-P1-04 | Frozen restore vs activation / 冻结恢复与激活 | `restoreFrozenPartitions` set `leaderReady=true` for every freeze. Activation-timeout freeze reused the same `frozen` flag, so a candidate that missed truncation, went offline, then re-registered skipped `LeaderActivationService`. / 所有冻结恢复都直接就绪。激活超时冻结共用 `frozen`，未截断的候选下线再注册会跳过激活。 | Persist `activationRequired` on activation-timeout freeze. No-ISR restore of the original ready Leader stays immediately ready; activation-timeout restore keeps `leaderReady=false`. / 激活超时冻结写入 `activationRequired`。无 ISR 的原 Leader 恢复仍立即就绪；激活超时恢复必须再走激活。 |
 | R4-P1-05 | Etcd `MetadataSync.refresh` / etcd 刷新空操作 | After a successful remote `leaderReady` RPC, etcd-mode `MetadataSync.refresh` returned immediately. The same produce/fetch then hit `validateLeaderEpoch` with local `leaderReady=false` and returned `LEADER_NOT_READY`. / 远程 LEADER_READY 成功后 etcd 刷新是空操作，同一请求本地仍未就绪。 | `ClusterController.noteCommittedLeaderReady` patches the local cache after the RPC. Watch still installs the etcd snapshot afterwards. / RPC 成功后先补本地就绪；watch 随后安装权威快照。 |
+| R4-P1-06 | Segment append / 分段追加 | Log write then index update. If `index.append()` failed, a retry at the same offset wrote a second physical record. / 日志先写、索引后更新，索引失败后按同一 offset 重试会写出重复物理记录。 | Truncate the log back to the pre-append position before rethrowing. / 失败时把日志截回追加前位置。 |
+| R4-P1-07 | Index replace / 索引替换 | `SparseOffsetIndex.replace` truncated the live file to 0 then rewrote entries. A crash mid-loop left a partial index. Catalog publish after log truncate is still WAL-repaired by `TRUNCATE_BEGIN`. / 原地 truncate-then-write，中途崩溃留下残缺索引。 | Write the replacement to a temp file, fsync, close the live channel, then rename and reopen so Windows can replace the file. Leftover `.tmp` is deleted on open. / 写临时文件后关闭再 rename，打开时清理残留 tmp。 |
+| R4-P1-08 | Replica scheduled cap / 副本延迟容量 | `replicateAt` skipped `ensureScheduledCapacity()`, so a follower that is already near the cap as leader of other partitions could ingest another delayed backlog. / 复制路径不检查延迟容量。 | Check capacity before replicating future records. `ReplicaFetcher` treats `ScheduledCapacityExceededException` as retryable without tearing down the fetch loop. / 复制未来消息前检查容量；fetcher 把超限当可重试。 |
 
 ## P1 — Open / 仍待修复
 
-### R4-P1-06 — Segment append is not crash-atomic
+None remaining from this review. Remaining work is P2.
 
-**File:** `SegmentFile.append` (~149–165)
-
-The log record is written before the sparse index and in-memory `lastOffset` update. If `index.append()` fails after a successful log write, a retry at the same offset writes a second physical record with the same logical offset.
-
-Suggested fix: on post-write failure, truncate the log back to the pre-append position before rethrowing.
-
-日志先写、索引后更新。索引失败后按同一 offset 重试会写出重复物理记录。
-
-### R4-P1-07 — Truncate rewrites the index in place
-
-**Files:** `SegmentFile.truncateTo` (~201–205), `SparseOffsetIndex.replace` (~88–102)
-
-`replace()` truncates the index file to 0 then rewrites entries. A crash or I/O error mid-loop leaves a partial on-disk index while in-memory entries stay old until the loop completes. Partition-level `truncateTo` also saves the catalog after mutating the log, so a crash between those steps desynchronizes catalog metadata from segment files.
-
-Suggested fix: write replacement index/catalog to a temp file and rename, matching `CheckpointStore` / `SegmentCatalogStore`.
-
-索引原地 truncate-then-write，中途失败会留下残缺索引；分区 truncate 也是先改日志再写 catalog。
-
-### R4-P1-08 — `replicateAt` bypasses scheduled-record capacity
-
-**File:** `LogManager.replicateAt` (~181–203)
-
-Leader `append()` calls `ensureScheduledCapacity()` for future-delivery records. Followers ingest the same records through `replicateAt` with no cap, so a leader that already holds a large delayed backlog can still OOM followers.
-
-Suggested fix: enforce the same capacity check on replicate, and fail/throttle the replica fetch.
-
-Leader 写入会检查延迟消息容量，follower 复制路径不会，副本可能被延迟消息打满内存。
+本次审查的 P1 已全部合入。剩余为 P2。
 
 ## P2 — Open / 仍待修复
 
@@ -100,9 +77,9 @@ Leader 写入会检查延迟消息容量，follower 复制路径不会，副本�
 | Web SSRF / JSON | Bootstrap allowlist, Host/Origin checks, duplicate-key and unknown-field rejection are covered by `MiniMqWebAppTest`. |
 | scripts/*.ps1 | Ownership markers, PID+start-time manifests, and bounded stop timeouts look correct. |
 
-Verification of the landed P1 fixes is in [test-report-2026-08-13-v4.0.0-full-verification.md](test-report-2026-08-13-v4.0.0-full-verification.md): `mvn clean verify` passed (718 / 0 / 0 / 6 skip), every module stayed above the 90% line gate, and the Web operator console browser path passed on a live `MiniMqWebDevMain`. R4-P1-04 and R4-P1-05 landed after that report; they are covered by `ClusterControllerTest` / `MetadataStoreTest` on this branch.
+Verification of the landed P1 fixes is in [test-report-2026-08-13-v4.0.0-full-verification.md](test-report-2026-08-13-v4.0.0-full-verification.md): `mvn clean verify` passed (718 / 0 / 0 / 6 skip), every module stayed above the 90% line gate, and the Web operator console browser path passed on a live `MiniMqWebDevMain`. R4-P1-04 through R4-P1-08 landed after that report.
 
-已合入 P1 的验证见 [test-report-2026-08-13-v4.0.0-full-verification.md](test-report-2026-08-13-v4.0.0-full-verification.md)：全量 `mvn clean verify` 通过（718 / 0 / 0 / 6 skip），各模块行覆盖率仍 ≥ 90%，现场 Web 操作台浏览器主流程通过。R4-P1-04 与 R4-P1-05 在该报告之后合入，由本分支 `ClusterControllerTest` / `MetadataStoreTest` 覆盖。
+已合入 P1 的验证见 [test-report-2026-08-13-v4.0.0-full-verification.md](test-report-2026-08-13-v4.0.0-full-verification.md)。R4-P1-04 至 R4-P1-08 在该报告之后合入。
 
 ## Residual operational risks / 运行风险（非新 bug）
 
@@ -112,5 +89,6 @@ Verification of the landed P1 fixes is in [test-report-2026-08-13-v4.0.0-full-ve
 
 ## Recommended next patches / 建议后续补丁顺序
 
-1. Make segment append/truncate/index replacement crash-safe (R4-P1-06, R4-P1-07).
-2. Enforce scheduled-record capacity on `replicateAt` (R4-P1-08).
+1. Compaction should bump `logStartOffset` when dropping empty leading segments (R4-P2-06).
+2. Empty `DeliverySchedule` should keep the stored visible watermark (R4-P2-07).
+3. FETCH v1 sendfile should publish the visible HW (R4-P2-08).

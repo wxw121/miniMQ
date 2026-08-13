@@ -425,6 +425,33 @@ class LogManagerTopicDeletionTest {
     }
 
     @Test
+    void replicateAtRejectsScheduledCapacityOverflow() {
+        MutableClock clock = new MutableClock(1_000L);
+        LogManagerConfig config = new LogManagerConfig(
+                FlushPolicy.always(),
+                0,
+                SegmentedLogConfig.defaults(),
+                LogMaintenanceConfig.disabled(),
+                1);
+        LogManager manager = new LogManager(tempDir, config, clock);
+        try {
+            manager.append("scheduled", 0, bytes("a"), bytes("future-1"), 50_000L);
+            assertThrows(LogManager.ScheduledCapacityExceededException.class,
+                    () -> manager.replicateAt(
+                            "scheduled", 0, 1L, bytes("b"), bytes("future-2"), 60_000L));
+
+            assertEquals(1, manager.scheduledRecordCount());
+            assertEquals(1L, manager.getOrCreate("scheduled", 0).highWatermark());
+
+            manager.replicateAt("scheduled", 0, 1L, bytes("c"), bytes("ready"), 0L);
+            assertEquals(1, manager.scheduledRecordCount());
+            assertEquals(2L, manager.getOrCreate("scheduled", 0).highWatermark());
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
     void visibleDeliveryWatermarkSurvivesRestartAndClockRollback() {
         MutableClock clock = new MutableClock(1_000L);
         LogManagerConfig config = new LogManagerConfig(

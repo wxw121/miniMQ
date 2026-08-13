@@ -168,6 +168,9 @@ public final class SegmentedPartitionLog implements PartitionLog, TransferablePa
             target.truncateTo(offset);
             target.flush();
 
+            // Catalog is published after the surviving segment is truncated so
+            // successor files are unpublished before deletion. A crash between
+            // those steps is repaired by WAL TRUNCATE_BEGIN replay.
             List<SegmentDescriptor> retainedDescriptors =
                     new ArrayList<>(catalog.segments().subList(0, targetIndex + 1));
             SegmentCatalog nextCatalog = new SegmentCatalog(

@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -110,6 +111,30 @@ class SparseOffsetIndexTest {
             assertThrows(IllegalArgumentException.class, () -> index.replace(List.of(
                     new SparseOffsetIndex.IndexEntry(1, 0),
                     new SparseOffsetIndex.IndexEntry(2, 0))));
+        }
+    }
+
+    @Test
+    void replacePublishesAtomicallyAndKeepsChannelBoundForLaterAppends(@TempDir Path dir) throws Exception {
+        Path path = dir.resolve("live.index");
+        Files.write(path.resolveSibling("live.index.tmp"), new byte[] {1, 2, 3});
+
+        try (SparseOffsetIndex index = SparseOffsetIndex.open(path)) {
+            assertFalse(Files.exists(path.resolveSibling("live.index.tmp")));
+            index.append(10, 100);
+            index.replace(List.of(
+                    new SparseOffsetIndex.IndexEntry(1, 0),
+                    new SparseOffsetIndex.IndexEntry(4, 40)));
+            index.append(8, 80);
+            index.flush();
+            assertEquals(40, index.floorPosition(7));
+            assertEquals(80, index.floorPosition(8));
+        }
+
+        try (SparseOffsetIndex reopened = SparseOffsetIndex.open(path)) {
+            assertEquals(0, reopened.floorPosition(1));
+            assertEquals(40, reopened.floorPosition(4));
+            assertEquals(80, reopened.floorPosition(8));
         }
     }
 }

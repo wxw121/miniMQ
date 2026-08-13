@@ -219,6 +219,8 @@ public final class ReplicaFetcher implements AutoCloseable {
                         record.deliverAtEpochMs());
                 changed = true;
             }
+        } catch (LogManager.ScheduledCapacityExceededException ignored) {
+            return changed;
         } catch (LeaderReplicaClient.ReplicaFetchException failure) {
             connectionPool.invalidate(leader.host, leader.port);
             if ((failure.errorCode() == ErrorCode.NOT_LEADER

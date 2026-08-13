@@ -182,4 +182,38 @@ class SegmentFileTest {
             assertEquals(List.of(0L, 1L), recovered.read(0, 1_024).stream().map(Record::offset).toList());
         }
     }
+
+    @Test
+    void appendTruncatesLogWhenIndexWriteFails(@TempDir Path dir) throws Exception {
+        SegmentDescriptor descriptor = new SegmentDescriptor(0, 100);
+        SegmentedLogConfig config = new SegmentedLogConfig(1_024, 1);
+        SegmentFile segment = SegmentFile.create(dir, descriptor, config);
+        try {
+            segment.append(0, "k0".getBytes(), "v0".getBytes());
+            long sizeAfterFirst = segment.size();
+
+            java.lang.reflect.Field indexField = SegmentFile.class.getDeclaredField("index");
+            indexField.setAccessible(true);
+            ((SparseOffsetIndex) indexField.get(segment)).close();
+
+            assertThrows(IllegalStateException.class,
+                    () -> segment.append(1, "k1".getBytes(), "v1".getBytes()));
+            assertEquals(sizeAfterFirst, segment.size());
+            assertEquals(1, countLogRecords(SegmentFile.logPath(dir, 0)));
+        } finally {
+            segment.close();
+        }
+    }
+
+    private static int countLogRecords(Path logPath) throws IOException {
+        try (FileChannel channel = FileChannel.open(logPath, READ)) {
+            long fileSize = channel.size();
+            int count = 0;
+            while (channel.position() < fileSize) {
+                PartitionLogRecordCodec.read(channel, channel.position(), fileSize);
+                count++;
+            }
+            return count;
+        }
+    }
 }
