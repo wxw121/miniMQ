@@ -103,6 +103,7 @@ class MetadataWatchServiceTest {
             repository.current = version(8);
             source.fail();
             assertTrue(latch.await(3, TimeUnit.SECONDS));
+            assertTrue(source.restarted.await(3, TimeUnit.SECONDS));
             assertEquals(List.of(5L, 8L), installed);
             assertEquals(2, source.starts);
             assertEquals(9, source.revision);
@@ -127,6 +128,7 @@ class MetadataWatchServiceTest {
             source.fail();
 
             assertTrue(latch.await(3, TimeUnit.SECONDS));
+            assertTrue(source.restarted.await(3, TimeUnit.SECONDS));
             assertEquals(List.of(5L, 8L), installed);
             assertEquals(2, source.starts);
             assertEquals(9, source.revision);

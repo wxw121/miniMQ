@@ -838,10 +838,7 @@ public final class MiniMqWebApp implements AutoCloseable {
                 } catch (InterruptedException interrupted) {
                     throw interrupted;
                 } catch (RuntimeException failure) {
-                    if (topicCreateAttempted) {
-                        throw new FlowSideEffectException(-1L, failure);
-                    }
-                    throw failure;
+                    throw new FlowSideEffectException(-1L, failure);
                 }
                 consumerReady = true;
             }

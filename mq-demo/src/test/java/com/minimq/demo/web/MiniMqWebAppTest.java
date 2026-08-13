@@ -551,6 +551,67 @@ class MiniMqWebAppTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void autoFlowDoesNotFallbackWhenSubscribeFailsForExistingTopic() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("web-existing-topic-subscribe");
+        try (BrokerTestHarness broker = BrokerTestHarness.startController(dataDir);
+             MiniMqWebApp app = MiniMqWebApp.start(
+                     0, broker.bootstrapServers(), BrokerTestHarness.ADMIN_TOKEN)) {
+            assertOk(postJson("http://127.0.0.1:" + app.port() + "/api/topic/create", """
+                    {
+                      "bootstrapServers":"%s","topic":"existing-subscribe-topic",
+                      "partitions":1,"replicationFactor":1
+                    }
+                    """.formatted(broker.bootstrapServers())));
+
+            Consumer consumer = new Consumer(
+                    broker.bootstrapServers(),
+                    "existing-subscribe-group",
+                    "existing-subscribe-consumer") {
+                @Override
+                public void subscribe(String topic) {
+                    throw new IllegalStateException("simulated subscribe failure");
+                }
+            };
+            Producer producer = new Producer(
+                    broker.bootstrapServers(), "existing-subscribe-producer");
+            ControllerAwareNetworkClient adminClient = new ControllerAwareNetworkClient(
+                    broker.bootstrapServers(), "existing-subscribe-admin");
+            adminClient.connect();
+
+            MiniMqWebApp.FlowRequest request = new MiniMqWebApp.FlowRequest()
+                    .withDefaults(broker.bootstrapServers());
+            request.setTopic("existing-subscribe-topic");
+            request.setMessage("must-not-fallback");
+
+            Class<?> runtimeClass = Class.forName(
+                    "com.minimq.demo.web.MiniMqWebApp$RealFlowRuntime");
+            Constructor<?> runtimeConstructor = runtimeClass.getDeclaredConstructor(
+                    ControllerAwareNetworkClient.class, Producer.class, Consumer.class, String.class);
+            runtimeConstructor.setAccessible(true);
+            Object runtime = runtimeConstructor.newInstance(
+                    adminClient, producer, consumer, BrokerTestHarness.ADMIN_TOKEN);
+            Method keyFor = MiniMqWebApp.class.getDeclaredMethod(
+                    "keyFor", MiniMqWebApp.FlowRequest.class);
+            keyFor.setAccessible(true);
+            Object key = keyFor.invoke(null, request);
+            Field runtimes = MiniMqWebApp.class.getDeclaredField("runtimes");
+            runtimes.setAccessible(true);
+            ((Map<Object, Object>) runtimes.get(app)).put(key, runtime);
+
+            Method runAutoFlow = MiniMqWebApp.class.getDeclaredMethod(
+                    "runAutoFlow", MiniMqWebApp.FlowRequest.class);
+            runAutoFlow.setAccessible(true);
+            InvocationTargetException thrown = assertThrows(
+                    InvocationTargetException.class,
+                    () -> runAutoFlow.invoke(app, request));
+
+            assertEquals("FlowSideEffectException", thrown.getCause().getClass().getSimpleName());
+            assertTrue(thrown.getCause().getMessage().contains("external side effect"));
+        }
+    }
+
+    @Test
     void rejectedAsyncRuntimeCleanupFallsBackToSynchronousClose() throws Exception {
         MiniMqWebApp app = MiniMqWebApp.start(0, "127.0.0.1:65535");
         Class<?> runtimeType = Class.forName(
