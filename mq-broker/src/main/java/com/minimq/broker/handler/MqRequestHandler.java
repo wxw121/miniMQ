@@ -355,14 +355,14 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             if (!throttle.allowed()) {
                 errorCode = ErrorCode.THROTTLED;
                 runtimeMetrics.recordThrottled(header.apiKey());
-                writeResponse(ctx, header.correlationId(), errorCode, null);
                 recordCompletion(header, errorCode, startedNanos);
+                writeResponse(ctx, header.correlationId(), errorCode, null);
                 return;
             }
             errorCode = authorizeBeforeDecode(header.apiKey(), payload);
             if (errorCode != ErrorCode.NONE) {
-                writeResponse(ctx, header.correlationId(), errorCode, null);
                 recordCompletion(header, errorCode, startedNanos);
+                writeResponse(ctx, header.correlationId(), errorCode, null);
                 throttle.release();
                 return;
             }
@@ -501,9 +501,9 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                         long fetchHighWatermark = Math.min(replicationHighWatermark, visibleHighWatermark);
                         MqResponseHeader fetchHeader =
                                 new MqResponseHeader(header.correlationId(), ErrorCode.NONE);
+                        recordCompletion(header, ErrorCode.NONE, startedNanos);
                         fetchResponseWriter.write(
                                 ctx, fetchHeader, request, partitionLog, fetchHighWatermark, replicationHighWatermark);
-                        recordCompletion(header, ErrorCode.NONE, startedNanos);
                         throttle.release();
                         return;
                     }
@@ -761,8 +761,8 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         }
 
         int correlationId = header != null ? header.correlationId() : 0;
-        writeResponse(ctx, correlationId, errorCode, responseBody);
         recordCompletion(header, errorCode, startedNanos);
+        writeResponse(ctx, correlationId, errorCode, responseBody);
         if (throttle != null) {
             throttle.release();
         }
@@ -854,16 +854,16 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         stage.whenComplete((result, failure) -> ctx.executor().execute(() -> {
             if (failure != null) {
                 log.error("Maintenance request failed for apiKey={}", header.apiKey(), failure);
-                writeResponse(ctx, header.correlationId(), ErrorCode.INVALID_REQUEST, null);
                 recordCompletion(header, ErrorCode.INVALID_REQUEST, startedNanos);
+                writeResponse(ctx, header.correlationId(), ErrorCode.INVALID_REQUEST, null);
                 throttle.release();
                 return;
             }
             Object body = result.errorCode() == ErrorCode.NONE
                     ? toMaintenanceReportResponse(result.body())
                     : null;
-            writeResponse(ctx, header.correlationId(), result.errorCode(), body);
             recordCompletion(header, result.errorCode(), startedNanos);
+            writeResponse(ctx, header.correlationId(), result.errorCode(), body);
             throttle.release();
         }));
     }
@@ -877,13 +877,13 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         stage.whenComplete((result, failure) -> ctx.executor().execute(() -> {
             if (failure != null) {
                 log.error("Topic deletion request failed", failure);
-                writeResponse(ctx, header.correlationId(), ErrorCode.CONTROLLER_NOT_READY, null);
                 recordCompletion(header, ErrorCode.CONTROLLER_NOT_READY, startedNanos);
+                writeResponse(ctx, header.correlationId(), ErrorCode.CONTROLLER_NOT_READY, null);
                 throttle.release();
                 return;
             }
-            writeResponse(ctx, header.correlationId(), result.errorCode(), result.response());
             recordCompletion(header, result.errorCode(), startedNanos);
+            writeResponse(ctx, header.correlationId(), result.errorCode(), result.response());
             throttle.release();
         }));
     }
