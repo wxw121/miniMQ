@@ -36,6 +36,7 @@ class SegmentedPartitionLogCompactionTest {
 
             SegmentCatalog catalog = new SegmentCatalogStore(dir).load().orElseThrow();
             assertEquals(List.of(1L, 2L, 3L), catalog.segments().stream().map(SegmentDescriptor::baseOffset).toList());
+            assertEquals(1, catalog.logStartOffset());
         }
     }
 
@@ -66,6 +67,8 @@ class SegmentedPartitionLogCompactionTest {
             log.applyCompaction(CompactionPolicy.enabled(10, firstSegmentSize));
 
             assertEquals(List.of(1L, 2L), log.read(0, 4_096).stream().map(Record::offset).toList());
+            SegmentCatalog catalog = new SegmentCatalogStore(dir).load().orElseThrow();
+            assertEquals(1, catalog.logStartOffset());
         }
     }
 

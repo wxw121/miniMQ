@@ -480,6 +480,29 @@ class LogManagerTopicDeletionTest {
         }
     }
 
+    @Test
+    void readyAppendsAfterDelayedDeliveryKeepVisibleWatermarkContiguous() {
+        MutableClock clock = new MutableClock(1_000L);
+        LogManagerConfig config = new LogManagerConfig(
+                FlushPolicy.always(),
+                1,
+                SegmentedLogConfig.defaults(),
+                LogMaintenanceConfig.disabled(),
+                100);
+        LogManager manager = new LogManager(tempDir, config, clock);
+        try {
+            manager.append("scheduled", 0, bytes("a"), bytes("future"), 5_000L);
+            clock.setMillis(6_000L);
+            assertEquals(1L, manager.visibleHighWatermark("scheduled", 0));
+
+            manager.append("scheduled", 0, bytes("b"), bytes("ready"));
+            assertEquals(2L, manager.visibleHighWatermark("scheduled", 0));
+            assertEquals(-1L, manager.nextVisibleAtEpochMs("scheduled", 0));
+        } finally {
+            manager.close();
+        }
+    }
+
     private static byte[] bytes(String value) {
         return value.getBytes(java.nio.charset.StandardCharsets.UTF_8);
     }

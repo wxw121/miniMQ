@@ -503,7 +503,7 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                                 new MqResponseHeader(header.correlationId(), ErrorCode.NONE);
                         recordCompletion(header, ErrorCode.NONE, startedNanos);
                         fetchResponseWriter.write(
-                                ctx, fetchHeader, request, partitionLog, fetchHighWatermark, replicationHighWatermark);
+                                ctx, fetchHeader, request, partitionLog, fetchHighWatermark, fetchHighWatermark);
                         throttle.release();
                         return;
                     }

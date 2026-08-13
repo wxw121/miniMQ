@@ -89,8 +89,8 @@ final class SparseOffsetIndex implements AutoCloseable {
 
     synchronized void replace(List<IndexEntry> replacement) {
         ensureOpenUnchecked();
+        validateReplacement(replacement);
         List<IndexEntry> validated = List.copyOf(replacement);
-        validateReplacement(validated);
         Path tempFile = tempPath(path);
         try {
             Files.deleteIfExists(tempFile);

@@ -169,6 +169,8 @@ class DeliveryScheduleTest {
         assertEquals(Map.of("orders-0", 2L),
                 schedule.visibleWatermarkSnapshotByPartitionKey());
 
+        assertEquals(2L, schedule.visibleHighWatermark("orders", 0, 6L));
+
         assertThrows(IllegalArgumentException.class,
                 () -> schedule.visibleHighWatermark("orders", 0, -1L));
         assertThrows(IllegalArgumentException.class,
@@ -212,5 +214,23 @@ class DeliveryScheduleTest {
                 () -> schedule.put("orders", 0, -1L, 0L));
         assertThrows(IllegalArgumentException.class,
                 () -> schedule.put("orders", 0, 0L, -1L));
+    }
+
+    @Test
+    void emptyScheduleKeepsStoredVisibleWatermarkBelowPhysicalHw() {
+        AtomicLong now = new AtomicLong(100L);
+        DeliverySchedule schedule = new DeliverySchedule(now::get);
+
+        assertEquals(5L, schedule.visibleHighWatermark("orders", 0, 5L));
+
+        schedule.restoreVisibleWatermark("orders", 0, 4L);
+        assertEquals(4L, schedule.visibleHighWatermark("orders", 0, 10L));
+        assertEquals(-1L, schedule.nextVisibleAtEpochMs("orders", 0, 10L));
+
+        schedule.noteReadyOffset("orders", 0, 4L);
+        schedule.noteReadyOffset("orders", 0, 5L);
+        assertEquals(6L, schedule.visibleHighWatermark("orders", 0, 6L));
+        assertEquals(Map.of("orders-0", 6L),
+                schedule.visibleWatermarkSnapshotByPartitionKey());
     }
 }

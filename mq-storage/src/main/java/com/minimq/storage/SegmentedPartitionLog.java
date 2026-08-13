@@ -395,10 +395,13 @@ public final class SegmentedPartitionLog implements PartitionLog, TransferablePa
                     return replacement == null || !replacement.retainedRecords().isEmpty();
                 })
                 .toList();
+        long nextLogStartOffset = Math.max(
+                catalog.logStartOffset(),
+                compactedDescriptors.get(0).baseOffset());
         SegmentCatalog nextCatalog = new SegmentCatalog(
                 catalog.generation() + 1,
                 catalog.activeBaseOffset(),
-                catalog.logStartOffset(),
+                nextLogStartOffset,
                 compactedDescriptors);
 
         catalogStore.save(nextCatalog);

@@ -643,6 +643,8 @@ public class LogManager implements AutoCloseable {
             String topic, int partitionId, long offset, long deliverAtEpochMs, long now) {
         if (deliverAtEpochMs > now) {
             deliverySchedule.put(topic, partitionId, offset, deliverAtEpochMs);
+        } else {
+            deliverySchedule.noteReadyOffset(topic, partitionId, offset);
         }
     }
 

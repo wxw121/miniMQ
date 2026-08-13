@@ -45,7 +45,15 @@ The previous V4 pass left protocol V4, topic tombstones, client correlation/clea
 
 None remaining from this review. Remaining work is P2.
 
-本次审查的 P1 已全部合入。剩余为 P2。
+本次审查的 P1 已全部合入。R4-P2-06 / R4-P2-07 / R4-P2-08 也已合入。
+
+## P2 — Fixed in this review / 本次已修复
+
+| ID | Area / 区域 | Finding / 问题 | Fix / 修复 |
+| --- | --- | --- | --- |
+| R4-P2-06 | Compaction / 压缩 | Empty leading segments were dropped without bumping `logStartOffset`. Retention already advanced it to the first remaining base. / 压缩删除空 leading segment 时不更新 `logStartOffset`。 | `applyCompactionPlan` sets `logStartOffset` to `max(current, first remaining baseOffset)`. / 压缩后把起始 offset 提升到剩余第一段。 |
+| R4-P2-07 | DeliverySchedule | An empty schedule map ignored the stored visible watermark and returned physical HW, so a recovered hold could expose delayed records. / 调度表为空时忽略可见水位，恢复窗口可能提前暴露延迟消息。 | Empty map keeps the stored watermark. Immediate/due appends call `noteReadyOffset` so later ready records still extend the prefix. / 空表保留水位；立即可见追加通过 `noteReadyOffset` 连续推进。 |
+| R4-P2-08 | FETCH v1 | Sendfile V1 published physical/replication HW in the prefix while bytes were capped to visible HW. / V1 sendfile 响应 HW 与可见截断不一致。 | Consumer FETCH v1 now advertises the same visible/fetch watermark used to cap records. / 消费 FETCH v1 的 HW 与可见截断一致。 |
 
 ## P2 — Open / 仍待修复
 
@@ -56,9 +64,6 @@ None remaining from this review. Remaining work is P2.
 | R4-P2-03 | GroupCoordinator | `offsetCommit` creates a group without join/generation checks; heartbeat ignores generation. Comment already marks member timeout as future work. / offset 提交可无加入地创建组；心跳不校验 generation。 |
 | R4-P2-04 | Operator offline | `markBrokerOffline` returns `INVALID_REQUEST` when no ISR replacement exists; lease expiry freezes instead. / 无替代 ISR 时手动下线失败，租约过期则会冻结。 |
 | R4-P2-05 | Delivery recovery | WAL/checkpoint replay can restore more scheduled records than `maxScheduledRecords`. / 恢复可以把延迟消息数量恢复到超过上限。 |
-| R4-P2-06 | Compaction | Empty leading segments are dropped without bumping `logStartOffset` (retention does bump it). / 压缩删除空 leading segment 时不更新 `logStartOffset`。 |
-| R4-P2-07 | DeliverySchedule | Empty schedule map ignores stored visible watermark and returns physical HW. / 调度表为空时忽略可见水位，直接返回物理 HW。 |
-| R4-P2-08 | FETCH v1 | Sendfile V1 publishes physical/replication HW in the prefix while bytes are capped to visible HW. / V1 sendfile 响应 HW 与可见截断不一致。 |
 | R4-P2-09 | Client SDK | `Producer`/`Consumer` `brokerClients` HashMap is check-then-act without synchronization; concurrent use can leak Netty clients. CLI/Web currently serialize. / 连接缓存非线程安全，并发可能泄漏 Netty 客户端。 |
 | R4-P2-10 | Web operator API | Loopback Host + optional Origin; missing Origin is allowed. Local processes can invoke destructive operator routes with the server-side admin token. Acceptable for a local demo panel; not a remote-auth control plane. / 本机进程可调用带服务端 token 的破坏性运维接口。对本地演示面板可接受。 |
 | R4-P2-11 | Web limits | Operator JSON limits are not server-clamped; consume-after-produce waits a fixed 750ms. / 运维 limit 无服务端上限；消费等待固定 750ms。 |
@@ -77,9 +82,9 @@ None remaining from this review. Remaining work is P2.
 | Web SSRF / JSON | Bootstrap allowlist, Host/Origin checks, duplicate-key and unknown-field rejection are covered by `MiniMqWebAppTest`. |
 | scripts/*.ps1 | Ownership markers, PID+start-time manifests, and bounded stop timeouts look correct. |
 
-Verification of the landed P1 fixes is in [test-report-2026-08-13-v4.0.0-full-verification.md](test-report-2026-08-13-v4.0.0-full-verification.md): `mvn clean verify` passed (718 / 0 / 0 / 6 skip), every module stayed above the 90% line gate, and the Web operator console browser path passed on a live `MiniMqWebDevMain`. R4-P1-04 through R4-P1-08 landed after that report.
+Verification of the landed P1 fixes is in [test-report-2026-08-13-v4.0.0-full-verification.md](test-report-2026-08-13-v4.0.0-full-verification.md): `mvn clean verify` passed (718 / 0 / 0 / 6 skip), every module stayed above the 90% line gate, and the Web operator console browser path passed on a live `MiniMqWebDevMain`. R4-P1-04 through R4-P1-08 and R4-P2-06 through R4-P2-08 landed after that report.
 
-已合入 P1 的验证见 [test-report-2026-08-13-v4.0.0-full-verification.md](test-report-2026-08-13-v4.0.0-full-verification.md)。R4-P1-04 至 R4-P1-08 在该报告之后合入。
+已合入 P1 的验证见 [test-report-2026-08-13-v4.0.0-full-verification.md](test-report-2026-08-13-v4.0.0-full-verification.md)。R4-P1-04 至 R4-P1-08 以及 R4-P2-06 至 R4-P2-08 在该报告之后合入。
 
 ## Residual operational risks / 运行风险（非新 bug）
 
@@ -89,6 +94,6 @@ Verification of the landed P1 fixes is in [test-report-2026-08-13-v4.0.0-full-ve
 
 ## Recommended next patches / 建议后续补丁顺序
 
-1. Compaction should bump `logStartOffset` when dropping empty leading segments (R4-P2-06).
-2. Empty `DeliverySchedule` should keep the stored visible watermark (R4-P2-07).
-3. FETCH v1 sendfile should publish the visible HW (R4-P2-08).
+1. Watch-only etcd followers should have a metadata poll fallback (R4-P2-01).
+2. `deleteTopicInternal` should refuse work during controller `recovering` (R4-P2-02).
+3. GroupCoordinator should require join/generation on commit and heartbeat (R4-P2-03).

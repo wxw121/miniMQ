@@ -107,7 +107,7 @@ class SparseOffsetIndexTest {
             nullReplacement.add(new SparseOffsetIndex.IndexEntry(1, 0));
             nullReplacement.add(null);
 
-            assertThrows(NullPointerException.class, () -> index.replace(nullReplacement));
+            assertThrows(IllegalArgumentException.class, () -> index.replace(nullReplacement));
             assertThrows(IllegalArgumentException.class, () -> index.replace(List.of(
                     new SparseOffsetIndex.IndexEntry(1, 0),
                     new SparseOffsetIndex.IndexEntry(2, 0))));
@@ -135,6 +135,31 @@ class SparseOffsetIndexTest {
             assertEquals(0, reopened.floorPosition(1));
             assertEquals(40, reopened.floorPosition(4));
             assertEquals(80, reopened.floorPosition(8));
+        }
+    }
+
+    @Test
+    void replaceKeepsOriginalIndexWhenTempPathCannotBeReplaced(@TempDir Path dir) throws Exception {
+        Path path = dir.resolve("blocked.index");
+        try (SparseOffsetIndex index = SparseOffsetIndex.open(path)) {
+            index.append(10, 100);
+            index.flush();
+            Path tempFile = path.resolveSibling("blocked.index.tmp");
+            Files.createDirectory(tempFile);
+            Files.write(tempFile.resolve("blocker"), new byte[] {1});
+
+            IllegalStateException failure = assertThrows(
+                    IllegalStateException.class,
+                    () -> index.replace(List.of(new SparseOffsetIndex.IndexEntry(1, 0))));
+            assertTrue(failure.getMessage().contains("Failed to replace sparse index"));
+            assertEquals(100, index.floorPosition(10));
+            index.append(20, 200);
+            index.flush();
+        }
+
+        try (SparseOffsetIndex reopened = SparseOffsetIndex.open(path)) {
+            assertEquals(100, reopened.floorPosition(10));
+            assertEquals(200, reopened.floorPosition(20));
         }
     }
 }

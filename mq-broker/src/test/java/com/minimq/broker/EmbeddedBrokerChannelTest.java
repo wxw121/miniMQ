@@ -1194,6 +1194,58 @@ class EmbeddedBrokerChannelTest {
     }
 
     @Test
+    void fetchV1PublishesVisibleHighWatermarkWhenRecordsAreDelayed() {
+        Path dataDir = tempDir.resolve("fetch-v1-visible-hw");
+        BrokerConfig config = defaultConfig(dataDir, true);
+        ClusterController controller = new ClusterController(new MetadataStore(dataDir.resolve("metadata")));
+        assertEquals(ErrorCode.NONE,
+                controller.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092)).errorCode());
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("orders", 1)));
+        PartitionManager partitionManager = new PartitionManager(new LogManager(dataDir.resolve("log")));
+        EmbeddedChannel channel = newChannel(
+                config,
+                controller,
+                partitionManager,
+                new ReplicaStateManager(),
+                ControllerRole.legacy(config),
+                new BrokerRuntimeMetrics());
+
+        try {
+            long deliverAtEpochMs = System.currentTimeMillis() + 60_000L;
+            MqDecoder.DecodedResponse produced = send(
+                    channel,
+                    ApiKeys.PRODUCE_V2,
+                    new ProduceV2Request(
+                            "orders",
+                            0,
+                            0L,
+                            new V4BoundedList<>(
+                                    2,
+                                    false,
+                                    List.of(
+                                            new ScheduledProduceRecord(
+                                                    "ready".getBytes(), "now".getBytes(), 0L),
+                                            new ScheduledProduceRecord(
+                                                    "later".getBytes(), "wait".getBytes(), deliverAtEpochMs)))));
+            assertEquals(ErrorCode.NONE, produced.header().errorCode());
+
+            MqDecoder.DecodedResponse decoded = send(
+                    channel,
+                    ApiKeys.FETCH,
+                    new FetchRequest("orders", 0, 0, 1_024));
+            FetchResponse response = (FetchResponse) decoded.body();
+
+            assertEquals(ErrorCode.NONE, decoded.header().errorCode());
+            assertEquals(1L, response.highWatermark());
+            assertEquals(1, response.records().size());
+            assertEquals(0L, response.records().get(0).offset());
+        } finally {
+            channel.finishAndReleaseAll();
+            partitionManager.close();
+        }
+    }
+
+    @Test
     void produceV2CoversSuccessTruncationAndDeletedTopicPaths() {
         Path dataDir = tempDir.resolve("produce-v2-paths");
         BrokerConfig config = defaultConfig(dataDir, true);
