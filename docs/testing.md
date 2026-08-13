@@ -58,37 +58,37 @@ Latest V4.0.0 result / 最新 V4.0.0 结果（2026-08-13, OpenJDK 21, Linux）�
 
 | Metric / 指标 | Value / 数值 |
 | --- | ---: |
-| Tests run / 测试总数 | 718 |
+| Tests run / 测试总数 | 754 |
 | Failures / 失败数 | 0 |
 | Errors / 错误数 | 0 |
 | Skipped / 跳过数 | 6 (`@DisabledOnOs(LINUX)` Windows script/ownership cases) |
-| Overall line coverage / 总体行覆盖率 | 91.32% (`11032 / 12080`) |
-| Overall instruction coverage / 总体指令覆盖率 | 92.18% (`50400 / 54676`) |
-| Overall branch coverage / 总体分支覆盖率 | 78.64% (`4062 / 5165`) |
-| Overall method coverage / 总体方法覆盖率 | 95.10% (`1826 / 1920`) |
+| Overall line coverage / 总体行覆盖率 | 91.28% (`11180 / 12248`) |
+| Overall instruction coverage / 总体指令覆盖率 | 92.16% (`50984 / 55319`) |
+| Overall branch coverage / 总体分支覆盖率 | 78.91% (`4134 / 5239`) |
+| Overall method coverage / 总体方法覆盖率 | 95.10% (`1844 / 1939`) |
 | Overall class coverage / 总体类覆盖率 | 99.67% (`304 / 305`) |
 
-Evidence / 验证证据：`docs/test-report-2026-08-13-v4.0.0-full-verification.md`. The 2026-07-29 closeout (`712` tests, `91.17%` line) remains in `docs/test-report-2026-07-22-v4.0.0-operator-readiness.md`. Docker/etcd Failsafe suites were not run in either pass on machines without Docker.
+Evidence / 验证证据：`docs/test-report-2026-08-13-v4.0.0-timeout-and-wire.md`. The earlier same-day pass (`718` tests) remains in `docs/test-report-2026-08-13-v4.0.0-full-verification.md`. The 2026-07-29 closeout (`712` tests, `91.17%` line) remains in `docs/test-report-2026-07-22-v4.0.0-operator-readiness.md`. Docker/etcd Failsafe suites were not run on machines without Docker.
 
-验证证据见 `docs/test-report-2026-08-13-v4.0.0-full-verification.md`。2026-07-29 收口（712 tests、91.17% 行覆盖）仍保留在 `docs/test-report-2026-07-22-v4.0.0-operator-readiness.md`。两次验证都未在无 Docker 的机器上跑 etcd Failsafe。
+验证证据见 `docs/test-report-2026-08-13-v4.0.0-timeout-and-wire.md`。同日较早全量（718 tests）仍在 `docs/test-report-2026-08-13-v4.0.0-full-verification.md`。2026-07-29 收口（712 tests、91.17% 行覆盖）仍保留在 `docs/test-report-2026-07-22-v4.0.0-operator-readiness.md`。无 Docker 的机器未跑 etcd Failsafe。
 
 ## 5. Coverage By Module / 模块覆盖率
 
 | Module / 模块 | Instruction / 指令 | Branch / 分支 | Line / 行 | Method / 方法 | Class / 类 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `mq-broker` | 91.21% | 76.51% | 90.30% | 94.65% | 100.00% |
-| `mq-client` | 90.90% | 75.56% | 90.56% | 94.15% | 100.00% |
+| `mq-broker` | 91.26% | 76.90% | 90.35% | 94.68% | 100.00% |
+| `mq-client` | 90.97% | 76.24% | 90.33% | 94.22% | 100.00% |
 | `mq-common` | 97.92% | 92.96% | 98.40% | 100.00% | 100.00% |
-| `mq-demo` | 94.98% | 77.88% | 92.98% | 93.89% | 100.00% |
-| `mq-protocol` | 94.97% | 81.70% | 94.92% | 94.27% | 100.00% |
-| `mq-storage` | 90.98% | 81.54% | 90.20% | 97.29% | 98.00% |
+| `mq-demo` | 95.03% | 77.78% | 93.08% | 93.99% | 100.00% |
+| `mq-protocol` | 94.73% | 81.67% | 94.65% | 93.61% | 100.00% |
+| `mq-storage` | 90.93% | 81.69% | 90.10% | 97.57% | 98.00% |
 
 ```mermaid
 xychart-beta
     title "Line Coverage By Module / 模块行覆盖率"
     x-axis ["broker/代理", "client/客户端", "common/公共", "demo/演示", "protocol/协议", "storage/存储"]
     y-axis "Line % / 行覆盖率 %" 0 --> 100
-    bar [90.30, 90.56, 98.40, 92.98, 94.92, 90.20]
+    bar [90.35, 90.33, 98.40, 93.08, 94.65, 90.10]
 ```
 
 ```mermaid
@@ -96,15 +96,15 @@ xychart-beta
     title "Overall Coverage / 总体覆盖率"
     x-axis ["Instruction/指令", "Branch/分支", "Line/行", "Method/方法", "Class/类"]
     y-axis "Coverage % / 覆盖率 %" 0 --> 100
-    bar [92.18, 78.64, 91.32, 95.10, 99.67]
+    bar [92.16, 78.91, 91.28, 95.10, 99.67]
 ```
 
 
 ## 6. Key Flow Test Evidence / 关键流程测试结果截图
 
-The [2026-08-13 full verification report](test-report-2026-08-13-v4.0.0-full-verification.md) is the source of truth for the latest verified Surefire, JaCoCo, and Web operator console browser results. The screenshots below remain historical visual aids for the core flows, so a new reader can inspect the main testing shape without opening every `target` report directory.
+The [2026-08-13 timeout-and-wire report](test-report-2026-08-13-v4.0.0-timeout-and-wire.md) is the source of truth for the latest verified Surefire and JaCoCo numbers. Browser operator-console results remain in the [earlier same-day report](test-report-2026-08-13-v4.0.0-full-verification.md). The screenshots below remain historical visual aids for the core flows, so a new reader can inspect the main testing shape without opening every `target` report directory.
 
-最终 [2026-08-13 全量验证报告](test-report-2026-08-13-v4.0.0-full-verification.md) 是最新 Surefire、JaCoCo 与 Web 操作台浏览器结果的事实来源。下面截图保留为核心流程的历史可视化辅助，新读者无需逐个打开 `target` 报告目录，也能快速看到关键测试形态。
+最新 Surefire / JaCoCo 数字以 [2026-08-13 超时与协议兼容报告](test-report-2026-08-13-v4.0.0-timeout-and-wire.md) 为准。操作台浏览器验收仍见 [同日较早报告](test-report-2026-08-13-v4.0.0-full-verification.md)。下面截图保留为核心流程的历史可视化辅助，新读者无需逐个打开 `target` 报告目录，也能快速看到关键测试形态。
 
 ### 6.1 Full Build Verification / 完整构建验证
 

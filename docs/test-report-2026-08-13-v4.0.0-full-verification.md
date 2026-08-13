@@ -1,5 +1,7 @@
 # MiniMQ 4.0.0 全量测试报告（2026-08-13）
 
+> 更新的 Surefire / JaCoCo 数字见 [test-report-2026-08-13-v4.0.0-timeout-and-wire.md](test-report-2026-08-13-v4.0.0-timeout-and-wire.md)。本文件保留当时的 Web 浏览器验收记录。
+
 本文档记录一次完整的 `mvn clean verify`、JaCoCo 覆盖率核对、Web 操作台浏览器验收，以及本轮 review 修复的回归证据。它补在 [testing.md](testing.md) 既有 2026-07-29 基线之后，不替代该基线。
 
 ## 1. 范围与环境
