@@ -459,6 +459,9 @@ public class MetadataStore implements ClusterMetadataRepository {
                     if (!object.has("leaderReady")) {
                         object.put("leaderReady", !object.path("frozen").asBoolean(false));
                     }
+                    if (!object.has("activationRequired")) {
+                        object.put("activationRequired", false);
+                    }
                     if (!object.has("replicaLogEndOffsets")) {
                         object.putObject("replicaLogEndOffsets");
                     }

@@ -243,6 +243,7 @@ public class ClusterController {
                 } else {
                     partition.leaderBrokerId = replacement;
                     partition.frozen = false;
+                    partition.activationRequired = false;
                     partition.leaderEpoch = Math.addExact(partition.leaderEpoch, 1L);
                     partition.leaderEpochStartOffset = cleanRecoveryOffset;
                     partition.leaderReady = false;
@@ -340,6 +341,7 @@ public class ClusterController {
                     partition.leaderEpoch = Math.addExact(partition.leaderEpoch, 1L);
                     partition.leaderEpochStartOffset = recoveryOffsets.get(partition);
                     partition.leaderReady = false;
+                    partition.activationRequired = false;
                     invalidateWatermarkSnapshot(partition);
                 }
             }
@@ -428,7 +430,23 @@ public class ClusterController {
             return ErrorCode.NONE;
         }
         partition.leaderReady = true;
+        partition.activationRequired = false;
         return commit(next);
+    }
+
+    /**
+     * Applies a Controller-committed LEADER_READY result to the local cache.
+     * Etcd-mode {@link com.minimq.broker.MetadataSync#refresh} is a no-op, so
+     * the same produce/fetch would otherwise still see {@code leaderReady=false}.
+     */
+    public synchronized void noteCommittedLeaderReady(
+            String topicName, int partitionId, long leaderEpoch) {
+        PartitionEntry partition = getPartitionEntry(topicName, partitionId);
+        if (partition == null || partition.frozen || partition.leaderEpoch != leaderEpoch) {
+            return;
+        }
+        partition.leaderReady = true;
+        partition.activationRequired = false;
     }
 
     /** Creates a topic through the V4 scoped-admin API. */
@@ -842,6 +860,7 @@ public class ClusterController {
                 }
                 if (now >= deadline.deadlineNanos()) {
                     partition.frozen = true;
+                    partition.activationRequired = true;
                     partition.leaderReady = false;
                     partition.isrBrokerIds.clear();
                     leaderActivationDeadlines.remove(key);
@@ -864,8 +883,10 @@ public class ClusterController {
         for (TopicEntry topic : metadata.topics.values()) {
             for (PartitionEntry partition : topic.partitions) {
                 if (partition.frozen && partition.leaderBrokerId == brokerId) {
+                    boolean requireActivation = partition.activationRequired;
                     partition.frozen = false;
-                    partition.leaderReady = true;
+                    partition.activationRequired = false;
+                    partition.leaderReady = !requireActivation;
                     partition.isrBrokerIds = new ArrayList<>(List.of(brokerId));
                     invalidateWatermarkSnapshot(partition);
                 }
@@ -1716,6 +1737,7 @@ public class ClusterController {
             partitionCopy.lastCompleteWatermark.leaderEpoch =
                     partition.lastCompleteWatermark.leaderEpoch;
             partitionCopy.frozen = partition.frozen;
+            partitionCopy.activationRequired = partition.activationRequired;
             partitionCopy.leaderEpoch = partition.leaderEpoch;
             partitionCopy.leaderEpochStartOffset = partition.leaderEpochStartOffset;
             partitionCopy.leaderReady = partition.leaderReady;

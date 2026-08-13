@@ -35,30 +35,10 @@ The previous V4 pass left protocol V4, topic tombstones, client correlation/clea
 | R4-P1-10 | Runtime metrics vs flush / 指标与刷写顺序 | `recordCompletion` ran after `writeResponse`. The client could observe METADATA success before `responsesByErrorCode` / latency counters updated, so `BrokerRuntimeMetricsIntegrationTest` failed as `expected true but was false`. / 先写响应再记指标，客户端收到成功时计数器可能还没加。 | Record completion before flushing the response on every handler path. / 所有路径都先记完成再刷写响应。 |
 | R4-P1-11 | Web index path on Java 21 / Java 21 首页路径 | `handleIndex` required `getPath()` to equal `"/"`. Java 21 `HttpClient` can present the front-panel request as an empty path, so GET `/` returned 404 and `MiniMqWebAppTest` / `MiniMqWebDevMainTest` failed. / 仅接受 `"/"`, Java 21 可能给出空 path，首页变成 404。 | Treat null, empty, and `"/"` as the index. / 空 path 也当作首页。 |
 | R4-P1-12 | Maven resource timestamps / 资源时间戳 | Checkout files keep `mtime` 1970 (`lastModified == 0`). `maven-resources-plugin` 2.6 then skips `web/index.html` / `app.js` / `styles.css`, so GET `/` returned 404 `Resource not found`. / 源文件时间为 epoch 时插件跳过复制，静态资源进不了 classpath。 | Use resources-plugin 3.3.1 with `overwrite=true`. / 升级插件并强制覆盖复制。 |
+| R4-P1-04 | Frozen restore vs activation / 冻结恢复与激活 | `restoreFrozenPartitions` set `leaderReady=true` for every freeze. Activation-timeout freeze reused the same `frozen` flag, so a candidate that missed truncation, went offline, then re-registered skipped `LeaderActivationService`. / 所有冻结恢复都直接就绪。激活超时冻结共用 `frozen`，未截断的候选下线再注册会跳过激活。 | Persist `activationRequired` on activation-timeout freeze. No-ISR restore of the original ready Leader stays immediately ready; activation-timeout restore keeps `leaderReady=false`. / 激活超时冻结写入 `activationRequired`。无 ISR 的原 Leader 恢复仍立即就绪；激活超时恢复必须再走激活。 |
+| R4-P1-05 | Etcd `MetadataSync.refresh` / etcd 刷新空操作 | After a successful remote `leaderReady` RPC, etcd-mode `MetadataSync.refresh` returned immediately. The same produce/fetch then hit `validateLeaderEpoch` with local `leaderReady=false` and returned `LEADER_NOT_READY`. / 远程 LEADER_READY 成功后 etcd 刷新是空操作，同一请求本地仍未就绪。 | `ClusterController.noteCommittedLeaderReady` patches the local cache after the RPC. Watch still installs the etcd snapshot afterwards. / RPC 成功后先补本地就绪；watch 随后安装权威快照。 |
 
 ## P1 — Open / 仍待修复
-
-### R4-P1-04 — Frozen-partition restore skips v4 leader activation
-
-**Files:** `ClusterController.restoreFrozenPartitions` (~863–874), `MqRequestHandler.ensureLocalLeaderReady` (~1396–1402)
-
-No-ISR lease expiry freeze is documented: the original broker re-registers with a higher epoch and is restored. `restoreFrozenPartitions` also sets `leaderReady=true` without running `LeaderActivationService` truncation or the `leaderReady()` LEO check.
-
-`expireLeaderActivationTimeouts` reuses the same `frozen` flag. A candidate that missed activation, later went offline, then re-registered is marked ready in metadata; `ensureLocalLeaderReady` returns immediately because `partition.leaderReady` is already true.
-
-Suggested fix: distinguish no-ISR recovery from activation-timeout freeze, or restore with `leaderReady=false` and force the normal activation path. `ClusterControllerTest.expiringSoleLeaderFreezesUntilOriginalBrokerRegistersAgain` currently does not assert `leaderReady`.
-
-无 ISR 冻结后由原 Broker 更高 epoch 重新注册恢复，这是文档约定。但 `restoreFrozenPartitions` 会直接把 `leaderReady` 设为 true，跳过截断和 LEO 检查。激活超时冻结复用了同一个 `frozen` 标志，因此超时未激活的 Leader 在下线再注册后可能绕过 v4 激活路径。
-
-### R4-P1-05 — Etcd-mode `MetadataSync.refresh` is a no-op after remote `leaderReady`
-
-**Files:** `MqRequestHandler.ensureLocalLeaderReady` (~1411–1424), `MetadataSync.refresh` (~47–49)
-
-After a successful remote `leaderReady` RPC, non-controller brokers call `MetadataSync.refresh`, which returns immediately unless `--legacy-controller` is set. Local metadata can still have `leaderReady=false` until `MetadataWatchService` delivers the revision, so the same request then fails `validateLeaderEpoch` with `LEADER_NOT_READY`.
-
-Suggested fix: optimistically patch local readiness, or block until the installed etcd revision catches up, with a bounded deadline.
-
-非 Controller Broker 在远程 `leaderReady` 成功后调用 `MetadataSync.refresh`，etcd 模式下这是空操作。本地元数据可能仍是 `leaderReady=false`，同一请求随后返回 `LEADER_NOT_READY`。
 
 ### R4-P1-06 — Segment append is not crash-atomic
 
@@ -120,9 +100,9 @@ Leader 写入会检查延迟消息容量，follower 复制路径不会，副本�
 | Web SSRF / JSON | Bootstrap allowlist, Host/Origin checks, duplicate-key and unknown-field rejection are covered by `MiniMqWebAppTest`. |
 | scripts/*.ps1 | Ownership markers, PID+start-time manifests, and bounded stop timeouts look correct. |
 
-Verification of the landed P1 fixes is in [test-report-2026-08-13-v4.0.0-full-verification.md](test-report-2026-08-13-v4.0.0-full-verification.md): `mvn clean verify` passed (718 / 0 / 0 / 6 skip), every module stayed above the 90% line gate, and the Web operator console browser path passed on a live `MiniMqWebDevMain`.
+Verification of the landed P1 fixes is in [test-report-2026-08-13-v4.0.0-full-verification.md](test-report-2026-08-13-v4.0.0-full-verification.md): `mvn clean verify` passed (718 / 0 / 0 / 6 skip), every module stayed above the 90% line gate, and the Web operator console browser path passed on a live `MiniMqWebDevMain`. R4-P1-04 and R4-P1-05 landed after that report; they are covered by `ClusterControllerTest` / `MetadataStoreTest` on this branch.
 
-已合入 P1 的验证见 [test-report-2026-08-13-v4.0.0-full-verification.md](test-report-2026-08-13-v4.0.0-full-verification.md)：全量 `mvn clean verify` 通过（718 / 0 / 0 / 6 skip），各模块行覆盖率仍 ≥ 90%，现场 Web 操作台浏览器主流程通过。
+已合入 P1 的验证见 [test-report-2026-08-13-v4.0.0-full-verification.md](test-report-2026-08-13-v4.0.0-full-verification.md)：全量 `mvn clean verify` 通过（718 / 0 / 0 / 6 skip），各模块行覆盖率仍 ≥ 90%，现场 Web 操作台浏览器主流程通过。R4-P1-04 与 R4-P1-05 在该报告之后合入，由本分支 `ClusterControllerTest` / `MetadataStoreTest` 覆盖。
 
 ## Residual operational risks / 运行风险（非新 bug）
 
@@ -132,7 +112,5 @@ Verification of the landed P1 fixes is in [test-report-2026-08-13-v4.0.0-full-ve
 
 ## Recommended next patches / 建议后续补丁顺序
 
-1. Split frozen-partition restore from leader-activation freeze (R4-P1-04).
-2. Make etcd-mode `MetadataSync.refresh` wait for the committed revision (R4-P1-05).
-3. Make segment append/truncate/index replacement crash-safe (R4-P1-06, R4-P1-07).
-4. Enforce scheduled-record capacity on `replicateAt` (R4-P1-08).
+1. Make segment append/truncate/index replacement crash-safe (R4-P1-06, R4-P1-07).
+2. Enforce scheduled-record capacity on `replicateAt` (R4-P1-08).

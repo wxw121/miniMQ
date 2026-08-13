@@ -513,6 +513,7 @@ class MetadataStoreTest {
         partition.isrBrokerIds = List.of();
         partition.replicaLogEndOffsets.put(0, 9L);
         partition.frozen = true;
+        partition.activationRequired = true;
         partition.leaderReady = false;
         topic.partitions.add(partition);
         metadata.topics.put("orders", topic);
@@ -523,6 +524,7 @@ class MetadataStoreTest {
 
         assertEquals(4L, loaded.brokers.get(0).brokerEpoch);
         assertTrue(loaded.topics.get("orders").partitions.get(0).frozen);
+        assertTrue(loaded.topics.get("orders").partitions.get(0).activationRequired);
         assertTrue(loaded.topics.get("orders").partitions.get(0).isrBrokerIds.isEmpty());
     }
 
@@ -617,6 +619,7 @@ class MetadataStoreTest {
         assertEquals(0L, partition.leaderEpoch);
         assertEquals(0L, partition.leaderEpochStartOffset);
         assertTrue(partition.leaderReady);
+        assertFalse(partition.activationRequired);
         assertEquals(7L, partition.replicaProgress.get(0).physicalLogEndOffset);
         assertEquals(-1L, partition.replicaProgress.get(0).visibleLogEndOffset);
         assertEquals(-1L, partition.replicaProgress.get(0).nextVisibleAtEpochMs);

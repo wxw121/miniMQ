@@ -65,6 +65,7 @@ class ClusterControllerTest {
         assertEquals(7L, second.topics.get("orders").partitions.get(0).leaderEpoch);
         assertEquals(11L, second.topics.get("orders").partitions.get(0).leaderEpochStartOffset);
         assertFalse(second.topics.get("orders").partitions.get(0).leaderReady);
+        assertFalse(second.topics.get("orders").partitions.get(0).activationRequired);
         assertTrue(controller.metadata(new MetadataRequest("orders")).metadataVersion() > 0L);
     }
 
@@ -527,8 +528,72 @@ class ClusterControllerTest {
         assertEquals(1, partition.leaderBrokerId());
         assertTrue(partition.frozen());
         assertFalse(partition.leaderReady());
+        assertTrue(controller.snapshot().topics.get("orders").partitions.get(0).activationRequired);
         assertThrows(IllegalArgumentException.class,
                 () -> controller.expireLeaderActivationTimeouts(0));
+    }
+
+    @Test
+    void activationTimeoutFreezeRestoreRequiresLeaderActivation() {
+        AtomicLong now = new AtomicLong();
+        ClusterController controller = new ClusterController(
+                new MetadataStore(tempDir), 5_000L, now::get);
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
+        controller.createTopic(new CreateTopicRequest("orders", 1, 2));
+        assertEquals(ErrorCode.NONE, controller.markBrokerOffline(0));
+
+        assertEquals(0, controller.expireLeaderActivationTimeouts(2_000));
+        now.set(TimeUnit.MILLISECONDS.toNanos(2_001));
+        assertEquals(1, controller.expireLeaderActivationTimeouts(2_000));
+        now.set(TimeUnit.MILLISECONDS.toNanos(7_002));
+        assertTrue(controller.expireBrokerLease(1, 1L));
+
+        var recovered = controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
+        assertEquals(ErrorCode.NONE, recovered.errorCode());
+
+        PartitionMetadata restored = controller.metadata(new MetadataRequest("orders"))
+                .topics().get(0).partitions().get(0);
+        assertFalse(restored.frozen());
+        assertFalse(restored.leaderReady());
+        assertEquals(List.of(1), restored.isrBrokerIds());
+        assertFalse(controller.snapshot().topics.get("orders").partitions.get(0).activationRequired);
+    }
+
+    @Test
+    void noteCommittedLeaderReadyUnblocksLocalEpochValidation() {
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.createTopic(new CreateTopicRequest("orders", 1));
+        controller.updateMetadata(metadata -> {
+            var partition = metadata.topics.get("orders").partitions.get(0);
+            partition.leaderReady = false;
+            return null;
+        });
+
+        assertEquals(ErrorCode.LEADER_NOT_READY, controller.validateLeaderEpoch("orders", 0, 0L));
+        controller.noteCommittedLeaderReady("orders", 0, 99L);
+        assertEquals(ErrorCode.LEADER_NOT_READY, controller.validateLeaderEpoch("orders", 0, 0L));
+        controller.noteCommittedLeaderReady("orders", 0, 0L);
+        assertEquals(ErrorCode.NONE, controller.validateLeaderEpoch("orders", 0, 0L));
+    }
+
+    @Test
+    void noteCommittedLeaderReadyIgnoresFrozenPartitions() {
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.createTopic(new CreateTopicRequest("orders", 1));
+        controller.updateMetadata(metadata -> {
+            var partition = metadata.topics.get("orders").partitions.get(0);
+            partition.frozen = true;
+            partition.leaderReady = false;
+            partition.isrBrokerIds = new ArrayList<>();
+            return null;
+        });
+
+        controller.noteCommittedLeaderReady("orders", 0, 0L);
+        assertEquals(ErrorCode.LEADER_NOT_READY, controller.validateLeaderEpoch("orders", 0, 0L));
+        assertTrue(controller.snapshot().topics.get("orders").partitions.get(0).frozen);
     }
 
     @Test
@@ -753,7 +818,9 @@ class ClusterControllerTest {
         PartitionMetadata active = controller.metadata(new MetadataRequest("orders"))
                 .topics().get(0).partitions().get(0);
         assertFalse(active.frozen());
+        assertTrue(active.leaderReady());
         assertEquals(List.of(0), active.isrBrokerIds());
+        assertFalse(controller.snapshot().topics.get("orders").partitions.get(0).activationRequired);
     }
 
     @Test

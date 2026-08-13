@@ -46,6 +46,8 @@ public final class MetadataSync {
         }
         if (!config.usesLegacyControllerMode()) {
             // Production followers are installed by MetadataWatchService with the etcd revision.
+            // After a remote LEADER_READY RPC, ClusterController.noteCommittedLeaderReady
+            // patches local readiness so the same request does not see LEADER_NOT_READY.
             return;
         }
         var identity = controllerRole.currentLeader();

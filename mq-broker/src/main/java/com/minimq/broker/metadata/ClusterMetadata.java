@@ -60,6 +60,13 @@ public class ClusterMetadata {
         public Map<Integer, ReplicaProgressEntry> replicaProgress = new HashMap<>();
         public WatermarkSnapshot lastCompleteWatermark = new WatermarkSnapshot();
         public boolean frozen;
+        /**
+         * True when {@link #frozen} was set because Leader activation timed out.
+         * Restore must keep {@link #leaderReady} false so truncation runs again.
+         * No-ISR lease-expiry freeze leaves this false: the original ready Leader
+         * may return with the same data directory and become ready immediately.
+         */
+        public boolean activationRequired;
         public long leaderEpoch;
         public long leaderEpochStartOffset;
         public boolean leaderReady = true;

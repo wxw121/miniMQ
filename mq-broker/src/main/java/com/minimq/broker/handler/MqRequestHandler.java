@@ -1420,6 +1420,8 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 client.connect(identity.host(), identity.port());
                 client.leaderReady(request);
             }
+            clusterController.noteCommittedLeaderReady(
+                    request.topicName(), request.partitionId(), request.leaderEpoch());
             MetadataSync.refresh(config, clusterController, controllerRole);
             return ErrorCode.NONE;
         } catch (ControllerClient.ControllerRequestException e) {
