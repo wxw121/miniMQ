@@ -141,10 +141,10 @@ class SparseOffsetIndexTest {
     @Test
     void replaceKeepsOriginalIndexWhenTempPathCannotBeReplaced(@TempDir Path dir) throws Exception {
         Path path = dir.resolve("blocked.index");
+        Path tempFile = path.resolveSibling("blocked.index.tmp");
         try (SparseOffsetIndex index = SparseOffsetIndex.open(path)) {
             index.append(10, 100);
             index.flush();
-            Path tempFile = path.resolveSibling("blocked.index.tmp");
             Files.createDirectory(tempFile);
             Files.write(tempFile.resolve("blocker"), new byte[] {1});
 
@@ -156,6 +156,9 @@ class SparseOffsetIndexTest {
             index.append(20, 200);
             index.flush();
         }
+
+        Files.delete(tempFile.resolve("blocker"));
+        Files.delete(tempFile);
 
         try (SparseOffsetIndex reopened = SparseOffsetIndex.open(path)) {
             assertEquals(100, reopened.floorPosition(10));
