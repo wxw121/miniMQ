@@ -7,6 +7,8 @@ import com.minimq.client.Producer;
 import com.minimq.client.model.ProduceResult;
 import com.minimq.client.model.ProducerRecord;
 import com.sun.net.httpserver.HttpServer;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Constructor;
@@ -37,12 +39,41 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MiniMqWebAppTest {
+    private static final String TEST_ADMIN_TOKEN = "test-admin";
     private final HttpClient http = HttpClient.newHttpClient();
+
+    @BeforeAll
+    static void installAdminToken() {
+        System.setProperty(MiniMqWebApp.ADMIN_TOKEN_PROPERTY, TEST_ADMIN_TOKEN);
+    }
+
+    @AfterAll
+    static void clearAdminToken() {
+        System.clearProperty(MiniMqWebApp.ADMIN_TOKEN_PROPERTY);
+    }
 
     @Test
     void rejectsBlankAdminCredential() {
         assertThrows(IllegalArgumentException.class,
                 () -> MiniMqWebApp.start(0, "127.0.0.1:65535", " "));
+    }
+
+    @Test
+    void twoArgStartRequiresAdminTokenProperty() {
+        String previous = System.getProperty(MiniMqWebApp.ADMIN_TOKEN_PROPERTY);
+        System.clearProperty(MiniMqWebApp.ADMIN_TOKEN_PROPERTY);
+        try {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> MiniMqWebApp.start(0, "127.0.0.1:65535"));
+            assertTrue(failure.getMessage().contains(MiniMqWebApp.ADMIN_TOKEN_PROPERTY));
+        } finally {
+            if (previous == null) {
+                System.clearProperty(MiniMqWebApp.ADMIN_TOKEN_PROPERTY);
+            } else {
+                System.setProperty(MiniMqWebApp.ADMIN_TOKEN_PROPERTY, previous);
+            }
+        }
     }
 
     @Test
@@ -136,6 +167,15 @@ class MiniMqWebAppTest {
             assertTrue(sameOrigin.body().contains("\"mode\":\"mock\""));
             assertFalse(crossOrigin.headers().firstValue("Access-Control-Allow-Origin").isPresent());
             assertFalse(sameOrigin.headers().firstValue("Access-Control-Allow-Origin").isPresent());
+
+            HttpResponse<String> missingOrigin = post(
+                    baseUrl + "/api/run-flow",
+                    "{\"mode\":\"mock\",\"message\":\"missing-origin\"}",
+                    "application/json",
+                    null,
+                    Duration.ofSeconds(3));
+            assertEquals(403, missingOrigin.statusCode(), missingOrigin.body());
+            assertTrue(missingOrigin.body().contains("Origin is not allowed"), missingOrigin.body());
         }
     }
 
@@ -201,7 +241,7 @@ class MiniMqWebAppTest {
             HttpResponse<String> missing = post(
                     url, body, null, null, Duration.ofSeconds(3));
             HttpResponse<String> caseInsensitive = post(
-                    url, body, "Application/JSON", null, Duration.ofSeconds(3));
+                    url, body, "Application/JSON", originOf(url), Duration.ofSeconds(3));
 
             assertEquals(415, missing.statusCode(), missing.body());
             assertEquals(200, caseInsensitive.statusCode(), caseInsensitive.body());
@@ -320,7 +360,7 @@ class MiniMqWebAppTest {
                     {"bootstrapServers":"%s","topic":"slow-delete"}
                     """.formatted(controller.bootstrapServers()),
                     "application/json",
-                    null,
+                    originOf(baseUrl),
                     Duration.ofSeconds(20));
             long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
 
@@ -1138,12 +1178,52 @@ class MiniMqWebAppTest {
         assertFalse(MiniMqWebApp.isIndexPath("/api/config"));
     }
 
+    @Test
+    void operatorLimitsAreClampedToTheProtocolRange() {
+        assertEquals(100, MiniMqWebApp.clampedOperatorLimit(null, 100));
+        assertEquals(1, MiniMqWebApp.clampedOperatorLimit(0, 100));
+        assertEquals(1, MiniMqWebApp.clampedOperatorLimit(-8, 100));
+        assertEquals(1_000, MiniMqWebApp.clampedOperatorLimit(10_000, 100));
+        assertEquals(25, MiniMqWebApp.clampedOperatorLimit(25, 100));
+    }
+
+    @Test
+    void consumeWaitMsUsesDefaultAndClampsConfiguredValues() {
+        String previous = System.getProperty(MiniMqWebApp.CONSUME_WAIT_MS_PROPERTY);
+        try {
+            System.clearProperty(MiniMqWebApp.CONSUME_WAIT_MS_PROPERTY);
+            assertEquals(MiniMqWebApp.DEFAULT_CONSUME_WAIT_MS, MiniMqWebApp.consumeWaitMs());
+
+            System.setProperty(MiniMqWebApp.CONSUME_WAIT_MS_PROPERTY, "10");
+            assertEquals(MiniMqWebApp.MIN_CONSUME_WAIT_MS, MiniMqWebApp.consumeWaitMs());
+            System.setProperty(MiniMqWebApp.CONSUME_WAIT_MS_PROPERTY, "250");
+            assertEquals(250L, MiniMqWebApp.consumeWaitMs());
+            System.setProperty(MiniMqWebApp.CONSUME_WAIT_MS_PROPERTY, "99999");
+            assertEquals(MiniMqWebApp.MAX_CONSUME_WAIT_MS, MiniMqWebApp.consumeWaitMs());
+            System.setProperty(MiniMqWebApp.CONSUME_WAIT_MS_PROPERTY, "not-a-number");
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class, MiniMqWebApp::consumeWaitMs);
+            assertTrue(failure.getMessage().contains(MiniMqWebApp.CONSUME_WAIT_MS_PROPERTY));
+        } finally {
+            if (previous == null) {
+                System.clearProperty(MiniMqWebApp.CONSUME_WAIT_MS_PROPERTY);
+            } else {
+                System.setProperty(MiniMqWebApp.CONSUME_WAIT_MS_PROPERTY, previous);
+            }
+        }
+    }
+
     private HttpResponse<String> get(String url) throws Exception {
         return http.send(HttpRequest.newBuilder(URI.create(url)).GET().build(), HttpResponse.BodyHandlers.ofString());
     }
 
     private HttpResponse<String> postJson(String url, String body) throws Exception {
-        return post(url, body, "application/json", null, Duration.ofSeconds(8));
+        return post(url, body, "application/json", originOf(url), Duration.ofSeconds(8));
+    }
+
+    private static String originOf(String url) {
+        URI uri = URI.create(url);
+        return uri.getScheme() + "://" + uri.getAuthority();
     }
 
     private HttpResponse<String> post(

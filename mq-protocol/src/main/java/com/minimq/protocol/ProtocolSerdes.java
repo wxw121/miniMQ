@@ -112,12 +112,16 @@ public final class ProtocolSerdes {
                     ByteBufSerde.readString(payload),
                     readByteArrayWithShortPrefix(payload));
             case ApiKeys.HEARTBEAT -> new HeartbeatRequest(
-                    ByteBufSerde.readString(payload), ByteBufSerde.readString(payload));
+                    ByteBufSerde.readString(payload),
+                    ByteBufSerde.readString(payload),
+                    payload.readInt());
             case ApiKeys.OFFSET_COMMIT -> new OffsetCommitRequest(
                     ByteBufSerde.readString(payload),
                     ByteBufSerde.readString(payload),
                     payload.readInt(),
-                    payload.readLong());
+                    payload.readLong(),
+                    ByteBufSerde.readString(payload),
+                    payload.readInt());
             case ApiKeys.OFFSET_FETCH -> new OffsetFetchRequest(
                     ByteBufSerde.readString(payload),
                     ByteBufSerde.readString(payload),
@@ -381,6 +385,7 @@ public final class ProtocolSerdes {
                 HeartbeatRequest req = (HeartbeatRequest) body;
                 ByteBufSerde.writeString(buf, req.groupId());
                 ByteBufSerde.writeString(buf, req.memberId());
+                buf.writeInt(req.generationId());
             }
             case ApiKeys.OFFSET_COMMIT -> {
                 OffsetCommitRequest req = (OffsetCommitRequest) body;
@@ -388,6 +393,8 @@ public final class ProtocolSerdes {
                 ByteBufSerde.writeString(buf, req.topicName());
                 buf.writeInt(req.partitionId());
                 buf.writeLong(req.offset());
+                ByteBufSerde.writeString(buf, req.memberId());
+                buf.writeInt(req.generationId());
             }
             case ApiKeys.OFFSET_FETCH -> {
                 OffsetFetchRequest req = (OffsetFetchRequest) body;

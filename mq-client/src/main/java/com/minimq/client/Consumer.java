@@ -18,6 +18,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -32,7 +33,7 @@ public class Consumer implements AutoCloseable {
     private final ControllerAwareNetworkClient controllerClient;
     private final Function<String, NetworkClient> brokerClientFactory;
     private final String groupId;
-    private final Map<Integer, NetworkClient> brokerClients = new HashMap<>();
+    private final Map<Integer, NetworkClient> brokerClients = new ConcurrentHashMap<>();
     private final Map<String, CachedMetadata> metadataCache = new HashMap<>();
     private String topic;
     private String memberId = "";
@@ -314,7 +315,8 @@ public class Consumer implements AutoCloseable {
 
     public void commitSync(String topic, int partition, long offset) throws InterruptedException {
         MqDecoder.DecodedResponse response = controllerClient.send(
-                ApiKeys.OFFSET_COMMIT, new OffsetCommitRequest(groupId, topic, partition, offset));
+                ApiKeys.OFFSET_COMMIT,
+                new OffsetCommitRequest(groupId, topic, partition, offset, memberId, generationId));
         controllerClient.ensureSuccess(response, "OFFSET_COMMIT topic=" + topic
                 + " partition=" + partition);
         offsets.put(partition, offset);
@@ -351,8 +353,26 @@ public class Consumer implements AutoCloseable {
             }
             throw failure;
         }
-        brokerClients.put(leader.brokerId(), candidate);
+        NetworkClient existing = brokerClients.putIfAbsent(leader.brokerId(), candidate);
+        if (existing != null) {
+            discardUnusedBrokerClient(candidate, deadlineNanos);
+            return existing;
+        }
         return candidate;
+    }
+
+    private void discardUnusedBrokerClient(NetworkClient candidate, Long deadlineNanos) {
+        try {
+            if (deadlineNanos == null) {
+                candidate.close();
+            } else {
+                candidate.abortCandidate(remainingPollTimeout(deadlineNanos));
+            }
+        } catch (InterruptedException closeFailure) {
+            Thread.currentThread().interrupt();
+        } catch (RuntimeException | Error ignored) {
+            // The winner's client is already cached; losing the extra connection is best-effort.
+        }
     }
 
     protected MqDecoder.DecodedResponse sendFetch(
@@ -432,7 +452,8 @@ public class Consumer implements AutoCloseable {
         heartbeatExecutor = Executors.newSingleThreadScheduledExecutor();
         heartbeatExecutor.scheduleAtFixedRate(() -> {
             try {
-                controllerClient.send(ApiKeys.HEARTBEAT, new HeartbeatRequest(groupId, memberId));
+                controllerClient.send(
+                        ApiKeys.HEARTBEAT, new HeartbeatRequest(groupId, memberId, generationId));
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             } catch (RuntimeException ignored) {

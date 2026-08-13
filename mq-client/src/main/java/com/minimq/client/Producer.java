@@ -19,6 +19,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
@@ -33,7 +34,7 @@ public class Producer implements AutoCloseable {
             TimeUnit.MILLISECONDS.toNanos(DEFAULT_RELIABILITY_LINK_CACHE_MAX_AGE_MS);
     private final ControllerAwareNetworkClient client;
     private final Function<String, NetworkClient> brokerClientFactory;
-    private final Map<Integer, NetworkClient> brokerClients = new HashMap<>();
+    private final Map<Integer, NetworkClient> brokerClients = new ConcurrentHashMap<>();
     private final Map<String, CachedMetadata> metadataCache = new HashMap<>();
     private final Map<String, CachedReliabilityMetadata> reliabilityMetadataCache =
             new BoundedLruCache<>(DEFAULT_RELIABILITY_LINK_CACHE_MAX_ENTRIES);
@@ -401,8 +402,22 @@ public class Producer implements AutoCloseable {
             }
             throw failure;
         }
-        brokerClients.put(leader.brokerId(), candidate);
+        NetworkClient existing = brokerClients.putIfAbsent(leader.brokerId(), candidate);
+        if (existing != null) {
+            discardUnusedBrokerClient(candidate);
+            return existing;
+        }
         return candidate;
+    }
+
+    private static void discardUnusedBrokerClient(NetworkClient candidate) {
+        try {
+            candidate.close();
+        } catch (InterruptedException closeFailure) {
+            Thread.currentThread().interrupt();
+        } catch (RuntimeException | Error ignored) {
+            // The winner's client is already cached; losing the extra connection is best-effort.
+        }
     }
 
     protected void invalidateBrokerClient(int brokerId) throws InterruptedException {

@@ -10,13 +10,39 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MiniMqWebDevMainTest {
     private final HttpClient http = HttpClient.newHttpClient();
 
     @Test
+    void startRequiresAdminTokenProperty() {
+        String previous = System.getProperty(MiniMqWebApp.ADMIN_TOKEN_PROPERTY);
+        System.clearProperty(MiniMqWebApp.ADMIN_TOKEN_PROPERTY);
+        try {
+            MiniMqWebDevMain.DevConfig config = new MiniMqWebDevMain.DevConfig(
+                    "127.0.0.1",
+                    0,
+                    0,
+                    Path.of(".run/unused-web-dev-main"));
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> MiniMqWebDevMain.start(config));
+            assertTrue(failure.getMessage().contains(MiniMqWebApp.ADMIN_TOKEN_PROPERTY));
+        } finally {
+            if (previous == null) {
+                System.clearProperty(MiniMqWebApp.ADMIN_TOKEN_PROPERTY);
+            } else {
+                System.setProperty(MiniMqWebApp.ADMIN_TOKEN_PROPERTY, previous);
+            }
+        }
+    }
+
+    @Test
     void startsBrokerAndWebInOneProcessForLocalDevelopment() throws Exception {
+        String previous = System.getProperty(MiniMqWebApp.ADMIN_TOKEN_PROPERTY);
+        System.setProperty(MiniMqWebApp.ADMIN_TOKEN_PROPERTY, "web-dev-test-admin");
         MiniMqWebDevMain.DevConfig config = new MiniMqWebDevMain.DevConfig(
                 "127.0.0.1",
                 0,
@@ -43,6 +69,12 @@ class MiniMqWebDevMainTest {
             assertTrue(flow.body().contains("\"mode\":\"real\""));
             assertTrue(flow.body().contains("\"consumedValue\":\"hello-dev-launcher\""));
             assertTrue(Files.exists(Path.of(launcher.dataDir().toString())));
+        } finally {
+            if (previous == null) {
+                System.clearProperty(MiniMqWebApp.ADMIN_TOKEN_PROPERTY);
+            } else {
+                System.setProperty(MiniMqWebApp.ADMIN_TOKEN_PROPERTY, previous);
+            }
         }
     }
 
@@ -51,8 +83,11 @@ class MiniMqWebDevMainTest {
     }
 
     private HttpResponse<String> postJson(String url, String body) throws Exception {
-        return http.send(HttpRequest.newBuilder(URI.create(url))
+        URI uri = URI.create(url);
+        String origin = uri.getScheme() + "://" + uri.getAuthority();
+        return http.send(HttpRequest.newBuilder(uri)
                 .header("Content-Type", "application/json")
+                .header("Origin", origin)
                 .POST(HttpRequest.BodyPublishers.ofString(body))
                 .build(), HttpResponse.BodyHandlers.ofString());
     }

@@ -46,7 +46,14 @@ public final class MiniMqWebApp implements AutoCloseable {
     static final int MAX_ERROR_CHARS = 256;
     static final String TOPIC_DELETE_REQUEST_TIMEOUT_PROPERTY =
             "minimq.topic.delete.request.timeout.ms";
+    static final String ADMIN_TOKEN_PROPERTY = "minimq.admin.token";
+    static final String CONSUME_WAIT_MS_PROPERTY = "minimq.web.consume.wait.ms";
     static final Duration DEFAULT_TOPIC_DELETE_REQUEST_TIMEOUT = Duration.ofSeconds(30);
+    static final long DEFAULT_CONSUME_WAIT_MS = 750L;
+    static final long MIN_CONSUME_WAIT_MS = 50L;
+    static final long MAX_CONSUME_WAIT_MS = 5_000L;
+    static final int MIN_OPERATOR_LIMIT = 1;
+    static final int MAX_OPERATOR_LIMIT = 1_000;
     private static final Duration MAX_TOPIC_DELETE_REQUEST_TIMEOUT = Duration.ofMinutes(10);
 
     private static final ObjectMapper JSON = new ObjectMapper(JsonFactory.builder()
@@ -85,10 +92,15 @@ public final class MiniMqWebApp implements AutoCloseable {
     }
 
     public static MiniMqWebApp start(int port, String defaultBootstrapServers) throws IOException {
-        return start(
-                port,
-                defaultBootstrapServers,
-                System.getProperty("minimq.admin.token", "web-dev-admin"));
+        return start(port, defaultBootstrapServers, requiredAdminTokenProperty());
+    }
+
+    static String requiredAdminTokenProperty() {
+        String token = System.getProperty(ADMIN_TOKEN_PROPERTY);
+        if (token == null || token.isBlank()) {
+            throw new IllegalArgumentException(ADMIN_TOKEN_PROPERTY + " must not be blank");
+        }
+        return token;
     }
 
     public static MiniMqWebApp start(
@@ -267,7 +279,7 @@ public final class MiniMqWebApp implements AutoCloseable {
             return false;
         }
         String origin = exchange.getRequestHeaders().getFirst("Origin");
-        if (origin != null && !isSameRequestOrigin(requestOrigin, origin)) {
+        if (origin == null || origin.isBlank() || !isSameRequestOrigin(requestOrigin, origin)) {
             sendJson(exchange, 403, Map.of("ok", false, "error", "Origin is not allowed"));
             return false;
         }
@@ -396,8 +408,8 @@ public final class MiniMqWebApp implements AutoCloseable {
                 ApiKeys.OPS_STATUS,
                 new OpsStatusRequest(
                         adminCredential,
-                        orDefault(request.brokerLimit, 100),
-                        orDefault(request.partitionLimit, 100)),
+                        clampedOperatorLimit(request.brokerLimit, 100),
+                        clampedOperatorLimit(request.partitionLimit, 100)),
                 "ops status");
     }
 
@@ -409,8 +421,8 @@ public final class MiniMqWebApp implements AutoCloseable {
                         adminCredential,
                         required(request.groupId, "groupId"),
                         request.topic,
-                        orDefault(request.memberLimit, 100),
-                        orDefault(request.partitionLimit, 100)),
+                        clampedOperatorLimit(request.memberLimit, 100),
+                        clampedOperatorLimit(request.partitionLimit, 100)),
                 "group status");
     }
 
@@ -418,7 +430,7 @@ public final class MiniMqWebApp implements AutoCloseable {
         return (ListTopicsResponse) sendController(
                 request,
                 ApiKeys.LIST_TOPICS,
-                new ListTopicsRequest(adminCredential, orDefault(request.limit, 100)),
+                new ListTopicsRequest(adminCredential, clampedOperatorLimit(request.limit, 100)),
                 "list topics");
     }
 
@@ -441,7 +453,7 @@ public final class MiniMqWebApp implements AutoCloseable {
                 new DescribeTopicRequest(
                         adminCredential,
                         required(request.topic, "topic"),
-                        orDefault(request.partitionLimit, 100),
+                        clampedOperatorLimit(request.partitionLimit, 100),
                         request.includeDeleted),
                 "describe topic");
     }
@@ -468,7 +480,7 @@ public final class MiniMqWebApp implements AutoCloseable {
         return (FailoverAuditResponse) sendBroker(
                 request,
                 ApiKeys.FAILOVER_AUDIT,
-                new FailoverAuditRequest(adminCredential, orDefault(request.limit, 100)),
+                new FailoverAuditRequest(adminCredential, clampedOperatorLimit(request.limit, 100)),
                 "failover audit");
     }
 
@@ -513,9 +525,9 @@ public final class MiniMqWebApp implements AutoCloseable {
                 ApiKeys.RUNTIME_METRICS_V2,
                 new RuntimeMetricsV2Request(
                         adminCredential,
-                        orDefault(request.counterLimit, 100),
-                        orDefault(request.latencyLimit, 100),
-                        orDefault(request.lagLimit, 100)),
+                        clampedOperatorLimit(request.counterLimit, 100),
+                        clampedOperatorLimit(request.latencyLimit, 100),
+                        clampedOperatorLimit(request.lagLimit, 100)),
                 "runtime metrics");
     }
 
@@ -665,6 +677,30 @@ public final class MiniMqWebApp implements AutoCloseable {
 
     private static int orDefault(Integer value, int defaultValue) {
         return value == null ? defaultValue : value;
+    }
+
+    static int clampedOperatorLimit(Integer value, int defaultValue) {
+        int resolved = orDefault(value, defaultValue);
+        if (resolved < MIN_OPERATOR_LIMIT) {
+            return MIN_OPERATOR_LIMIT;
+        }
+        return Math.min(MAX_OPERATOR_LIMIT, resolved);
+    }
+
+    static long consumeWaitMs() {
+        String configured = System.getProperty(CONSUME_WAIT_MS_PROPERTY);
+        if (configured == null || configured.isBlank()) {
+            return DEFAULT_CONSUME_WAIT_MS;
+        }
+        long waitMs;
+        try {
+            waitMs = Long.parseLong(configured);
+        } catch (NumberFormatException ex) {
+            throw new IllegalArgumentException(
+                    CONSUME_WAIT_MS_PROPERTY + " must be a whole number of milliseconds",
+                    ex);
+        }
+        return Math.min(MAX_CONSUME_WAIT_MS, Math.max(MIN_CONSUME_WAIT_MS, waitMs));
     }
 
     private static <T> T required(T value, String field) {
@@ -874,7 +910,7 @@ public final class MiniMqWebApp implements AutoCloseable {
         }
 
         private ConsumerRecord pollProducedRecord(long offset) throws InterruptedException {
-            long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(750);
+            long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(consumeWaitMs());
             do {
                 List<ConsumerRecord> records = consumer.poll(Duration.ofMillis(50));
                 for (ConsumerRecord record : records) {

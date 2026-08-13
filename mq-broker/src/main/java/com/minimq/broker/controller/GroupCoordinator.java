@@ -93,26 +93,25 @@ public class GroupCoordinator {
     public synchronized ErrorCode heartbeat(HeartbeatRequest request) {
         return clusterController.updateMetadata(metadata -> {
             ConsumerGroupEntry group = metadata.consumerGroups.get(request.groupId());
-            if (group == null) {
-                return ErrorCode.GROUP_NOT_FOUND;
+            ErrorCode membership = requireActiveMember(group, request.memberId(), request.generationId());
+            if (membership != ErrorCode.NONE) {
+                return membership;
             }
-            MemberEntry member = group.members.get(request.memberId());
-            if (member == null) {
-                return ErrorCode.GROUP_NOT_FOUND;
-            }
-            member.lastHeartbeatMs = System.currentTimeMillis();
+            group.members.get(request.memberId()).lastHeartbeatMs = System.currentTimeMillis();
             return ErrorCode.NONE;
         });
     }
 
     public synchronized ErrorCode offsetCommit(OffsetCommitRequest request) {
         return clusterController.updateMetadata(metadata -> {
-            ConsumerGroupEntry group = metadata.consumerGroups.computeIfAbsent(request.groupId(), id -> {
-                ConsumerGroupEntry entry = new ConsumerGroupEntry();
-                entry.groupId = request.groupId();
-                entry.topicName = request.topicName();
-                return entry;
-            });
+            ConsumerGroupEntry group = metadata.consumerGroups.get(request.groupId());
+            ErrorCode membership = requireActiveMember(group, request.memberId(), request.generationId());
+            if (membership != ErrorCode.NONE) {
+                return membership;
+            }
+            if (!request.topicName().equals(group.topicName)) {
+                return ErrorCode.INVALID_REQUEST;
+            }
             group.committedOffsets.put(offsetKey(request.topicName(), request.partitionId()), request.offset());
             return ErrorCode.NONE;
         });
@@ -138,6 +137,17 @@ public class GroupCoordinator {
         int partitionCount = topic != null ? topic.partitions.size() : 0;
         Map<String, List<Integer>> assignment = RangeAssignor.assign(members, partitionCount);
         return AssignmentSerde.encodeFullAssignment(assignment);
+    }
+
+    private static ErrorCode requireActiveMember(
+            ConsumerGroupEntry group, String memberId, int generationId) {
+        if (group == null || !group.members.containsKey(memberId)) {
+            return ErrorCode.GROUP_NOT_FOUND;
+        }
+        if (group.generationId != generationId) {
+            return ErrorCode.REBALANCE_IN_PROGRESS;
+        }
+        return ErrorCode.NONE;
     }
 
     private void evictStaleMembers(ConsumerGroupEntry group) {

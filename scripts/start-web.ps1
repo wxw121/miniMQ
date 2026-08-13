@@ -2,11 +2,15 @@ param(
     [int]$WebPort = 18082,
     [int]$BrokerPort = 19092,
     [string]$DataDir = ".run/data-live",
-    [string]$AdminToken = "web-dev-admin",
+    [string]$AdminToken = $env:MINIMQ_ADMIN_TOKEN,
     [switch]$SkipBuild
 )
 
 $ErrorActionPreference = "Stop"
+
+if ([string]::IsNullOrWhiteSpace($AdminToken)) {
+    throw "AdminToken must not be blank. Pass -AdminToken or set MINIMQ_ADMIN_TOKEN."
+}
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $repoRoot

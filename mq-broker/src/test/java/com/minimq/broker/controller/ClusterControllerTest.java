@@ -688,15 +688,20 @@ class ClusterControllerTest {
     }
 
     @Test
-    void markBrokerOfflineRejectsLastIsrLeaderWithoutMutatingState() {
+    void markBrokerOfflineFreezesLastIsrLeader() {
         ClusterController controller = new ClusterController(new MetadataStore(tempDir));
         controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
         controller.createTopic(new com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest(
                 "orders", 1, 1));
 
-        assertEquals(ErrorCode.INVALID_REQUEST, controller.markBrokerOffline(0));
-        assertTrue(controller.getBroker(0).online);
-        assertEquals(0, controller.getLeaderBrokerId("orders", 0));
+        assertEquals(ErrorCode.NONE, controller.markBrokerOffline(0));
+        assertFalse(controller.getBroker(0).online);
+        PartitionMetadata frozen = controller.metadata(new MetadataRequest("orders"))
+                .topics().get(0).partitions().get(0);
+        assertTrue(frozen.frozen());
+        assertTrue(frozen.isrBrokerIds().isEmpty());
+        assertEquals(0, frozen.leaderBrokerId());
+        assertFalse(frozen.leaderReady());
     }
 
     @Test
@@ -895,6 +900,19 @@ class ClusterControllerTest {
         assertFalse(controller.isRecovering());
         assertTrue(controller.getBroker(0).online);
         assertFalse(controller.getBroker(1).online);
+    }
+
+    @Test
+    void recoveryWindowRejectsTopicDeletion() {
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("orders", 1, 1)));
+
+        controller.beginRecovery(2_000L);
+
+        assertEquals(ErrorCode.CONTROLLER_NOT_READY, controller.deleteTopic("orders", 1L));
+        assertEquals(1, controller.metadata(new MetadataRequest("orders")).topics().size());
+        assertFalse(controller.snapshot().topicTombstones.containsKey("orders"));
     }
 
     @Test

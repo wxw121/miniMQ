@@ -27,7 +27,6 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.HashSet;
@@ -316,32 +315,31 @@ public class ClusterController {
             return ErrorCode.UNKNOWN_BROKER;
         }
         ClusterMetadata next = copyMetadata(metadata);
-        Map<PartitionEntry, Integer> replacementLeaders = new IdentityHashMap<>();
-        Map<PartitionEntry, Long> recoveryOffsets = new IdentityHashMap<>();
         for (TopicEntry topic : next.topics.values()) {
             for (PartitionEntry partition : topic.partitions) {
                 normalizePartition(next, partition);
-                if (partition.leaderBrokerId == brokerId) {
-                    Integer replacementLeader = preferredSurvivingLeader(next, partition, brokerId);
-                    if (replacementLeader == null) {
-                        return ErrorCode.INVALID_REQUEST;
-                    }
-                    replacementLeaders.put(partition, replacementLeader);
-                    recoveryOffsets.put(partition, recoveryOffset(partition));
-                }
             }
         }
         next.brokers.get(brokerId).online = false;
         for (TopicEntry topic : next.topics.values()) {
             for (PartitionEntry partition : topic.partitions) {
+                long cleanRecoveryOffset = recoveryOffset(partition);
                 partition.isrBrokerIds.removeIf(id -> id == brokerId);
-                Integer replacementLeader = replacementLeaders.get(partition);
-                if (replacementLeader != null) {
-                    partition.leaderBrokerId = replacementLeader;
-                    partition.leaderEpoch = Math.addExact(partition.leaderEpoch, 1L);
-                    partition.leaderEpochStartOffset = recoveryOffsets.get(partition);
+                if (partition.leaderBrokerId != brokerId) {
+                    continue;
+                }
+                Integer replacementLeader = preferredSurvivingLeader(next, partition, brokerId);
+                if (replacementLeader == null) {
+                    partition.frozen = true;
                     partition.leaderReady = false;
+                    partition.isrBrokerIds.clear();
+                } else {
+                    partition.leaderBrokerId = replacementLeader;
+                    partition.frozen = false;
                     partition.activationRequired = false;
+                    partition.leaderEpoch = Math.addExact(partition.leaderEpoch, 1L);
+                    partition.leaderEpochStartOffset = cleanRecoveryOffset;
+                    partition.leaderReady = false;
                     invalidateWatermarkSnapshot(partition);
                 }
             }
@@ -699,6 +697,9 @@ public class ClusterController {
 
     private ErrorCode deleteTopicInternal(
             String topicName, long deletedAtEpochMs, Long deadlineNanos) {
+        if (recovering) {
+            return ErrorCode.CONTROLLER_NOT_READY;
+        }
         if (!TopicNames.isValidReference(topicName) || deletedAtEpochMs < 0) {
             return ErrorCode.INVALID_REQUEST;
         }
@@ -1041,6 +1042,11 @@ public class ClusterController {
         metadata = copyMetadata(value.metadata());
         metadataRevision = value.revision();
         normalizeMetadata();
+    }
+
+    /** Reloads the latest durable snapshot. Used as an etcd-mode poll fallback. */
+    public synchronized void refreshFromRepository() {
+        installMetadata(metadataRepository.read());
     }
 
     private ErrorCode commit(ClusterMetadata next) {

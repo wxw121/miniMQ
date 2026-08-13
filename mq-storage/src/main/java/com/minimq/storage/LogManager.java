@@ -21,6 +21,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * 日志管理器，按 TopicPartition 创建和缓存 FilePartitionLog。
  */
 public class LogManager implements AutoCloseable {
+    private static final System.Logger log = System.getLogger(LogManager.class.getName());
     private final Path dataDir;
     private final Map<String, PartitionLog> logs = new ConcurrentHashMap<>();
     private final WriteAheadLog writeAheadLog;
@@ -63,6 +64,7 @@ public class LogManager implements AutoCloseable {
             this.writeAheadLog = new WriteAheadLog(dataDir.resolve("wal").resolve("minimq.wal"));
             this.checkpointStore = new CheckpointStore(dataDir);
             replayWal();
+            warnIfRecoveredScheduleExceedsCap();
             saveCheckpoint();
         } catch (IOException e) {
             throw new IllegalStateException("Failed to initialize log manager recovery", e);
@@ -277,6 +279,18 @@ public class LogManager implements AutoCloseable {
         if (requestedScheduledRecords > maxScheduledRecords) {
             throw new ScheduledCapacityExceededException("Scheduled delivery capacity exceeded: "
                     + requestedScheduledRecords + " > " + maxScheduledRecords);
+        }
+    }
+
+    private void warnIfRecoveredScheduleExceedsCap() {
+        int maxScheduledRecords = config.maxScheduledRecords();
+        int recoveredScheduledRecords = deliverySchedule.count();
+        if (recoveredScheduledRecords > maxScheduledRecords) {
+            log.log(System.Logger.Level.WARNING,
+                    "Recovered {0} scheduled records exceeds maxScheduledRecords={1}; "
+                            + "existing delays are kept and new future appends will be rejected",
+                    recoveredScheduledRecords,
+                    maxScheduledRecords);
         }
     }
 

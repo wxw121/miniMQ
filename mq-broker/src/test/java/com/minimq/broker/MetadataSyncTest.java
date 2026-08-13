@@ -3,13 +3,16 @@ package com.minimq.broker;
 import com.minimq.broker.controller.ClusterController;
 import com.minimq.broker.metadata.MetadataStore;
 import com.minimq.broker.metadata.VersionedClusterMetadata;
+import com.minimq.common.error.ErrorCode;
 import com.minimq.protocol.message.ProtocolMessages.BrokerMetadata;
 import com.minimq.protocol.message.ProtocolMessages.ControllerMetadata;
+import com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest;
 import com.minimq.protocol.message.ProtocolMessages.MetadataResponse;
 import com.minimq.protocol.message.ProtocolMessages.MetadataV2Request;
 import com.minimq.protocol.message.ProtocolMessages.MetadataV2Response;
 import com.minimq.protocol.message.ProtocolMessages.OpsBrokerInfo;
 import com.minimq.protocol.message.ProtocolMessages.PartitionMetadata;
+import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
 import com.minimq.protocol.message.ProtocolMessages.TopicTombstoneInfo;
 import com.minimq.protocol.message.ProtocolMessages.TopicTombstoneSummary;
 import com.minimq.protocol.message.ProtocolMessages.TopicMetadata;
@@ -436,6 +439,35 @@ class MetadataSyncTest {
                 }));
 
         assertTrue(failure.getMessage().contains("not available"));
+    }
+
+    @Test
+    void etcdFollowerRefreshInstallsNewerRepositorySnapshot() throws Exception {
+        MetadataStore store = new MetadataStore(tempDir.resolve("shared"));
+        ClusterController follower = new ClusterController(store);
+        ClusterController leader = new ClusterController(store);
+        assertEquals(ErrorCode.NONE,
+                leader.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092)).errorCode());
+        assertEquals(ErrorCode.NONE, leader.createTopic(new CreateTopicRequest("orders", 1, 1)));
+        assertTrue(follower.snapshot().topics.isEmpty());
+
+        BrokerConfig config = BrokerConfig.parse(new String[] {"--admin-token", "test-token"});
+        assertFalse(config.usesLegacyControllerMode());
+
+        MetadataSync.refresh(config, follower, new ControllerRole() {
+            @Override
+            public boolean isActive() {
+                return false;
+            }
+
+            @Override
+            public com.minimq.broker.coordination.ControllerIdentity currentLeader() {
+                return null;
+            }
+        });
+
+        assertTrue(follower.snapshot().topics.containsKey("orders"));
+        assertEquals(0, follower.getLeaderBrokerId("orders", 0));
     }
 
     private static MetadataResponse metadata(long metadataVersion, String host) {

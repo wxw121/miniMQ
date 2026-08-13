@@ -207,15 +207,39 @@ public final class ProtocolMessages {
     public record SyncGroupResponse(byte[] assignment) {
     }
 
-    public record HeartbeatRequest(String groupId, String memberId) {
+    public record HeartbeatRequest(String groupId, String memberId, int generationId) {
+        public HeartbeatRequest {
+            if (memberId == null) {
+                throw new IllegalArgumentException("memberId must not be null");
+            }
+            requireNonNegative(generationId, "generationId");
+        }
+
+        public HeartbeatRequest(String groupId, String memberId) {
+            this(groupId, memberId, 0);
+        }
     }
 
     public record HeartbeatResponse() {
     }
 
-    public record OffsetCommitRequest(String groupId, String topicName, int partitionId, long offset) {
+    public record OffsetCommitRequest(
+            String groupId,
+            String topicName,
+            int partitionId,
+            long offset,
+            String memberId,
+            int generationId) {
         public OffsetCommitRequest {
             requireTopicName(topicName, "topicName");
+            if (memberId == null) {
+                throw new IllegalArgumentException("memberId must not be null");
+            }
+            requireNonNegative(generationId, "generationId");
+        }
+
+        public OffsetCommitRequest(String groupId, String topicName, int partitionId, long offset) {
+            this(groupId, topicName, partitionId, offset, "", 0);
         }
     }
 

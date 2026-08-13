@@ -4,7 +4,7 @@ param(
     [string]$EtcdEndpoints = "http://localhost:2379,http://localhost:2479,http://localhost:2579",
     [string]$ClusterId = "",
     [string]$RunDirectory = ".run/minimq-v4-failover",
-    [string]$AdminToken = "demo-admin",
+    [string]$AdminToken = $env:MINIMQ_ADMIN_TOKEN,
     [string]$Topic = "v4-failover-demo",
     [string]$Group = "v4-failover-demo-group",
     [string]$ComposeFile = "deploy/etcd/docker-compose.yml",
@@ -296,7 +296,7 @@ if ($portValues.Count -ne 3) {
     throw "Ports must contain exactly three values."
 }
 if ([string]::IsNullOrWhiteSpace($AdminToken)) {
-    throw "AdminToken must not be blank."
+    throw "AdminToken must not be blank. Pass -AdminToken or set MINIMQ_ADMIN_TOKEN."
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path

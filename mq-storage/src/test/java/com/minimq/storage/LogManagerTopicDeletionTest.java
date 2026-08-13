@@ -452,6 +452,39 @@ class LogManagerTopicDeletionTest {
     }
 
     @Test
+    void recoveryKeepsScheduledRecordsAboveCapAndRejectsNewFutureAppends() {
+        MutableClock clock = new MutableClock(1_000L);
+        LogManagerConfig writeConfig = new LogManagerConfig(
+                FlushPolicy.always(),
+                0,
+                SegmentedLogConfig.defaults(),
+                LogMaintenanceConfig.disabled(),
+                2);
+        try (LogManager manager = new LogManager(tempDir, writeConfig, clock)) {
+            manager.append("scheduled", 0, bytes("a"), bytes("future-1"), 50_000L);
+            manager.append("scheduled", 0, bytes("b"), bytes("future-2"), 60_000L);
+        }
+
+        LogManagerConfig recoveredConfig = new LogManagerConfig(
+                FlushPolicy.always(),
+                0,
+                SegmentedLogConfig.defaults(),
+                LogMaintenanceConfig.disabled(),
+                1);
+        LogManager recovered = new LogManager(tempDir, recoveredConfig, clock);
+        try {
+            assertEquals(2, recovered.scheduledRecordCount());
+            assertThrows(LogManager.ScheduledCapacityExceededException.class,
+                    () -> recovered.append("scheduled", 0, bytes("c"), bytes("future-3"), 70_000L));
+            assertEquals(2L, recovered.append("scheduled", 0, bytes("d"), bytes("ready"), 0L));
+            assertEquals(2, recovered.scheduledRecordCount());
+            assertEquals(3L, recovered.getOrCreate("scheduled", 0).highWatermark());
+        } finally {
+            recovered.close();
+        }
+    }
+
+    @Test
     void visibleDeliveryWatermarkSurvivesRestartAndClockRollback() {
         MutableClock clock = new MutableClock(1_000L);
         LogManagerConfig config = new LogManagerConfig(

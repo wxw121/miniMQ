@@ -45,29 +45,30 @@ The previous V4 pass left protocol V4, topic tombstones, client correlation/clea
 
 None remaining from this review. Remaining work is P2.
 
-本次审查的 P1 已全部合入。R4-P2-06 / R4-P2-07 / R4-P2-08 也已合入。
+本次审查的 P1 已全部合入。R4-P2-01 到 R4-P2-12 也已合入。
 
 ## P2 — Fixed in this review / 本次已修复
 
 | ID | Area / 区域 | Finding / 问题 | Fix / 修复 |
 | --- | --- | --- | --- |
+| R4-P2-01 | Metadata HA | Followers have no etcd-mode metadata poll fallback; `ensureLeader` / `ReplicaFetcher` depend only on the watch. / etcd 模式下 follower 没有元数据拉取回退，只依赖 watch。 | Etcd-mode `MetadataSync.refresh` now calls `ClusterController.refreshFromRepository()` so a missed watch still installs a newer durable snapshot. Active controllers stay no-op. / etcd follower 刷新改为读仓库快照；active controller 仍跳过。 |
+| R4-P2-02 | Topic delete | `deleteTopicInternal` is allowed during controller `recovering`; create/increase/reliability are not. / 恢复窗口内允许删 Topic，但禁止创建/扩分区。 | Guard `deleteTopicInternal` with `CONTROLLER_NOT_READY` while recovering. / 恢复窗口内删 Topic 返回未就绪。 |
+| R4-P2-03 | GroupCoordinator | `offsetCommit` creates a group without join/generation checks; heartbeat ignores generation. Comment already marks member timeout as future work. / offset 提交可无加入地创建组；心跳不校验 generation。 | Heartbeat and offset commit require an existing member and matching generation. Commit no longer creates a group; topic mismatch is `INVALID_REQUEST`. Wire format now carries `generationId` (heartbeat) and `memberId`+`generationId` (commit). / 必须先 join；generation 不匹配返回 `REBALANCE_IN_PROGRESS`。 |
+| R4-P2-04 | Operator offline | `markBrokerOffline` returns `INVALID_REQUEST` when no ISR replacement exists; lease expiry freezes instead. / 无替代 ISR 时手动下线失败，租约过期则会冻结。 | Manual offline reuses the lease-expiry freeze path: broker goes offline, partition freezes when no ISR replacement exists. / 无 ISR 替代时冻结分区并标记 broker 离线。 |
+| R4-P2-05 | Delivery recovery | WAL/checkpoint replay can restore more scheduled records than `maxScheduledRecords`. / 恢复可以把延迟消息数量恢复到超过上限。 | Recovery keeps restored delays and logs a warning when the cap is exceeded. New future appends still hit the cap. / 恢复不丢延迟消息，只告警；新的未来追加仍受上限约束。 |
 | R4-P2-06 | Compaction / 压缩 | Empty leading segments were dropped without bumping `logStartOffset`. Retention already advanced it to the first remaining base. / 压缩删除空 leading segment 时不更新 `logStartOffset`。 | `applyCompactionPlan` sets `logStartOffset` to `max(current, first remaining baseOffset)`. / 压缩后把起始 offset 提升到剩余第一段。 |
 | R4-P2-07 | DeliverySchedule | An empty schedule map ignored the stored visible watermark and returned physical HW, so a recovered hold could expose delayed records. / 调度表为空时忽略可见水位，恢复窗口可能提前暴露延迟消息。 | Empty map keeps the stored watermark. Immediate/due appends call `noteReadyOffset` so later ready records still extend the prefix. / 空表保留水位；立即可见追加通过 `noteReadyOffset` 连续推进。 |
 | R4-P2-08 | FETCH v1 | Sendfile V1 published physical/replication HW in the prefix while bytes were capped to visible HW. / V1 sendfile 响应 HW 与可见截断不一致。 | Consumer FETCH v1 now advertises the same visible/fetch watermark used to cap records. / 消费 FETCH v1 的 HW 与可见截断一致。 |
+| R4-P2-09 | Client SDK | `Producer`/`Consumer` `brokerClients` HashMap is check-then-act without synchronization; concurrent use can leak Netty clients. CLI/Web currently serialize. / 连接缓存非线程安全，并发可能泄漏 Netty 客户端。 | Use `ConcurrentHashMap` and `putIfAbsent`; the losing extra connection is closed. Connect still happens outside the map update. / 并发缓存用 `putIfAbsent`，落败连接关闭。 |
+| R4-P2-10 | Web operator API | Loopback Host + optional Origin; missing Origin is allowed. Local processes can invoke destructive operator routes with the server-side admin token. Acceptable for a local demo panel; not a remote-auth control plane. / 本机进程可调用带服务端 token 的破坏性运维接口。对本地演示面板可接受。 | JSON POSTs now require a same-origin `Origin` header. Missing or mismatched Origin is 403. / 缺少 Origin 直接 403。 |
+| R4-P2-11 | Web limits | Operator JSON limits are not server-clamped; consume-after-produce waits a fixed 750ms. / 运维 limit 无服务端上限；消费等待固定 750ms。 | Clamp operator limits to 1..1000. Consume wait reads `minimq.web.consume.wait.ms` (default 750, clamped 50..5000). / limit 夹到 1..1000；消费等待可配置。 |
+| R4-P2-12 | Dev tokens | `web-dev-admin` / `demo-admin` defaults remain in Web/dev scripts. CLI operator commands still require an explicit token. / Web/开发脚本仍有默认 token。 | Two-arg Web start and `MiniMqWebDevMain` require `minimq.admin.token`. Scripts require `-AdminToken` or `MINIMQ_ADMIN_TOKEN`. / 不再内置默认 token。 |
 
 ## P2 — Open / 仍待修复
 
-| ID | Area / 区域 | Finding / 问题 |
-| --- | --- | --- |
-| R4-P2-01 | Metadata HA | Followers have no etcd-mode metadata poll fallback; `ensureLeader` / `ReplicaFetcher` depend only on the watch. / etcd 模式下 follower 没有元数据拉取回退，只依赖 watch。 |
-| R4-P2-02 | Topic delete | `deleteTopicInternal` is allowed during controller `recovering`; create/increase/reliability are not. / 恢复窗口内允许删 Topic，但禁止创建/扩分区。 |
-| R4-P2-03 | GroupCoordinator | `offsetCommit` creates a group without join/generation checks; heartbeat ignores generation. Comment already marks member timeout as future work. / offset 提交可无加入地创建组；心跳不校验 generation。 |
-| R4-P2-04 | Operator offline | `markBrokerOffline` returns `INVALID_REQUEST` when no ISR replacement exists; lease expiry freezes instead. / 无替代 ISR 时手动下线失败，租约过期则会冻结。 |
-| R4-P2-05 | Delivery recovery | WAL/checkpoint replay can restore more scheduled records than `maxScheduledRecords`. / 恢复可以把延迟消息数量恢复到超过上限。 |
-| R4-P2-09 | Client SDK | `Producer`/`Consumer` `brokerClients` HashMap is check-then-act without synchronization; concurrent use can leak Netty clients. CLI/Web currently serialize. / 连接缓存非线程安全，并发可能泄漏 Netty 客户端。 |
-| R4-P2-10 | Web operator API | Loopback Host + optional Origin; missing Origin is allowed. Local processes can invoke destructive operator routes with the server-side admin token. Acceptable for a local demo panel; not a remote-auth control plane. / 本机进程可调用带服务端 token 的破坏性运维接口。对本地演示面板可接受。 |
-| R4-P2-11 | Web limits | Operator JSON limits are not server-clamped; consume-after-produce waits a fixed 750ms. / 运维 limit 无服务端上限；消费等待固定 750ms。 |
-| R4-P2-12 | Dev tokens | `web-dev-admin` / `demo-admin` defaults remain in Web/dev scripts. CLI operator commands still require an explicit token. / Web/开发脚本仍有默认 token。 |
+None remaining from this review.
+
+本次审查的 P2 已全部合入。
 
 ## Areas reviewed with no new P0/P1 / 未发现新 P0/P1 的区域
 

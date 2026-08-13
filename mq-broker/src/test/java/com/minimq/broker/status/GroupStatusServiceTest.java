@@ -33,14 +33,16 @@ class GroupStatusServiceTest {
         controller.updateReplicaStateV2("orders", 1, 0, 1L, 0L, 0L, 5L, 5L, -1L);
         GroupCoordinator coordinator = new GroupCoordinator(controller);
         coordinator.joinGroup(new JoinGroupRequest("g1", "member-b", "orders"));
-        coordinator.joinGroup(new JoinGroupRequest("g1", "member-a", "orders"));
+        var join = coordinator.joinGroup(new JoinGroupRequest("g1", "member-a", "orders"));
         controller.updateMetadata(metadata -> {
             metadata.consumerGroups.get("g1").members.get("member-b").assignedPartitions = List.of(2);
             metadata.consumerGroups.get("g1").members.get("member-a").assignedPartitions = List.of(0, 1);
             return null;
         });
-        coordinator.offsetCommit(new OffsetCommitRequest("g1", "orders", 0, 4L));
-        coordinator.offsetCommit(new OffsetCommitRequest("g1", "orders", 1, 8L));
+        coordinator.offsetCommit(new OffsetCommitRequest(
+                "g1", "orders", 0, 4L, join.memberId(), join.generationId()));
+        coordinator.offsetCommit(new OffsetCommitRequest(
+                "g1", "orders", 1, 8L, join.memberId(), join.generationId()));
 
         GroupStatusService service = new GroupStatusService(controller, () -> 123_456L);
 
@@ -116,16 +118,22 @@ class GroupStatusServiceTest {
         assertEquals(ErrorCode.NONE,
                 controller.updateReplicaStateV2("orders", 1, 0, 1L, 0L, 0L, 10L, 7L, 9_000L));
         GroupCoordinator coordinator = new GroupCoordinator(controller);
-        coordinator.joinGroup(new JoinGroupRequest("g-ahead", "member-a", "orders"));
-        coordinator.joinGroup(new JoinGroupRequest("g-fast", "member-b", "orders"));
-        coordinator.joinGroup(new JoinGroupRequest("g-slow", "member-c", "orders"));
+        var ahead = coordinator.joinGroup(new JoinGroupRequest("g-ahead", "member-a", "orders"));
+        var fast = coordinator.joinGroup(new JoinGroupRequest("g-fast", "member-b", "orders"));
+        var slow = coordinator.joinGroup(new JoinGroupRequest("g-slow", "member-c", "orders"));
 
-        coordinator.offsetCommit(new OffsetCommitRequest("g-fast", "orders", 0, 9L));
-        coordinator.offsetCommit(new OffsetCommitRequest("g-slow", "orders", 0, 2L));
-        coordinator.offsetCommit(new OffsetCommitRequest("g-ahead", "orders", 0, 4L));
-        coordinator.offsetCommit(new OffsetCommitRequest("g-fast", "orders", 1, 8L));
-        coordinator.offsetCommit(new OffsetCommitRequest("g-slow", "orders", 1, 6L));
-        coordinator.offsetCommit(new OffsetCommitRequest("g-ahead", "orders", 1, 12L));
+        coordinator.offsetCommit(new OffsetCommitRequest(
+                "g-fast", "orders", 0, 9L, fast.memberId(), fast.generationId()));
+        coordinator.offsetCommit(new OffsetCommitRequest(
+                "g-slow", "orders", 0, 2L, slow.memberId(), slow.generationId()));
+        coordinator.offsetCommit(new OffsetCommitRequest(
+                "g-ahead", "orders", 0, 4L, ahead.memberId(), ahead.generationId()));
+        coordinator.offsetCommit(new OffsetCommitRequest(
+                "g-fast", "orders", 1, 8L, fast.memberId(), fast.generationId()));
+        coordinator.offsetCommit(new OffsetCommitRequest(
+                "g-slow", "orders", 1, 6L, slow.memberId(), slow.generationId()));
+        coordinator.offsetCommit(new OffsetCommitRequest(
+                "g-ahead", "orders", 1, 12L, ahead.memberId(), ahead.generationId()));
 
         var lags = new GroupStatusService(controller, () -> 123_456L).lagMetricsSnapshot();
 

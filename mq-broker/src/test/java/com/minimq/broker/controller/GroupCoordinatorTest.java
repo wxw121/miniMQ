@@ -63,8 +63,9 @@ class GroupCoordinatorTest {
 
     @Test
     void offsetCommitAndFetch() {
+        var join = groupCoordinator.joinGroup(new JoinGroupRequest("g1", "", "orders"));
         assertEquals(ErrorCode.NONE, groupCoordinator.offsetCommit(
-                new OffsetCommitRequest("g1", "orders", 1, 42L)));
+                new OffsetCommitRequest("g1", "orders", 1, 42L, join.memberId(), join.generationId())));
         assertEquals(42L, groupCoordinator.offsetFetch(
                 new OffsetFetchRequest("g1", "orders", 1)).offset());
     }
@@ -73,7 +74,42 @@ class GroupCoordinatorTest {
     void heartbeatUpdatesMember() {
         var join = groupCoordinator.joinGroup(new JoinGroupRequest("g1", "", "orders"));
         assertEquals(ErrorCode.NONE, groupCoordinator.heartbeat(
-                new HeartbeatRequest("g1", join.memberId())));
+                new HeartbeatRequest("g1", join.memberId(), join.generationId())));
+    }
+
+    @Test
+    void offsetCommitRequiresJoinedMemberAndMatchingGeneration() {
+        var first = groupCoordinator.joinGroup(new JoinGroupRequest("g1", "", "orders"));
+        var second = groupCoordinator.joinGroup(new JoinGroupRequest("g1", first.memberId(), "orders"));
+
+        assertEquals(ErrorCode.GROUP_NOT_FOUND, groupCoordinator.offsetCommit(
+                new OffsetCommitRequest("missing", "orders", 0, 1L, "member", 1)));
+        assertEquals(ErrorCode.GROUP_NOT_FOUND, groupCoordinator.offsetCommit(
+                new OffsetCommitRequest("g1", "orders", 0, 1L, "missing-member", second.generationId())));
+        assertEquals(ErrorCode.REBALANCE_IN_PROGRESS, groupCoordinator.offsetCommit(
+                new OffsetCommitRequest(
+                        "g1", "orders", 0, 1L, second.memberId(), first.generationId())));
+        assertEquals(ErrorCode.INVALID_REQUEST, groupCoordinator.offsetCommit(
+                new OffsetCommitRequest(
+                        "g1", "payments", 0, 1L, second.memberId(), second.generationId())));
+        assertEquals(ErrorCode.NONE, groupCoordinator.offsetCommit(
+                new OffsetCommitRequest(
+                        "g1", "orders", 0, 9L, second.memberId(), second.generationId())));
+        assertEquals(9L, groupCoordinator.offsetFetch(
+                new OffsetFetchRequest("g1", "orders", 0)).offset());
+    }
+
+    @Test
+    void heartbeatRejectsUnknownMemberAndStaleGeneration() {
+        var first = groupCoordinator.joinGroup(new JoinGroupRequest("g1", "", "orders"));
+        var second = groupCoordinator.joinGroup(new JoinGroupRequest("g1", first.memberId(), "orders"));
+
+        assertEquals(ErrorCode.GROUP_NOT_FOUND, groupCoordinator.heartbeat(
+                new HeartbeatRequest("g1", "missing", second.generationId())));
+        assertEquals(ErrorCode.REBALANCE_IN_PROGRESS, groupCoordinator.heartbeat(
+                new HeartbeatRequest("g1", second.memberId(), first.generationId())));
+        assertEquals(ErrorCode.NONE, groupCoordinator.heartbeat(
+                new HeartbeatRequest("g1", second.memberId(), second.generationId())));
     }
 
     @Test

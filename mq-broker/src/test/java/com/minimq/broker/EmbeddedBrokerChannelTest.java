@@ -590,9 +590,10 @@ class EmbeddedBrokerChannelTest {
         assertNotNull(((SyncGroupResponse) syncResponse.body()).assignment());
 
         assertEquals(ErrorCode.NONE, send(channel, ApiKeys.HEARTBEAT,
-                new HeartbeatRequest("g1", join.memberId())).header().errorCode());
+                new HeartbeatRequest("g1", join.memberId(), join.generationId())).header().errorCode());
         assertEquals(ErrorCode.NONE, send(channel, ApiKeys.OFFSET_COMMIT,
-                new OffsetCommitRequest("g1", "orders", 0, 2)).header().errorCode());
+                new OffsetCommitRequest(
+                        "g1", "orders", 0, 2, join.memberId(), join.generationId())).header().errorCode());
 
         MqDecoder.DecodedResponse offsetFetchResponse = send(channel, ApiKeys.OFFSET_FETCH,
                 new OffsetFetchRequest("g1", "orders", 0));
@@ -1470,9 +1471,11 @@ class EmbeddedBrokerChannelTest {
         assertEquals(ErrorCode.NONE, clusterController.updateReplicaStateV2(
                 "orders", 1, 0, 1L, 0L, 0L, 20L, 11L, 10_000L));
         GroupCoordinator coordinator = new GroupCoordinator(clusterController);
-        coordinator.joinGroup(new JoinGroupRequest("g1", "member-a", "orders"));
-        coordinator.offsetCommit(new OffsetCommitRequest("g1", "orders", 0, 4L));
-        coordinator.offsetCommit(new OffsetCommitRequest("g1", "orders", 1, 12L));
+        var join = coordinator.joinGroup(new JoinGroupRequest("g1", "member-a", "orders"));
+        coordinator.offsetCommit(new OffsetCommitRequest(
+                "g1", "orders", 0, 4L, join.memberId(), join.generationId()));
+        coordinator.offsetCommit(new OffsetCommitRequest(
+                "g1", "orders", 1, 12L, join.memberId(), join.generationId()));
         EmbeddedChannel channel = newChannel(clusterController, true);
 
         MqDecoder.DecodedResponse response = send(
