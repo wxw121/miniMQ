@@ -165,7 +165,7 @@ java -jar mq-demo/target/mq-demo-4.0.0.jar benchmark-fetch --records 256 --value
 - WAL type 8 is SCHEDULED_DATA_APPEND. It keeps the existing data append body and adds deliverAtEpochMs for future visibility.
 - Legacy FETCH and FETCH_V2 both hide future delayed records behind the contiguous visible prefix.
 - Consumer uses FETCH_V2 and bounded client-side waiting: nextVisibleAtEpochMs caps the sleep by the remaining poll timeout, and the Broker request is not held open.
-- V3 clients remain wire-compatible because keys 0-19 retain their layouts. Mixed V3/V4 Broker clusters are unsupported.
+- Keys 0-19 keep their original field order. `HEARTBEAT` and `OFFSET_COMMIT` append optional trailing membership fields: decode accepts legacy bodies (defaults `memberId=""` / `generationId=0`); encode always writes the current layout. A legacy client that omits generation fails coordinator checks after join. Mixed V3/V4 Broker clusters are unsupported.
 - Web AUTO mode falls back to mock only before a real side effect happens. Once real produce succeeds, later poll/commit failure is surfaced as a real error instead of mock success.
 
 Controller-aware commands use the complete `--brokers` bootstrap list; Broker-local status,

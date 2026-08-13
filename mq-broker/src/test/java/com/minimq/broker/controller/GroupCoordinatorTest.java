@@ -16,6 +16,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -128,5 +129,117 @@ class GroupCoordinatorTest {
                 new HeartbeatRequest("missing", "member")));
         assertEquals(-1L, groupCoordinator.offsetFetch(
                 new OffsetFetchRequest("missing", "orders", 0)).offset());
+    }
+
+    @Test
+    void heartbeatEvictsTimedOutCaller() {
+        AtomicLong clock = new AtomicLong(0);
+        GroupCoordinator coordinator = new GroupCoordinator(clusterController, clock::get);
+        var join = coordinator.joinGroup(new JoinGroupRequest("g1", "", "orders"));
+
+        clock.set(GroupCoordinator.HEARTBEAT_TIMEOUT_MS + 1);
+        assertEquals(ErrorCode.GROUP_NOT_FOUND, coordinator.heartbeat(
+                new HeartbeatRequest("g1", join.memberId(), join.generationId())));
+    }
+
+    @Test
+    void heartbeatFromLiveMemberEvictsStalePeerAndSignalsRebalance() {
+        AtomicLong clock = new AtomicLong(0);
+        GroupCoordinator coordinator = new GroupCoordinator(clusterController, clock::get);
+        coordinator.joinGroup(new JoinGroupRequest("g1", "", "orders"));
+        clock.set(1_000);
+        var second = coordinator.joinGroup(new JoinGroupRequest("g1", "", "orders"));
+
+        clock.set(1_000 + GroupCoordinator.HEARTBEAT_TIMEOUT_MS);
+        assertEquals(ErrorCode.REBALANCE_IN_PROGRESS, coordinator.heartbeat(
+                new HeartbeatRequest("g1", second.memberId(), second.generationId())));
+    }
+
+    @Test
+    void heartbeatRefreshKeepsMemberAliveDuringRebalance() {
+        AtomicLong clock = new AtomicLong(0);
+        GroupCoordinator coordinator = new GroupCoordinator(clusterController, clock::get);
+        coordinator.joinGroup(new JoinGroupRequest("g1", "", "orders"));
+        clock.set(1_000);
+        var second = coordinator.joinGroup(new JoinGroupRequest("g1", "", "orders"));
+
+        clock.set(1_000 + GroupCoordinator.HEARTBEAT_TIMEOUT_MS);
+        assertEquals(ErrorCode.REBALANCE_IN_PROGRESS, coordinator.heartbeat(
+                new HeartbeatRequest("g1", second.memberId(), second.generationId())));
+
+        clock.addAndGet(GroupCoordinator.HEARTBEAT_TIMEOUT_MS);
+        assertEquals(ErrorCode.REBALANCE_IN_PROGRESS, coordinator.heartbeat(
+                new HeartbeatRequest("g1", second.memberId(), second.generationId())));
+    }
+
+    @Test
+    void offsetCommitOfTimedOutMemberIsRejected() {
+        AtomicLong clock = new AtomicLong(0);
+        GroupCoordinator coordinator = new GroupCoordinator(clusterController, clock::get);
+        var join = coordinator.joinGroup(new JoinGroupRequest("g1", "", "orders"));
+
+        clock.set(GroupCoordinator.HEARTBEAT_TIMEOUT_MS + 1);
+        assertEquals(ErrorCode.GROUP_NOT_FOUND, coordinator.offsetCommit(
+                new OffsetCommitRequest("g1", "orders", 0, 1L, join.memberId(), join.generationId())));
+    }
+
+    @Test
+    void successfulOffsetCommitRefreshesHeartbeat() {
+        AtomicLong clock = new AtomicLong(0);
+        GroupCoordinator coordinator = new GroupCoordinator(clusterController, clock::get);
+        var join = coordinator.joinGroup(new JoinGroupRequest("g1", "", "orders"));
+
+        clock.set(5_000);
+        assertEquals(ErrorCode.NONE, coordinator.offsetCommit(
+                new OffsetCommitRequest("g1", "orders", 0, 1L, join.memberId(), join.generationId())));
+
+        clock.set(5_000 + GroupCoordinator.HEARTBEAT_TIMEOUT_MS);
+        assertEquals(ErrorCode.NONE, coordinator.heartbeat(
+                new HeartbeatRequest("g1", join.memberId(), join.generationId())));
+    }
+
+    @Test
+    void joinAfterTimeoutIncrementsGenerationOnceAndDropsStaleMember() {
+        AtomicLong clock = new AtomicLong(0);
+        GroupCoordinator coordinator = new GroupCoordinator(clusterController, clock::get);
+        var first = coordinator.joinGroup(new JoinGroupRequest("g1", "", "orders"));
+        assertEquals(1, first.generationId());
+
+        clock.set(GroupCoordinator.HEARTBEAT_TIMEOUT_MS + 1);
+        var second = coordinator.joinGroup(new JoinGroupRequest("g1", "", "orders"));
+
+        assertEquals(2, second.generationId());
+        assertEquals(1, second.members().size());
+        assertEquals(second.memberId(), second.leaderMemberId());
+    }
+
+    @Test
+    void syncGroupAfterPeerTimeoutReturnsEmptyAssignment() {
+        AtomicLong clock = new AtomicLong(0);
+        GroupCoordinator coordinator = new GroupCoordinator(clusterController, clock::get);
+        coordinator.joinGroup(new JoinGroupRequest("g1", "", "orders"));
+        clock.set(1_000);
+        var second = coordinator.joinGroup(new JoinGroupRequest("g1", "", "orders"));
+
+        clock.set(1_000 + GroupCoordinator.HEARTBEAT_TIMEOUT_MS);
+        var sync = coordinator.syncGroup(new SyncGroupRequest(
+                "g1", second.generationId(), second.memberId(), new byte[0]));
+        assertTrue(AssignmentSerde.decodePartitions(sync.assignment()).isEmpty());
+    }
+
+    @Test
+    void rejoinAfterPeerEvictionElectsRemainingMemberLeader() {
+        AtomicLong clock = new AtomicLong(0);
+        GroupCoordinator coordinator = new GroupCoordinator(clusterController, clock::get);
+        coordinator.joinGroup(new JoinGroupRequest("g1", "", "orders"));
+        clock.set(1_000);
+        var second = coordinator.joinGroup(new JoinGroupRequest("g1", "", "orders"));
+
+        clock.set(1_000 + GroupCoordinator.HEARTBEAT_TIMEOUT_MS);
+        coordinator.heartbeat(new HeartbeatRequest("g1", second.memberId(), second.generationId()));
+
+        var rejoin = coordinator.joinGroup(new JoinGroupRequest("g1", second.memberId(), "orders"));
+        assertEquals(1, rejoin.members().size());
+        assertEquals(second.memberId(), rejoin.leaderMemberId());
     }
 }

@@ -105,6 +105,25 @@ If `errorCode != NONE`, response body is omitted. This rule keeps error response
 | 36 | `RUNTIME_METRICS_V2` | Admin / 管理面 | Bounded rates, payload bytes, latency, lag, and audit overwrite metrics. / 有界速率、payload 字节、延迟、lag 与审计覆盖指标。 |
 | 37 | `UPDATE_REPLICA_STATE_V2` | Internal control / 内部控制面 | Report fenced physical and visible replica progress. / 上报带 fencing 的物理与可见副本进度。 |
 
+### 2.5 HEARTBEAT and OFFSET_COMMIT bodies / HEARTBEAT 与 OFFSET_COMMIT 报文体
+
+Current encode always writes the membership fields added for join/generation checks:
+
+当前编码始终写出为 join/generation 校验新增的成员字段：
+
+| API | Current request body / 当前请求 body |
+| --- | --- |
+| `HEARTBEAT` (6) | `groupId` (str16), `memberId` (str16), `generationId` (i32) |
+| `OFFSET_COMMIT` (7) | `groupId` (str16), `topicName` (str16), `partitionId` (i32), `offset` (i64), `memberId` (str16), `generationId` (i32) |
+
+Decode accepts a shorter legacy body so old frames are not rejected as malformed: `HEARTBEAT` may omit `generationId`; `OFFSET_COMMIT` may omit `memberId` and `generationId`, or include `memberId` without `generationId`. Missing fields default to `generationId=0` and `memberId=""`. Encode never emits the legacy shape.
+
+解码兼容更短的旧 body，避免旧帧被当成畸形请求：`HEARTBEAT` 可省略 `generationId`；`OFFSET_COMMIT` 可省略 `memberId` 与 `generationId`，或只带 `memberId`。缺省字段为 `generationId=0`、`memberId=""`。编码不再写出旧布局。
+
+After a real `JOIN_GROUP`, the coordinator generation is at least 1. A decoded legacy heartbeat or commit therefore fails the membership check with `REBALANCE_IN_PROGRESS` or `GROUP_NOT_FOUND`. Convenience constructors that default generation to 0 still encode the current layout (the extra fields are present, with those defaults).
+
+真实 `JOIN_GROUP` 之后 generation 至少为 1，因此解码后的旧心跳/提交会在协调器侧因 generation 或成员不匹配而返回 `REBALANCE_IN_PROGRESS` 或 `GROUP_NOT_FOUND`。默认 generation 为 0 的便捷构造仍按当前布局编码（字段在，只是值为默认）。
+
 ## 3. Serialization Rules / 序列化规则
 
 Strings use UTF-8 with a 2-byte unsigned length prefix. Byte arrays use a 4-byte signed length prefix, where `-1` means `null` and `0` means an empty byte array. Some group assignment payloads use a short-prefixed byte array because they are nested inside protocol messages and are bounded by the frame limit.
@@ -409,6 +428,10 @@ Consumer group coordination is simplified but captures the essential flow:
 7. Members fetch their assignment through `SYNC_GROUP`. / 成员通过 `SYNC_GROUP` 拉取自己的分配结果。
 8. Consumers commit offsets after processing. / Consumer 处理消息后提交 offset。
 
+Members expire after 10,000 ms without a heartbeat. `JOIN_GROUP`, `HEARTBEAT`, `OFFSET_COMMIT`, and `SYNC_GROUP` evict stale members. Join already increments `generationId`, so eviction on that path does not add a second bump. Eviction on heartbeat, commit, or sync increments `generationId`, sets `rebalancing=true`, and re-picks the leader if the previous leader left. The timed-out caller then sees `GROUP_NOT_FOUND`; a still-present caller whose generation is now stale sees `REBALANCE_IN_PROGRESS`. A successful commit also refreshes `lastHeartbeatMs`. `GROUP_STATUS` uses the same 10-second window only to mark members alive; it does not evict.
+
+成员超过 10,000ms 未心跳即过期。`JOIN_GROUP`、`HEARTBEAT`、`OFFSET_COMMIT` 和 `SYNC_GROUP` 都会踢出过期成员。join 本身会递增 `generationId`，该路径上的踢人不再额外加一代。心跳、提交或 sync 上的踢人会递增 `generationId`、置 `rebalancing=true`，并在原 leader 离开时重选。被踢的调用方得到 `GROUP_NOT_FOUND`；仍在组内但 generation 已过期的调用方得到 `REBALANCE_IN_PROGRESS`。成功的 offset 提交也会刷新 `lastHeartbeatMs`。`GROUP_STATUS` 用同一 10 秒窗口只标记存活，不执行踢人。
+
 `RangeAssignor` sorts members and then allocates contiguous partition ranges. For example, 3 partitions and 2 members results in member 0 receiving partitions `[0, 1]` and member 1 receiving `[2]`.
 
 `RangeAssignor` 会先排序成员，再分配连续分区范围。例如 3 个分区、2 个成员时，成员 0 得到 `[0, 1]`，成员 1 得到 `[2]`。
@@ -598,9 +621,9 @@ V3.5 extends `benchmark-fetch` with `--network-transport nio|auto|epoll`. The be
 
 ## 12. V4 Operator Readiness / V4 运维就绪设计
 
-V4 preserves frame version 1 and all positional layouts for keys 0-19. V3 clients therefore remain wire-compatible with a V4 Broker. A mixed V3/V4 Broker cluster is unsupported: V4 replication keys 32 and 37 are required to preserve delivery timestamps and authoritative physical/visible progress, so every Broker must be upgraded together. Metadata format 4 is likewise a cluster-wide contract.
+V4 preserves frame version 1. Keys 0-19 keep their original field order; `HEARTBEAT` (6) and `OFFSET_COMMIT` (7) append optional trailing membership fields. Decode accepts both the legacy and current bodies (see §2.5). A mixed V3/V4 Broker cluster is unsupported: V4 replication keys 32 and 37 are required to preserve delivery timestamps and authoritative physical/visible progress, so every Broker must be upgraded together. Metadata format 4 is likewise a cluster-wide contract.
 
-V4 保持 frame version 1 以及 API 0-19 的全部位置布局，因此 V3 客户端仍可连接 V4 Broker。但 V3/V4 Broker 混合集群不受支持：只有 V4 的 key 32 与 37 会保留 delivery timestamp 和权威物理/可见进度，所以所有 Broker 必须一起升级；metadata format 4 同样是集群级契约。
+V4 保持 frame version 1。API 0-19 保留原字段顺序；`HEARTBEAT`（6）和 `OFFSET_COMMIT`（7）在末尾追加可选成员字段。解码同时接受旧 body 与当前 body（见 §2.5）。V3/V4 Broker 混合集群不受支持：只有 V4 的 key 32 与 37 会保留 delivery timestamp 和权威物理/可见进度，所以所有 Broker 必须一起升级；metadata format 4 同样是集群级契约。
 
 Authorization is local to each Broker. `--admin-token` maps to every scope; repeated `--operator-credential token=scope,scope` entries can grant only `STATUS`, `TOPIC_ADMIN`, `MAINTENANCE`, and/or `BROKER_OFFLINE`. Authentication runs before mutation, storage access, or expensive snapshot assembly. `UNAUTHORIZED` means the credential is unknown; `FORBIDDEN` means it is known but lacks the required scope.
 

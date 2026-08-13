@@ -20,18 +20,25 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.LongSupplier;
 import java.util.stream.Collectors;
 
 /**
  * 消费组协调器，负责成员加入、分区分配同步、心跳和 offset 提交查询。
  */
 public class GroupCoordinator {
-    private static final long HEARTBEAT_TIMEOUT_MS = 10_000;
+    static final long HEARTBEAT_TIMEOUT_MS = 10_000;
 
     private final ClusterController clusterController;
+    private final LongSupplier clockMillis;
 
     public GroupCoordinator(ClusterController clusterController) {
+        this(clusterController, System::currentTimeMillis);
+    }
+
+    GroupCoordinator(ClusterController clusterController, LongSupplier clockMillis) {
         this.clusterController = clusterController;
+        this.clockMillis = clockMillis;
     }
 
     // 成员为空表示首次加入，协调器会生成稳定 memberId 并开启新一代分配。
@@ -44,7 +51,7 @@ public class GroupCoordinator {
                 entry.generationId = 0;
                 return entry;
             });
-            evictStaleMembers(group);
+            evictStaleMembers(group, false);
             group.rebalancing = true;
             group.generationId++;
 
@@ -53,7 +60,7 @@ public class GroupCoordinator {
                     : request.memberId();
             MemberEntry member = new MemberEntry();
             member.memberId = memberId;
-            member.lastHeartbeatMs = System.currentTimeMillis();
+            member.lastHeartbeatMs = now();
             group.members.put(memberId, member);
             if (group.leaderMemberId == null
                     || group.leaderMemberId.isBlank()
@@ -70,7 +77,12 @@ public class GroupCoordinator {
     public synchronized SyncGroupResponse syncGroup(SyncGroupRequest request) {
         return clusterController.updateMetadata(metadata -> {
             ConsumerGroupEntry group = metadata.consumerGroups.get(request.groupId());
-            if (group == null || group.generationId != request.generationId()) {
+            if (group == null) {
+                return new SyncGroupResponse(AssignmentSerde.encodePartitions(List.of()));
+            }
+            evictStaleMembers(group, true);
+            if (group.generationId != request.generationId()
+                    || !group.members.containsKey(request.memberId())) {
                 return new SyncGroupResponse(AssignmentSerde.encodePartitions(List.of()));
             }
 
@@ -89,22 +101,25 @@ public class GroupCoordinator {
         });
     }
 
-    // 心跳只更新成员最后活跃时间；成员超时清理可作为后续版本能力补充。
+    // 心跳刷新成员存活时间；超时成员在心跳、commit、sync 和 join 路径上被踢出。
     public synchronized ErrorCode heartbeat(HeartbeatRequest request) {
         return clusterController.updateMetadata(metadata -> {
             ConsumerGroupEntry group = metadata.consumerGroups.get(request.groupId());
-            ErrorCode membership = requireActiveMember(group, request.memberId(), request.generationId());
-            if (membership != ErrorCode.NONE) {
-                return membership;
+            if (group != null) {
+                evictStaleMembers(group, true);
             }
-            group.members.get(request.memberId()).lastHeartbeatMs = System.currentTimeMillis();
-            return ErrorCode.NONE;
+            ErrorCode membership = requireActiveMember(group, request.memberId(), request.generationId());
+            refreshHeartbeatIfPresent(group, request.memberId());
+            return membership;
         });
     }
 
     public synchronized ErrorCode offsetCommit(OffsetCommitRequest request) {
         return clusterController.updateMetadata(metadata -> {
             ConsumerGroupEntry group = metadata.consumerGroups.get(request.groupId());
+            if (group != null) {
+                evictStaleMembers(group, true);
+            }
             ErrorCode membership = requireActiveMember(group, request.memberId(), request.generationId());
             if (membership != ErrorCode.NONE) {
                 return membership;
@@ -113,6 +128,7 @@ public class GroupCoordinator {
                 return ErrorCode.INVALID_REQUEST;
             }
             group.committedOffsets.put(offsetKey(request.topicName(), request.partitionId()), request.offset());
+            refreshHeartbeatIfPresent(group, request.memberId());
             return ErrorCode.NONE;
         });
     }
@@ -150,9 +166,41 @@ public class GroupCoordinator {
         return ErrorCode.NONE;
     }
 
-    private void evictStaleMembers(ConsumerGroupEntry group) {
-        long now = System.currentTimeMillis();
-        group.members.entrySet().removeIf(e -> now - e.getValue().lastHeartbeatMs > HEARTBEAT_TIMEOUT_MS);
+    private long now() {
+        return clockMillis.getAsLong();
+    }
+
+    private void refreshHeartbeatIfPresent(ConsumerGroupEntry group, String memberId) {
+        if (group == null) {
+            return;
+        }
+        MemberEntry member = group.members.get(memberId);
+        if (member != null) {
+            member.lastHeartbeatMs = now();
+        }
+    }
+
+    /**
+     * 踢出超过 {@link #HEARTBEAT_TIMEOUT_MS} 未心跳的成员。
+     * join 路径传入 {@code bumpGenerationIfEvicted=false}，因为 join 本身会递增 generation。
+     */
+    private boolean evictStaleMembers(ConsumerGroupEntry group, boolean bumpGenerationIfEvicted) {
+        long nowMs = now();
+        boolean evicted = group.members.entrySet().removeIf(
+                e -> nowMs - e.getValue().lastHeartbeatMs > HEARTBEAT_TIMEOUT_MS);
+        if (!evicted) {
+            return false;
+        }
+        if (group.leaderMemberId == null
+                || group.leaderMemberId.isBlank()
+                || !group.members.containsKey(group.leaderMemberId)) {
+            group.leaderMemberId = group.members.keySet().stream().sorted().findFirst().orElse("");
+        }
+        if (bumpGenerationIfEvicted) {
+            group.generationId++;
+            group.rebalancing = true;
+        }
+        return true;
     }
 
     private void applyLeaderAssignment(ConsumerGroupEntry group, byte[] assignmentBytes) {

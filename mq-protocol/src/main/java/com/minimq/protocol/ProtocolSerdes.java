@@ -111,17 +111,8 @@ public final class ProtocolSerdes {
                     payload.readInt(),
                     ByteBufSerde.readString(payload),
                     readByteArrayWithShortPrefix(payload));
-            case ApiKeys.HEARTBEAT -> new HeartbeatRequest(
-                    ByteBufSerde.readString(payload),
-                    ByteBufSerde.readString(payload),
-                    payload.readInt());
-            case ApiKeys.OFFSET_COMMIT -> new OffsetCommitRequest(
-                    ByteBufSerde.readString(payload),
-                    ByteBufSerde.readString(payload),
-                    payload.readInt(),
-                    payload.readLong(),
-                    ByteBufSerde.readString(payload),
-                    payload.readInt());
+            case ApiKeys.HEARTBEAT -> decodeHeartbeatRequest(payload);
+            case ApiKeys.OFFSET_COMMIT -> decodeOffsetCommitRequest(payload);
             case ApiKeys.OFFSET_FETCH -> new OffsetFetchRequest(
                     ByteBufSerde.readString(payload),
                     ByteBufSerde.readString(payload),
@@ -1153,6 +1144,41 @@ public final class ProtocolSerdes {
             ByteBufSerde.writeBytes(buf, record.key());
             ByteBufSerde.writeBytes(buf, record.value());
         }
+    }
+
+    /**
+     * Current HEARTBEAT body is {@code groupId, memberId, generationId}.
+     * Legacy bodies omit {@code generationId}; decode defaults it to 0 so old frames
+     * are not rejected as malformed. Coordinator still requires a matching generation
+     * after a real join.
+     */
+    private static HeartbeatRequest decodeHeartbeatRequest(ByteBuf buf) {
+        String groupId = ByteBufSerde.readString(buf);
+        String memberId = ByteBufSerde.readString(buf);
+        int generationId = buf.isReadable() ? buf.readInt() : 0;
+        return new HeartbeatRequest(groupId, memberId, generationId);
+    }
+
+    /**
+     * Current OFFSET_COMMIT body is {@code groupId, topic, partition, offset, memberId, generationId}.
+     * Legacy bodies stop after {@code offset}; decode defaults {@code memberId=""} and
+     * {@code generationId=0}. A body that includes {@code memberId} but omits generation
+     * also defaults generation to 0.
+     */
+    private static OffsetCommitRequest decodeOffsetCommitRequest(ByteBuf buf) {
+        String groupId = ByteBufSerde.readString(buf);
+        String topicName = ByteBufSerde.readString(buf);
+        int partitionId = buf.readInt();
+        long offset = buf.readLong();
+        String memberId = "";
+        int generationId = 0;
+        if (buf.isReadable()) {
+            memberId = ByteBufSerde.readString(buf);
+            if (buf.isReadable()) {
+                generationId = buf.readInt();
+            }
+        }
+        return new OffsetCommitRequest(groupId, topicName, partitionId, offset, memberId, generationId);
     }
 
     private static JoinGroupResponse decodeJoinGroupResponse(ByteBuf buf) {

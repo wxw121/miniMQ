@@ -220,6 +220,89 @@ class ProtocolSerdesTest {
     }
 
     @Test
+    void decodeLegacyHeartbeatWithoutGenerationDefaultsToZero() {
+        ByteBuf body = Unpooled.buffer();
+        try {
+            ByteBufSerde.writeString(body, "g1");
+            ByteBufSerde.writeString(body, "m1");
+            HeartbeatRequest decoded = (HeartbeatRequest) ProtocolSerdes.decodeRequestBody(
+                    ApiKeys.HEARTBEAT, body);
+            assertEquals("g1", decoded.groupId());
+            assertEquals("m1", decoded.memberId());
+            assertEquals(0, decoded.generationId());
+        } finally {
+            body.release();
+        }
+    }
+
+    @Test
+    void decodeLegacyOffsetCommitWithoutMemberFieldsDefaultsEmptyAndZero() {
+        ByteBuf body = Unpooled.buffer();
+        try {
+            ByteBufSerde.writeString(body, "g1");
+            ByteBufSerde.writeString(body, "orders");
+            body.writeInt(1);
+            body.writeLong(42L);
+            OffsetCommitRequest decoded = (OffsetCommitRequest) ProtocolSerdes.decodeRequestBody(
+                    ApiKeys.OFFSET_COMMIT, body);
+            assertEquals("g1", decoded.groupId());
+            assertEquals("orders", decoded.topicName());
+            assertEquals(1, decoded.partitionId());
+            assertEquals(42L, decoded.offset());
+            assertEquals("", decoded.memberId());
+            assertEquals(0, decoded.generationId());
+        } finally {
+            body.release();
+        }
+    }
+
+    @Test
+    void decodeOffsetCommitWithMemberIdButNoGenerationDefaultsGenerationToZero() {
+        ByteBuf body = Unpooled.buffer();
+        try {
+            ByteBufSerde.writeString(body, "g1");
+            ByteBufSerde.writeString(body, "orders");
+            body.writeInt(1);
+            body.writeLong(42L);
+            ByteBufSerde.writeString(body, "m1");
+            OffsetCommitRequest decoded = (OffsetCommitRequest) ProtocolSerdes.decodeRequestBody(
+                    ApiKeys.OFFSET_COMMIT, body);
+            assertEquals("m1", decoded.memberId());
+            assertEquals(0, decoded.generationId());
+        } finally {
+            body.release();
+        }
+    }
+
+    @Test
+    void encodeHeartbeatAndOffsetCommitStillWriteCurrentFields() {
+        ByteBuf heartbeatFrame = ProtocolSerdes.encodeRequest(
+                new MqRequestHeader(ApiKeys.HEARTBEAT, 1, "client"),
+                new HeartbeatRequest("g1", "m1", 7));
+        ByteBuf heartbeatPayload = unwrapRetainedPayload(heartbeatFrame);
+        try {
+            HeartbeatRequest decoded = (HeartbeatRequest) MqDecoder.decodeRequest(heartbeatPayload).body();
+            assertEquals(7, decoded.generationId());
+        } finally {
+            heartbeatPayload.release();
+            heartbeatFrame.release();
+        }
+
+        ByteBuf commitFrame = ProtocolSerdes.encodeRequest(
+                new MqRequestHeader(ApiKeys.OFFSET_COMMIT, 2, "client"),
+                new OffsetCommitRequest("g1", "orders", 1, 42L, "m1", 7));
+        ByteBuf commitPayload = unwrapRetainedPayload(commitFrame);
+        try {
+            OffsetCommitRequest decoded = (OffsetCommitRequest) MqDecoder.decodeRequest(commitPayload).body();
+            assertEquals("m1", decoded.memberId());
+            assertEquals(7, decoded.generationId());
+        } finally {
+            commitPayload.release();
+            commitFrame.release();
+        }
+    }
+
+    @Test
     void allResponseBodiesRoundTrip() {
         List<ResponseCase> cases = List.of(
                 new ResponseCase(ApiKeys.CREATE_TOPIC, new CreateTopicResponse("orders")),

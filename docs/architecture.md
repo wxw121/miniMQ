@@ -140,9 +140,9 @@ sequenceDiagram
     L-->>C: FetchResponse / 拉取响应
 ```
 
-Consumer 订阅 Topic 时会加入 Consumer Group。组内 leader 负责根据成员列表和 Topic 分区数计算 Range Assignment，然后通过 `SYNC_GROUP` 写回 Controller。普通成员通过 `SYNC_GROUP` 获取自己的分区列表。消费后，客户端通过 `OFFSET_COMMIT` 提交进度。
+Consumer 订阅 Topic 时会加入 Consumer Group。组内 leader 负责根据成员列表和 Topic 分区数计算 Range Assignment，然后通过 `SYNC_GROUP` 写回 Controller。普通成员通过 `SYNC_GROUP` 获取自己的分区列表。消费后，客户端通过 `OFFSET_COMMIT` 提交进度。成员超过 10 秒未心跳会被踢出并触发新一代 rebalance。`HEARTBEAT` / `OFFSET_COMMIT` 编码带 `generationId`（commit 还带 `memberId`）；解码仍接受省略这些字段的旧 body，但旧客户端在 join 之后会因 generation 0 被协调器拒绝。
 
-When a consumer subscribes, it joins a consumer group. The group leader computes a range assignment and submits it through `SYNC_GROUP`. Every member receives its partition list from the coordinator. After processing records, the consumer commits offsets through `OFFSET_COMMIT`.
+When a consumer subscribes, it joins a consumer group. The group leader computes a range assignment and submits it through `SYNC_GROUP`. Every member receives its partition list from the coordinator. After processing records, the consumer commits offsets through `OFFSET_COMMIT`. Members that miss heartbeats for 10 seconds are evicted and the group generation advances. Encode writes `generationId` on `HEARTBEAT` and `memberId` plus `generationId` on `OFFSET_COMMIT`; decode still accepts the shorter legacy bodies, but those defaulted fields fail the coordinator check after a real join.
 
 ## 5. Data Plane And Control Plane / 数据面与控制面
 
@@ -231,10 +231,10 @@ The timing contract is `broker heartbeat interval < broker self-fence timeout < 
 1. Replication and clean ISR failover exist, including crash-safe truncation before Leader readiness. MiniMQ still does not perform unclean election; a partition with no online ISR remains frozen. / 已有副本、ISR 内 clean failover 和 Leader ready 前的崩溃安全截断，但仍不执行 unclean election；没有在线 ISR 的分区保持 frozen。
 2. Controller election uses etcd lease/election, a monotonically increasing Controller epoch, leader-identity comparison, and metadata revision CAS. / Controller 选举使用 etcd lease/election、单调 Controller epoch、Leader 身份比较和元数据 revision CAS。
 3. Shared metadata is persisted in etcd and installed by a monotonic watch. The local JSON document remains only as the explicit 2.x import source. / 共享元数据持久化在 etcd 中，并由单调 watch 安装；本地 JSON 仅保留为显式 2.x 导入源。
-4. Consumer group rebalancing is simplified. There is no full Kafka-style rebalance protocol, session management, or cooperative assignment. / 消费组再均衡经过简化，还没有完整 Kafka 风格的 rebalance 协议、会话管理或协作式分配。
+4. Consumer group rebalancing is simplified: members expire after 10 seconds without a heartbeat, but there is no full Kafka-style rebalance protocol or cooperative assignment. / 消费组再均衡经过简化：超过 10 秒未心跳的成员会被踢出，但没有完整 Kafka 风格的 rebalance 协议或协作式分配。
 5. The client SDK cycles the complete bootstrap list, discovers the current Controller through any Broker, rejects older metadata versions, carries the routed Leader epoch, and retries one stale route. The SDK has no etcd dependency. / 客户端 SDK 轮询完整 bootstrap 列表、通过任意 Broker 发现当前 Controller、拒绝较旧 metadata version、携带路由时的 Leader epoch，并对过期路由重试一次；SDK 不依赖 etcd。
 6. Maintenance report, execution, and metrics are exposed through token-protected admin APIs and single-target CLI commands. Destructive maintenance remains opt-in and Broker-local. / 维护报告、执行和指标已通过令牌保护的管理 API 与单目标 CLI 命令开放；破坏性维护仍需显式触发，并且只作用于本地 Broker。
-7. V3 clients remain wire-compatible because API keys 0-19 retain their positional layouts. V3/V4 mixed Broker clusters are unsupported because only V4 internal replication preserves delayed-delivery state. / API 0-19 的位置布局保持不变，因此 V3 客户端仍兼容；但 V3/V4 Broker 混合集群不受支持，只有 V4 内部复制会保留延迟投递状态。
+7. Keys 0-19 keep their original field order. `HEARTBEAT` and `OFFSET_COMMIT` append optional trailing membership fields: decode accepts legacy bodies, encode always writes the current layout, and a legacy client that omits generation fails coordinator checks after join. V3/V4 mixed Broker clusters are unsupported because only V4 internal replication preserves delayed-delivery state. / API 0-19 保留原字段顺序；`HEARTBEAT` 与 `OFFSET_COMMIT` 在末尾追加可选成员字段：解码接受旧 body，编码始终写当前布局，省略 generation 的旧客户端在 join 后会被协调器拒绝。V3/V4 Broker 混合集群不受支持，只有 V4 内部复制会保留延迟投递状态。
 8. Topic names are portable path-safe identifiers: 1..249 characters from `[A-Za-z0-9._-]`, excluding `.` and `..`. Deletion is a durable `DELETING -> DELETED` state machine, and tombstoned names remain reserved. / Topic 名称是可移植且路径安全的标识符：长度 1..249，只能使用 `[A-Za-z0-9._-]`，且不能是 `.` 或 `..`；删除是持久化的 `DELETING -> DELETED` 状态机，tombstone 名称永久保留。
 
 ## 9. Architecture Glossary / 架构名词表
