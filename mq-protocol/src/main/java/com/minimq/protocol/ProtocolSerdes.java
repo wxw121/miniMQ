@@ -1,5 +1,6 @@
 package com.minimq.protocol;
 
+import com.minimq.common.acks.ProduceAcks;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.protocol.codec.ByteBufSerde;
 import com.minimq.protocol.message.MqRequestHeader;
@@ -699,7 +700,15 @@ public final class ProtocolSerdes {
         for (int i = 0; i < count; i++) {
             records.add(new ProduceRecord(ByteBufSerde.readBytes(buf), ByteBufSerde.readBytes(buf)));
         }
-        return new ProduceRequest(topic, partitionId, leaderEpoch, records);
+        short acks = ProduceAcks.LEADER.code();
+        int ackTimeoutMs = ProduceAcks.DEFAULT_TIMEOUT_MS;
+        if (buf.isReadable()) {
+            acks = buf.readShort();
+            if (buf.isReadable()) {
+                ackTimeoutMs = buf.readInt();
+            }
+        }
+        return new ProduceRequest(topic, partitionId, leaderEpoch, records, acks, ackTimeoutMs);
     }
 
     private static void writeProduceRequest(ByteBuf buf, ProduceRequest req) {
@@ -711,6 +720,8 @@ public final class ProtocolSerdes {
             ByteBufSerde.writeBytes(buf, record.key());
             ByteBufSerde.writeBytes(buf, record.value());
         }
+        buf.writeShort(req.acks());
+        buf.writeInt(req.ackTimeoutMs());
     }
 
     private static ProduceV2Request decodeProduceV2Request(ByteBuf buf) {
@@ -722,7 +733,15 @@ public final class ProtocolSerdes {
                 buf,
                 "scheduled produce records",
                 ProtocolSerdes::readScheduledProduceRecord);
-        return new ProduceV2Request(topic, partitionId, leaderEpoch, records);
+        short acks = ProduceAcks.LEADER.code();
+        int ackTimeoutMs = ProduceAcks.DEFAULT_TIMEOUT_MS;
+        if (buf.isReadable()) {
+            acks = buf.readShort();
+            if (buf.isReadable()) {
+                ackTimeoutMs = buf.readInt();
+            }
+        }
+        return new ProduceV2Request(topic, partitionId, leaderEpoch, records, acks, ackTimeoutMs);
     }
 
     private static void writeProduceV2Request(ByteBuf buf, ProduceV2Request req) {
@@ -734,6 +753,8 @@ public final class ProtocolSerdes {
                 req.records(),
                 "scheduled produce records",
                 ProtocolSerdes::writeScheduledProduceRecord);
+        buf.writeShort(req.acks());
+        buf.writeInt(req.ackTimeoutMs());
     }
 
     private static ScheduledProduceRecord readScheduledProduceRecord(ByteBuf buf) {

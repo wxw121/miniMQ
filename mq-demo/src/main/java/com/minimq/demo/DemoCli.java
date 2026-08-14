@@ -6,6 +6,7 @@ import com.minimq.client.NetworkClient;
 import com.minimq.client.Producer;
 import com.minimq.client.model.ConsumerRecord;
 import com.minimq.client.model.ProducerRecord;
+import com.minimq.common.acks.ProduceAcks;
 import com.minimq.protocol.ApiKeys;
 import com.minimq.protocol.codec.MqDecoder;
 import com.minimq.protocol.message.ProtocolMessages.CreateTopicAdminRequest;
@@ -86,11 +87,14 @@ public final class DemoCli {
         String topic = arg(args, "--topic", "orders");
         String key = optionalArg(args, "--key");
         String message = arg(args, "--message", "hello");
+        ProduceAcks acks = parseProduceAcks(arg(args, "--acks", "leader"));
+        int ackTimeoutMs = Integer.parseInt(arg(args, "--ack-timeout-ms",
+                Integer.toString(ProduceAcks.DEFAULT_TIMEOUT_MS)));
         try (Producer producer = new Producer(brokers, "demo-producer")) {
             producer.start();
             var result = producer.send(new ProducerRecord(
                     topic, null, key != null ? key.getBytes(StandardCharsets.UTF_8) : null,
-                    message.getBytes(StandardCharsets.UTF_8)));
+                    message.getBytes(StandardCharsets.UTF_8)), acks, ackTimeoutMs);
             System.out.printf("Produced to %s-%d offset=%d%n", result.topic(), result.partitionId(), result.offset());
         }
     }
@@ -448,6 +452,14 @@ public final class DemoCli {
         }
     }
 
+    static ProduceAcks parseProduceAcks(String value) {
+        return switch (value) {
+            case "leader" -> ProduceAcks.LEADER;
+            case "all" -> ProduceAcks.ALL;
+            default -> throw new IllegalArgumentException("--acks must be leader or all");
+        };
+    }
+
     static String arg(String[] args, String name, String defaultValue) {
         for (int i = 0; i < args.length; i++) {
             if (args[i].equals(name)) {
@@ -538,7 +550,7 @@ public final class DemoCli {
                 Usage:
                   java -jar mq-demo.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --etcd-endpoints http://localhost:2379 --initialize-empty-cluster --admin-token <secret>
                   java -jar mq-demo.jar create-topic --brokers localhost:9092 --admin-token <secret> --name orders --partitions 3
-                  java -jar mq-demo.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
+                  java -jar mq-demo.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello [--acks leader|all] [--ack-timeout-ms 5000]
                   java -jar mq-demo.jar consume --brokers localhost:9092 --topic orders --group demo-group
                   java -jar mq-demo.jar maintenance-report --broker localhost:9092 --admin-token <secret>
                   java -jar mq-demo.jar maintenance-run --broker localhost:9092 --admin-token <secret>

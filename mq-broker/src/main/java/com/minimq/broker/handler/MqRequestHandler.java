@@ -26,6 +26,7 @@ import com.minimq.broker.auth.OperatorScope;
 import com.minimq.broker.admin.TopicAdminService;
 import com.minimq.broker.status.BrokerStatusService;
 import com.minimq.broker.status.GroupStatusService;
+import com.minimq.common.acks.ProduceAcks;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.common.model.Record;
 import com.minimq.protocol.ApiKeys;
@@ -479,6 +480,14 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                     }
                     if (errorCode == ErrorCode.NONE) {
                         responseBody = handleProduce(request);
+                        errorCode = acknowledgeProduce(
+                                request.topicName(),
+                                request.partitionId(),
+                                request.acks(),
+                                request.ackTimeoutMs());
+                        if (errorCode != ErrorCode.NONE) {
+                            responseBody = null;
+                        }
                     }
                 }
                 case ApiKeys.FETCH -> {
@@ -527,6 +536,14 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                     if (errorCode == ErrorCode.NONE) {
                         try {
                             responseBody = handleProduceV2(request);
+                            errorCode = acknowledgeProduce(
+                                    request.topicName(),
+                                    request.partitionId(),
+                                    request.acks(),
+                                    request.ackTimeoutMs());
+                            if (errorCode != ErrorCode.NONE) {
+                                responseBody = null;
+                            }
                         } catch (LogManager.ScheduledCapacityExceededException e) {
                             errorCode = ErrorCode.THROTTLED;
                         }
@@ -1060,6 +1077,25 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 config.brokerId(),
                 partitionLog.highWatermark());
         return new ProduceResponse(request.topicName(), request.partitionId(), baseOffset);
+    }
+
+    private ErrorCode acknowledgeProduce(String topicName, int partitionId, short acks, int ackTimeoutMs) {
+        if (ProduceAcks.fromCode(acks) == ProduceAcks.LEADER) {
+            return ErrorCode.NONE;
+        }
+        List<Integer> isrBrokerIds = clusterController.getIsrBrokerIds(topicName, partitionId);
+        if (isrBrokerIds.isEmpty()) {
+            return ErrorCode.NOT_ENOUGH_REPLICAS;
+        }
+        long requiredHighWatermark = partitionManager.getOrCreate(topicName, partitionId).highWatermark();
+        boolean replicated = replicaStateManager.awaitReplicationHighWatermark(
+                topicName,
+                partitionId,
+                requiredHighWatermark,
+                isrBrokerIds,
+                config.brokerId(),
+                ackTimeoutMs);
+        return replicated ? ErrorCode.NONE : ErrorCode.REQUEST_TIMED_OUT;
     }
 
     private ErrorCode validateProduceV2(ProduceV2Request request) {

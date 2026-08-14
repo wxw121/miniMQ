@@ -145,17 +145,21 @@ class V4ProtocolContractTest {
         expected.put("FORBIDDEN", 17);
         expected.put("UNKNOWN_BROKER", 18);
         expected.put("STALE_TOMBSTONE", 19);
+        expected.put("NOT_ENOUGH_REPLICAS", 20);
+        expected.put("REQUEST_TIMED_OUT", 21);
 
         Map<String, Integer> actual = Arrays.stream(ErrorCode.values())
                 .collect(Collectors.toMap(Enum::name, code -> (int) code.code, (a, b) -> a, TreeMap::new));
 
         assertEquals(expected, actual);
         assertEquals(
-                IntStream.rangeClosed(0, 19).boxed().collect(Collectors.toCollection(TreeSet::new)),
+                IntStream.rangeClosed(0, 21).boxed().collect(Collectors.toCollection(TreeSet::new)),
                 new TreeSet<>(actual.values()));
         assertEquals(ErrorCode.FORBIDDEN, ErrorCode.fromCode((short) 17));
         assertEquals(ErrorCode.UNKNOWN_BROKER, ErrorCode.fromCode((short) 18));
         assertEquals(ErrorCode.STALE_TOMBSTONE, ErrorCode.fromCode((short) 19));
+        assertEquals(ErrorCode.NOT_ENOUGH_REPLICAS, ErrorCode.fromCode((short) 20));
+        assertEquals(ErrorCode.REQUEST_TIMED_OUT, ErrorCode.fromCode((short) 21));
     }
 
     @Test
@@ -186,7 +190,7 @@ class V4ProtocolContractTest {
         assertRecordComponents(CreateTopicAdminRequest.class,
                 "credential", "topicName", "numPartitions", "replicationFactor");
         assertRecordComponents(ProduceV2Request.class,
-                "topicName", "partitionId", "leaderEpoch", "records");
+                "topicName", "partitionId", "leaderEpoch", "records", "acks", "ackTimeoutMs");
         assertRecordComponents(ReplicaFetchV2Request.class,
                 "clusterCredential",
                 "topicName",

@@ -9,9 +9,9 @@ MiniMQ aims to be small enough to read, but realistic enough to explain the esse
 
 MiniMQ 的目标是“小到能读完，大到能讲清消息队列核心机制”。项目有意避免把关键行为藏在框架里：协议序列化是手写的，存储格式是显式的，消费组分配逻辑也直接体现在代码里。因此它适合作为学习项目、设计讨论材料以及后续贡献者继续迭代的上下文载体。
 
-The design optimizes for clarity, determinism, and testability. V4 adds etcd-fenced Controller HA, exact Leader epochs, automatic Broker failure detection, physical/visible replica watermarks, scoped operator APIs, crash-safe Topic deletion, explicit retry/DLQ links, and required delayed-message delivery. Producer acknowledgement policies, transactions, and exactly-once semantics remain future work.
+The design optimizes for clarity, determinism, and testability. V4 added etcd-fenced Controller HA, exact Leader epochs, automatic Broker failure detection, physical/visible replica watermarks, scoped operator APIs, crash-safe Topic deletion, explicit retry/DLQ links, and required delayed-message delivery. V5 adds producer acknowledgement policies (`LEADER` and current-ISR `ALL`). Transactions and exactly-once semantics remain future work.
 
-当前设计优先考虑清晰性、确定性和可测试性。V4 已增加 etcd fencing 的 Controller HA、精确 Leader epoch、Broker 自动故障检测、物理/可见副本水位、细粒度运维 API、崩溃安全 Topic 删除、显式 retry/DLQ 关联和必需的延迟投递。Producer 确认策略、事务与 exactly-once 语义仍属于后续工作。
+当前设计优先考虑清晰性、确定性和可测试性。V4 已增加 etcd fencing 的 Controller HA、精确 Leader epoch、Broker 自动故障检测、物理/可见副本水位、细粒度运维 API、崩溃安全 Topic 删除、显式 retry/DLQ 关联和必需的延迟投递。V5 增加 Producer 确认策略（`LEADER` 与当前 ISR 的 `ALL`）。事务与 exactly-once 语义仍属于后续工作。
 
 ## 2. Protocol Design / 协议设计
 

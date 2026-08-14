@@ -95,6 +95,6 @@ Verification of the landed P1 fixes is in [test-report-2026-08-13-v4.0.0-full-ve
 
 ## Recommended next patches / 建议后续补丁顺序
 
-1. Watch-only etcd followers should have a metadata poll fallback (R4-P2-01).
-2. `deleteTopicInternal` should refuse work during controller `recovering` (R4-P2-02).
-3. GroupCoordinator should require join/generation on commit and heartbeat (R4-P2-03).
+The P2 items listed here were implemented after this review. V5 work starts from [v5-producer-acks-design.md](designs/v5-producer-acks-design.md), not from this leftover list.
+
+本审查列出的 P2 后续项均已合入。V5 从 [v5-producer-acks-design.md](designs/v5-producer-acks-design.md) 开始，不再沿用下面的旧清单。

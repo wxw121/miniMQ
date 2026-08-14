@@ -1,5 +1,6 @@
 package com.minimq.protocol.message;
 
+import com.minimq.common.acks.ProduceAcks;
 import com.minimq.common.validation.TopicNames;
 import com.minimq.protocol.MqFrame;
 
@@ -155,11 +156,24 @@ public final class ProtocolMessages {
     public record ProduceRecord(byte[] key, byte[] value) {
     }
 
-    public record ProduceRequest(String topicName, int partitionId, long leaderEpoch, List<ProduceRecord> records) {
+    public record ProduceRequest(
+            String topicName,
+            int partitionId,
+            long leaderEpoch,
+            List<ProduceRecord> records,
+            short acks,
+            int ackTimeoutMs) {
         public ProduceRequest {
             requireTopicName(topicName, "topicName");
             requireNonNegative(leaderEpoch, "leaderEpoch");
+            ProduceAcks.requireValid(acks);
+            ProduceAcks.requireTimeoutMs(ackTimeoutMs);
         }
+
+        public ProduceRequest(String topicName, int partitionId, long leaderEpoch, List<ProduceRecord> records) {
+            this(topicName, partitionId, leaderEpoch, records, ProduceAcks.LEADER.code(), ProduceAcks.DEFAULT_TIMEOUT_MS);
+        }
+
         public ProduceRequest(String topicName, int partitionId, List<ProduceRecord> records) {
             this(topicName, partitionId, 0L, records);
         }
@@ -589,13 +603,25 @@ public final class ProtocolMessages {
             String topicName,
             int partitionId,
             long leaderEpoch,
-            V4BoundedList<ScheduledProduceRecord> records) {
+            V4BoundedList<ScheduledProduceRecord> records,
+            short acks,
+            int ackTimeoutMs) {
         public ProduceV2Request {
             requireTopicName(topicName, "topicName");
             requireNonNegative(leaderEpoch, "leaderEpoch");
             if (records == null) {
                 throw new IllegalArgumentException("records must not be null");
             }
+            ProduceAcks.requireValid(acks);
+            ProduceAcks.requireTimeoutMs(ackTimeoutMs);
+        }
+
+        public ProduceV2Request(
+                String topicName,
+                int partitionId,
+                long leaderEpoch,
+                V4BoundedList<ScheduledProduceRecord> records) {
+            this(topicName, partitionId, leaderEpoch, records, ProduceAcks.LEADER.code(), ProduceAcks.DEFAULT_TIMEOUT_MS);
         }
     }
 

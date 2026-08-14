@@ -18,7 +18,9 @@ class NetworkClientErrorMappingTest {
             for (ErrorCode errorCode : List.of(
                     ErrorCode.FORBIDDEN,
                     ErrorCode.UNKNOWN_BROKER,
-                    ErrorCode.STALE_TOMBSTONE)) {
+                    ErrorCode.STALE_TOMBSTONE,
+                    ErrorCode.NOT_ENOUGH_REPLICAS,
+                    ErrorCode.REQUEST_TIMED_OUT)) {
                 MiniMqServerException exception = assertThrows(
                         MiniMqServerException.class,
                         () -> client.ensureSuccess(

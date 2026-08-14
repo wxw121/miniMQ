@@ -9,7 +9,7 @@ MiniMQ is a modular Java message queue. It separates shared models, protocol enc
 
 MiniMQ 是一个多模块 Java 消息队列系统。它把公共模型、协议编解码、本地存储、Broker 运行时、客户端 SDK、Demo CLI 拆成独立 Maven 模块。项目规模不大，但保留了分区消息系统的核心结构：Producer 按 Topic/Partition 写入消息，Consumer 按 Offset 拉取消息，Controller 维护元数据并指导客户端把请求路由到正确的 Leader Broker。
 
-The architecture supports partition replicas, physical and visible ISR-aware watermarks, persisted replica state, Broker heartbeat leases, etcd-backed Controller election, exact data-plane Leader epochs, crash-safe failover truncation, and automatic clean Leader failover. It remains an educational architecture rather than a production quorum system: unclean election, transactions, and exactly-once semantics are not implemented.
+The architecture supports partition replicas, physical and visible ISR-aware watermarks, persisted replica state, Broker heartbeat leases, etcd-backed Controller election, exact data-plane Leader epochs, crash-safe failover truncation, and automatic clean Leader failover. It remains an educational architecture rather than a production quorum system: unclean election, transactions, and exactly-once semantics are not implemented. V5 produce can wait for the current ISR (`acks=ALL`) or return after the Leader append (`acks=LEADER`).
 
 当前架构支持分区副本、ISR 感知的物理/可见 high watermark、持久化副本状态、Broker 心跳租约、etcd Controller 选举、精确数据面 Leader epoch、崩溃安全故障转移截断和 clean Leader 自动故障转移。它仍是教学型架构，不是生产级 quorum 系统：unclean election、事务和 exactly-once 语义尚未实现。
 

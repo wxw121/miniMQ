@@ -16,9 +16,12 @@ public final class ReplicaStateManager {
         if (logEndOffset < 0) {
             throw new IllegalArgumentException("logEndOffset must be non-negative");
         }
-        replicaLeos
-                .computeIfAbsent(partitionKey(topicName, partitionId), ignored -> new ConcurrentHashMap<>())
-                .merge(brokerId, logEndOffset, Math::max);
+        synchronized (this) {
+            replicaLeos
+                    .computeIfAbsent(partitionKey(topicName, partitionId), ignored -> new ConcurrentHashMap<>())
+                    .merge(brokerId, logEndOffset, Math::max);
+            notifyAll();
+        }
     }
 
     /**
@@ -67,11 +70,53 @@ public final class ReplicaStateManager {
             highWatermark = Math.min(highWatermark, followerLeo);
         }
 
+        // Clear the election marker only after every follower has reported. Clearing it on the
+        // first strict (post-election write) computation would treat later unreported followers
+        // as caught up and make acks=ALL return success before the ISR has the record.
         if (leoAtElection != null
-                && (strictReplication || allFollowersReported(topicName, partitionId, isrBrokerIds, leaderBrokerId))) {
+                && allFollowersReported(topicName, partitionId, isrBrokerIds, leaderBrokerId)) {
             leaderLeoAtElection.remove(key);
         }
         return highWatermark;
+    }
+
+    /**
+     * Blocks until the current ISR high watermark is at least {@code requiredHighWatermark},
+     * or {@code timeoutMs} elapses. Returns {@code false} on timeout or interrupt.
+     */
+    public boolean awaitReplicationHighWatermark(
+            String topicName,
+            int partitionId,
+            long requiredHighWatermark,
+            List<Integer> isrBrokerIds,
+            int leaderBrokerId,
+            long timeoutMs) {
+        if (requiredHighWatermark < 0) {
+            throw new IllegalArgumentException("requiredHighWatermark must be non-negative");
+        }
+        if (timeoutMs < 0) {
+            throw new IllegalArgumentException("timeoutMs must be non-negative");
+        }
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        synchronized (this) {
+            while (true) {
+                long highWatermark = replicationHighWatermark(
+                        topicName, partitionId, requiredHighWatermark, isrBrokerIds, leaderBrokerId);
+                if (highWatermark >= requiredHighWatermark) {
+                    return true;
+                }
+                long remaining = deadline - System.currentTimeMillis();
+                if (remaining <= 0) {
+                    return false;
+                }
+                try {
+                    wait(remaining);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+        }
     }
 
     public long replicaLeo(String topicName, int partitionId, int brokerId) {

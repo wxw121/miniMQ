@@ -15,6 +15,7 @@ import com.minimq.broker.replication.ReplicaStateManager;
 import com.minimq.broker.resilience.RequestThrottler;
 import com.minimq.broker.resilience.ThrottleResult;
 import com.minimq.broker.support.BrokerTestHarness;
+import com.minimq.common.acks.ProduceAcks;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.protocol.ApiKeys;
 import com.minimq.protocol.MqFrame;
@@ -623,6 +624,146 @@ class EmbeddedBrokerChannelTest {
         assertEquals(1, ((ReplicaFetchResponse) response.body()).records().size());
         assertEquals(0L, clusterController.replicaLogEndOffset("orders", 0, 1));
         channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void produceAcksAllSucceedsOnSingleBrokerIsr() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
+        clusterController.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092));
+        clusterController.createTopic(new CreateTopicRequest("acks-single", 1));
+        EmbeddedChannel channel = newChannel(clusterController, true);
+
+        MqDecoder.DecodedResponse response = send(
+                channel,
+                ApiKeys.PRODUCE,
+                new ProduceRequest(
+                        "acks-single",
+                        0,
+                        0L,
+                        List.of(new ProduceRecord(null, new byte[] {1})),
+                        ProduceAcks.ALL.code(),
+                        50));
+
+        assertEquals(ErrorCode.NONE, response.header().errorCode());
+        assertEquals(0L, ((ProduceResponse) response.body()).baseOffset());
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void produceAcksAllTimesOutWhenFollowerStaysBehindAndKeepsLocalAppend() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
+        clusterController.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092));
+        clusterController.registerBroker(new RegisterBrokerRequest(1, "127.0.0.1", 9093));
+        clusterController.createTopic(new CreateTopicRequest("acks-timeout", 1, 2));
+        EmbeddedChannel channel = newChannel(clusterController, true);
+
+        MqDecoder.DecodedResponse timedOut = send(
+                channel,
+                ApiKeys.PRODUCE,
+                new ProduceRequest(
+                        "acks-timeout",
+                        0,
+                        0L,
+                        List.of(new ProduceRecord(null, new byte[] {1})),
+                        ProduceAcks.ALL.code(),
+                        40));
+        assertEquals(ErrorCode.REQUEST_TIMED_OUT, timedOut.header().errorCode());
+        assertNull(timedOut.body());
+        assertEquals(1L, clusterController.replicaLogEndOffset("acks-timeout", 0, 0));
+
+        MqDecoder.DecodedResponse timedOutV2 = send(
+                channel,
+                ApiKeys.PRODUCE_V2,
+                new ProduceV2Request(
+                        "acks-timeout",
+                        0,
+                        0L,
+                        new V4BoundedList<>(
+                                1,
+                                false,
+                                List.of(new ScheduledProduceRecord(null, new byte[] {2}, 0L))),
+                        ProduceAcks.ALL.code(),
+                        40));
+        assertEquals(ErrorCode.REQUEST_TIMED_OUT, timedOutV2.header().errorCode());
+        assertNull(timedOutV2.body());
+        assertEquals(2L, clusterController.replicaLogEndOffset("acks-timeout", 0, 0));
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void produceAcksAllReturnsNotEnoughReplicasWhenIsrIsEmpty() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir)) {
+            @Override
+            public synchronized List<Integer> getIsrBrokerIds(String topicName, int partitionId) {
+                return List.of();
+            }
+        };
+        clusterController.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092));
+        clusterController.createTopic(new CreateTopicRequest("acks-empty-isr", 1));
+        EmbeddedChannel channel = newChannel(clusterController, true);
+
+        MqDecoder.DecodedResponse response = send(
+                channel,
+                ApiKeys.PRODUCE,
+                new ProduceRequest(
+                        "acks-empty-isr",
+                        0,
+                        0L,
+                        List.of(new ProduceRecord(null, new byte[] {1})),
+                        ProduceAcks.ALL.code(),
+                        50));
+
+        assertEquals(ErrorCode.NOT_ENOUGH_REPLICAS, response.header().errorCode());
+        assertNull(response.body());
+        assertEquals(1L, clusterController.replicaLogEndOffset("acks-empty-isr", 0, 0));
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void produceAcksAllSucceedsWhenFollowerCatchesUp() throws Exception {
+        Path dataDir = tempDir.resolve("acks-all-catch-up");
+        BrokerConfig config = defaultConfig(dataDir, true);
+        ClusterController controller = new ClusterController(new MetadataStore(dataDir.resolve("metadata")));
+        assertEquals(ErrorCode.NONE,
+                controller.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092)).errorCode());
+        assertEquals(ErrorCode.NONE,
+                controller.registerBroker(new RegisterBrokerRequest(1, "127.0.0.1", 9093)).errorCode());
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("acks-catch-up", 1, 2)));
+        PartitionManager partitionManager = new PartitionManager(new LogManager(dataDir.resolve("log")));
+        ReplicaStateManager replicaStateManager = new ReplicaStateManager();
+        EmbeddedChannel channel = newChannel(
+                config,
+                controller,
+                partitionManager,
+                replicaStateManager,
+                ControllerRole.legacy(config),
+                new BrokerRuntimeMetrics());
+        Thread catchUp = new Thread(() -> {
+            for (int i = 0; i < 80; i++) {
+                replicaStateManager.updateReplicaLeo("acks-catch-up", 0, 1, 100);
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));
+            }
+        }, "acks-all-catch-up");
+        catchUp.setDaemon(true);
+        catchUp.start();
+        try {
+            MqDecoder.DecodedResponse response = send(
+                    channel,
+                    ApiKeys.PRODUCE,
+                    new ProduceRequest(
+                            "acks-catch-up",
+                            0,
+                            0L,
+                            List.of(new ProduceRecord(null, new byte[] {1})),
+                            ProduceAcks.ALL.code(),
+                            500));
+            assertEquals(ErrorCode.NONE, response.header().errorCode());
+            assertEquals(0L, ((ProduceResponse) response.body()).baseOffset());
+        } finally {
+            catchUp.join(1_000);
+            channel.finishAndReleaseAll();
+            partitionManager.close();
+        }
     }
 
     @Test

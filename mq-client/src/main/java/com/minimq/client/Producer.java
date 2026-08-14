@@ -6,6 +6,7 @@ import com.minimq.client.exception.MiniMqRequestTimeoutException;
 import com.minimq.client.exception.MiniMqServerException;
 import com.minimq.client.model.ProduceResult;
 import com.minimq.client.model.ProducerRecord;
+import com.minimq.common.acks.ProduceAcks;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.common.util.Murmur2Partitioner;
 import com.minimq.protocol.ApiKeys;
@@ -58,10 +59,29 @@ public class Producer implements AutoCloseable {
 
     // 每次发送前读取最新元数据。若 leader 过期，V1.3 会刷新元数据并重试一次。
     public ProduceResult send(ProducerRecord record) throws InterruptedException {
-        return send(record, true);
+        return send(record, ProduceAcks.LEADER, ProduceAcks.DEFAULT_TIMEOUT_MS);
+    }
+
+    public ProduceResult send(ProducerRecord record, ProduceAcks acks) throws InterruptedException {
+        return send(record, acks, ProduceAcks.DEFAULT_TIMEOUT_MS);
+    }
+
+    public ProduceResult send(ProducerRecord record, ProduceAcks acks, int ackTimeoutMs)
+            throws InterruptedException {
+        ProduceAcks.requireTimeoutMs(ackTimeoutMs);
+        return send(record, true, acks, ackTimeoutMs);
     }
 
     private ProduceResult send(ProducerRecord record, boolean retryConnectionFailure)
+            throws InterruptedException {
+        return send(record, retryConnectionFailure, ProduceAcks.LEADER, ProduceAcks.DEFAULT_TIMEOUT_MS);
+    }
+
+    private ProduceResult send(
+            ProducerRecord record,
+            boolean retryConnectionFailure,
+            ProduceAcks acks,
+            int ackTimeoutMs)
             throws InterruptedException {
         MetadataResponse metadata = cachedMetadata(record.topic());
         for (int attempt = 0; attempt < 2; attempt++) {
@@ -70,7 +90,9 @@ public class Producer implements AutoCloseable {
                     record.topic(),
                     route.partitionId(),
                     route.leaderEpoch(),
-                    List.of(new ProduceRecord(record.key(), record.value())));
+                    List.of(new ProduceRecord(record.key(), record.value())),
+                    acks.code(),
+                    ackTimeoutMs);
             MqDecoder.DecodedResponse response;
             try {
                 response = sendProduce(route.leader(), request);

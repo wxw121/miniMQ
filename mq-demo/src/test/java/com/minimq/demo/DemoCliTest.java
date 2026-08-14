@@ -3,6 +3,7 @@ package com.minimq.demo;
 import com.minimq.broker.BrokerConfig;
 import com.minimq.broker.support.BrokerTestHarness;
 import com.minimq.client.exception.MiniMqServerException;
+import com.minimq.common.acks.ProduceAcks;
 import com.minimq.common.error.ErrorCode;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledOnOs;
@@ -437,6 +438,8 @@ class DemoCliTest {
                 DemoCli.parseFirstHostPort(DemoCli.arg(args, "--brokers", "localhost:9092")));
         assertArrayEquals(new String[] {"--brokers", "host1:9092,host2:9093", "--topic", "orders", "--message", "hello"},
                 DemoCli.copyTail(args));
+        assertEquals(ProduceAcks.LEADER, DemoCli.parseProduceAcks("leader"));
+        assertEquals(ProduceAcks.ALL, DemoCli.parseProduceAcks("all"));
     }
 
     @Test
@@ -449,6 +452,7 @@ class DemoCliTest {
                 () -> DemoCli.arg(new String[] {"produce", "--message", "--topic"}, "--message", null));
         assertThrows(IllegalArgumentException.class,
                 () -> DemoCli.parseFirstHostPort("localhost"));
+        assertThrows(IllegalArgumentException.class, () -> DemoCli.parseProduceAcks("none"));
     }
 
     @Test

@@ -6,7 +6,7 @@ This roadmap summarizes the completed baseline, the current V4 Operator Readines
 
 ## 1. Current State
 
-MiniMQ 4.0.0 has completed the V4 Operator Readiness implementation snapshot on top of the V3.0.0 Controller HA baseline and V3.3-V3.5 production-hardening work.
+MiniMQ 5.0.0 is open. V4 Operator Readiness is the completed baseline; V5 adds producer acknowledgement policies on top of existing ISR replication.
 
 Current implemented capabilities include:
 
@@ -35,7 +35,16 @@ Current policy:
 - If the same environment blocker remains unresolved after five bounded attempts, document it in a known-issues file and continue with independent work.
 - Do not mark the real-etcd gate complete until the focused Failsafe tests run successfully.
 
-## 3. Current Major Version: V4.0 Operator Readiness
+## 3. Current Major Version: V5.0 Producer Acknowledgements
+
+V5.0 adds `LEADER` and `ALL` (current-ISR) produce acknowledgements. Design and plan:
+
+- [V5.0 Producer Acknowledgements Design](designs/v5-producer-acks-design.md)
+- [V5.0 Producer Acknowledgements Implementation Plan](plans/v5-producer-acks-implementation.md)
+
+Default produce remains Leader-local, matching V4. `ALL` waits until the current ISR high watermark meets the post-append Leader LEO, or returns `REQUEST_TIMED_OUT` / `NOT_ENOUGH_REPLICAS`. Transactions and exactly-once stay out of scope.
+
+## 3a. Previous Major Version: V4.0 Operator Readiness
 
 V4.0 is now the current consolidated operator-readiness implementation, not a documentation-only plan. It folds the previously separate release-gate, multi-node operations, consumer-lag, topic-admin, failover-audit, metrics, local-demo, scoped-permission, retry-topic, dead-letter-topic, and required delayed-message work into one major version.
 
@@ -70,22 +79,24 @@ be recreated. Retry/DLQ targets are operator-selected names rather than inferred
 
 ## 4. Future Version Notes
 
-Future versions are not urgent until the current V4.0 implementation is fully validated in the target environment. They should start with design and implementation documents before code work.
+After V5.0 acks land, later versions should start with design documents before code work.
 
-Recommended future topics:
+Recommended later topics:
 
-1. Optional experimental LSM state-store module isolated from the broker default write path.
-2. Transactional produce and exactly-once research.
-3. Larger benchmark automation and long-running soak tests.
-4. Multi-tenant authentication and ACL integration beyond local scoped tokens.
-5. More complete client ergonomics such as batching, pause/resume, and auto-commit options.
+1. Configurable `min.insync.replicas`.
+2. Consumer-group leave and configurable session timeout.
+3. Optional unclean election (default off).
+4. Transactional produce and exactly-once research.
+5. Optional experimental LSM state-store module isolated from the broker default write path.
+6. Multi-tenant authentication and ACL integration beyond local scoped tokens.
 
 ## 5. Recommended Next Tasks
 
-1. Run focused V4 protocol, storage, broker, and client verification after each operator-readiness change.
-2. Keep resource use bounded and close all brokers, clients, event loops, executors, and Docker resources started by tests or demos.
-3. Record unresolved Docker/real-etcd blockers after five bounded attempts instead of repeatedly retrying the same blocked path.
-4. Keep README.md, docs/README.md, docs/design.md, docs/architecture.md, docs/testing.md, and test reports synchronized from source and tests.
+1. Finish V5 produce-ack verification (`mvn clean verify`) and record a dated 5.0.0 test report.
+2. Move `acks=ALL` waits off the Netty event loop onto a bounded dedicated executor.
+3. Keep resource use bounded and close all brokers, clients, event loops, executors, and Docker resources started by tests or demos.
+4. Record unresolved Docker/real-etcd blockers after five bounded attempts instead of repeatedly retrying the same blocked path.
+5. Keep README.md, docs/README.md, docs/design.md, docs/architecture.md, docs/testing.md, and test reports synchronized from source and tests.
 
 ## 6. Risk Register
 
@@ -99,7 +110,7 @@ Recommended future topics:
 
 ## 7. Definition Of Done
 
-A V4.0 feature is done only when:
+A V5.0 feature is done only when:
 
 1. Source code respects module boundaries.
 2. Protocol changes include serdes round-trip and malformed-input tests.

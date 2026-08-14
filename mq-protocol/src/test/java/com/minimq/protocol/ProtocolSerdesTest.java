@@ -6,6 +6,7 @@ import com.minimq.protocol.message.ProtocolMessages.*;
 import com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest;
 import com.minimq.protocol.message.ProtocolMessages.ProduceRequest;
 import com.minimq.protocol.message.ProtocolMessages.ProduceRecord;
+import com.minimq.common.acks.ProduceAcks;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.protocol.codec.ByteBufSerde;
 import com.minimq.protocol.codec.MqDecoder;
@@ -47,7 +48,7 @@ class ProtocolSerdesTest {
                         1,
                         4L,
                         List.of(new ProduceRecord(bytes("k"), bytes("v")))),
-                "4d5101000000300002000000070006636c69656e7400066f726465727300000001000000000000000400000001000000016b0000000176");
+                "4d5101000000360002000000070006636c69656e7400066f726465727300000001000000000000000400000001000000016b0000000176000100001388");
         assertGoldenRequest(
                 ApiKeys.FETCH,
                 new FetchRequest("orders", 2, 4L, 10L, 4096),
@@ -216,6 +217,59 @@ class ProtocolSerdesTest {
                 payload.release();
                 frame.release();
             }
+        }
+    }
+
+    @Test
+    void decodeLegacyProduceWithoutAcksDefaultsToLeader() {
+        ByteBuf body = Unpooled.buffer();
+        try {
+            ByteBufSerde.writeString(body, "orders");
+            body.writeInt(1);
+            body.writeLong(4L);
+            body.writeInt(1);
+            ByteBufSerde.writeBytes(body, bytes("k"));
+            ByteBufSerde.writeBytes(body, bytes("v"));
+            ProduceRequest decoded = (ProduceRequest) ProtocolSerdes.decodeRequestBody(ApiKeys.PRODUCE, body);
+            assertEquals(ProduceAcks.LEADER.code(), decoded.acks());
+            assertEquals(ProduceAcks.DEFAULT_TIMEOUT_MS, decoded.ackTimeoutMs());
+        } finally {
+            body.release();
+        }
+    }
+
+    @Test
+    void decodeProduceWithAcksOnlyUsesDefaultTimeout() {
+        ByteBuf body = Unpooled.buffer();
+        try {
+            ByteBufSerde.writeString(body, "orders");
+            body.writeInt(1);
+            body.writeLong(4L);
+            body.writeInt(1);
+            ByteBufSerde.writeBytes(body, bytes("k"));
+            ByteBufSerde.writeBytes(body, bytes("v"));
+            body.writeShort(ProduceAcks.ALL.code());
+            ProduceRequest decoded = (ProduceRequest) ProtocolSerdes.decodeRequestBody(ApiKeys.PRODUCE, body);
+            assertEquals(ProduceAcks.ALL.code(), decoded.acks());
+            assertEquals(ProduceAcks.DEFAULT_TIMEOUT_MS, decoded.ackTimeoutMs());
+        } finally {
+            body.release();
+        }
+    }
+
+    @Test
+    void decodeProduceRejectsUnsupportedAcks() {
+        ByteBuf body = Unpooled.buffer();
+        try {
+            ByteBufSerde.writeString(body, "orders");
+            body.writeInt(1);
+            body.writeLong(4L);
+            body.writeInt(0);
+            body.writeShort((short) 0);
+            assertThrows(IllegalArgumentException.class,
+                    () -> ProtocolSerdes.decodeRequestBody(ApiKeys.PRODUCE, body));
+        } finally {
+            body.release();
         }
     }
 
@@ -1503,6 +1557,8 @@ class ProtocolSerdesTest {
             ProduceRequest a = (ProduceRequest) actual;
             assertEquals(e.topicName(), a.topicName());
             assertEquals(e.partitionId(), a.partitionId());
+            assertEquals(e.acks(), a.acks());
+            assertEquals(e.ackTimeoutMs(), a.ackTimeoutMs());
             assertEquals(e.records().size(), a.records().size());
             assertProduceRecordEquals(e.records().get(0), a.records().get(0));
         } else if (expected instanceof ProduceRecord e) {
@@ -1531,6 +1587,8 @@ class ProtocolSerdesTest {
             assertEquals(e.records().total(), a.records().total());
             assertEquals(e.records().truncated(), a.records().truncated());
             assertEquals(e.records().items().size(), a.records().items().size());
+            assertEquals(e.acks(), a.acks());
+            assertEquals(e.ackTimeoutMs(), a.ackTimeoutMs());
             assertScheduledProduceRecordEquals(
                     e.records().items().get(0), a.records().items().get(0));
         } else if (expected instanceof ReplicaFetchV2Response e) {
