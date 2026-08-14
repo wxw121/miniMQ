@@ -84,6 +84,7 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     private final RuntimeMetricsV2Service runtimeMetricsV2Service;
     private final FailoverAuditLog auditLog;
     private final ExecutorService produceAckExecutor;
+    private final boolean ownsProduceAckExecutor;
 
     public MqRequestHandler(
             BrokerConfig config,
@@ -307,6 +308,44 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             BrokerStatusService brokerStatusService,
             FailoverAuditLog auditLog,
             TopicAdminService topicAdminService) {
+        this(
+                config,
+                clusterController,
+                groupCoordinator,
+                partitionManager,
+                replicaStateManager,
+                fetchTransferMetrics,
+                replicaStateReporter,
+                availabilityGuard,
+                maintenanceAdminService,
+                controllerRole,
+                operatorAuthorizer,
+                runtimeMetrics,
+                requestThrottler,
+                brokerStatusService,
+                auditLog,
+                topicAdminService,
+                null);
+    }
+
+    public MqRequestHandler(
+            BrokerConfig config,
+            ClusterController clusterController,
+            GroupCoordinator groupCoordinator,
+            PartitionManager partitionManager,
+            ReplicaStateManager replicaStateManager,
+            FetchTransferMetrics fetchTransferMetrics,
+            ReplicaStateReporter replicaStateReporter,
+            BrokerAvailabilityGuard availabilityGuard,
+            MaintenanceAdminService maintenanceAdminService,
+            ControllerRole controllerRole,
+            OperatorAuthorizer operatorAuthorizer,
+            BrokerRuntimeMetrics runtimeMetrics,
+            RequestThrottler requestThrottler,
+            BrokerStatusService brokerStatusService,
+            FailoverAuditLog auditLog,
+            TopicAdminService topicAdminService,
+            ExecutorService produceAckExecutor) {
         this.config = config;
         this.replicaStateReporter = replicaStateReporter;
         this.clusterController = clusterController;
@@ -345,7 +384,14 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 partitionManager,
                 new LeaderEpochStateStore(config.dataDir().resolve("leader-epochs")),
                 this.auditLog);
-        this.produceAckExecutor = Executors.newFixedThreadPool(PRODUCE_ACK_THREADS, runnable -> {
+        this.ownsProduceAckExecutor = produceAckExecutor == null;
+        this.produceAckExecutor = this.ownsProduceAckExecutor
+                ? newProduceAckExecutor()
+                : produceAckExecutor;
+    }
+
+    public static ExecutorService newProduceAckExecutor() {
+        return Executors.newFixedThreadPool(PRODUCE_ACK_THREADS, runnable -> {
             Thread thread = new Thread(
                     runnable,
                     "minimq-produce-ack-" + PRODUCE_ACK_THREAD_INDEX.incrementAndGet());
@@ -1103,7 +1149,9 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
     @Override
     public void handlerRemoved(ChannelHandlerContext ctx) throws Exception {
-        produceAckExecutor.shutdownNow();
+        if (ownsProduceAckExecutor) {
+            produceAckExecutor.shutdownNow();
+        }
         super.handlerRemoved(ctx);
     }
 
@@ -1167,14 +1215,22 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         long requiredHighWatermark = partitionManager.getOrCreate(topicName, partitionId).highWatermark();
         try {
             produceAckExecutor.execute(() -> {
-                boolean replicated = replicaStateManager.awaitReplicationHighWatermark(
-                        topicName,
-                        partitionId,
-                        requiredHighWatermark,
-                        isrBrokerIds,
-                        config.brokerId(),
-                        ackTimeoutMs);
-                ErrorCode result = replicated ? ErrorCode.NONE : ErrorCode.REQUEST_TIMED_OUT;
+                ReplicaStateManager.ReplicationWaitResult waitResult =
+                        replicaStateManager.awaitReplicationHighWatermark(
+                                topicName,
+                                partitionId,
+                                requiredHighWatermark,
+                                config.brokerId(),
+                                ackTimeoutMs,
+                                () -> clusterController.getLeaderBrokerId(topicName, partitionId),
+                                () -> clusterController.getIsrBrokerIds(topicName, partitionId),
+                                minInSyncReplicas);
+                ErrorCode result = switch (waitResult) {
+                    case REPLICATED -> ErrorCode.NONE;
+                    case TIMED_OUT -> ErrorCode.REQUEST_TIMED_OUT;
+                    case NOT_LEADER -> ErrorCode.NOT_LEADER;
+                    case NOT_ENOUGH_REPLICAS -> ErrorCode.NOT_ENOUGH_REPLICAS;
+                };
                 Object body = result == ErrorCode.NONE ? successBody : null;
                 if (ctx.executor().inEventLoop()) {
                     completeProduceAck(ctx, header, result, body, throttle, startedNanos);

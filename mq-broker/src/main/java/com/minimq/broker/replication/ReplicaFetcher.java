@@ -194,6 +194,9 @@ public final class ReplicaFetcher implements AutoCloseable {
             epochStateStore.save(topicName, partition.partitionId,
                     new LeaderEpochState(partition.leaderEpoch, partition.leaderEpochStartOffset, true));
         }
+        if (fetchOffset < partition.leaderEpochStartOffset) {
+            fetchOffset = partition.leaderEpochStartOffset;
+        }
         try {
             LeaderReplicaClient client = connectionPool.client(leader.host, leader.port);
             var snapshot = clusterController.snapshot();

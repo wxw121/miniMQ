@@ -6,6 +6,8 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -132,5 +134,88 @@ class ReplicaStateManagerTest {
         manager.updateReplicaLeo("orders", 0, 1, 5);
         waiter.join(1_000);
         assertTrue(replicated.get());
+    }
+
+    @Test
+    void awaitAbortsWhenLeadershipMoves() throws Exception {
+        ReplicaStateManager manager = new ReplicaStateManager();
+        manager.noteLeadership("orders", 0, 0, 3);
+        manager.updateReplicaLeo("orders", 0, 1, 3);
+        CountDownLatch started = new CountDownLatch(1);
+        AtomicReference<ReplicaStateManager.ReplicationWaitResult> result = new AtomicReference<>();
+        Thread waiter = new Thread(() -> {
+            started.countDown();
+            result.set(manager.awaitReplicationHighWatermark(
+                    "orders",
+                    0,
+                    5,
+                    0,
+                    1_000,
+                    () -> 0,
+                    () -> List.of(0, 1),
+                    1));
+        });
+        waiter.start();
+        assertTrue(started.await(1, TimeUnit.SECONDS));
+        Thread.sleep(20);
+        manager.noteLeadership("orders", 0, 1, 3);
+        waiter.join(1_000);
+        assertEquals(ReplicaStateManager.ReplicationWaitResult.NOT_LEADER, result.get());
+    }
+
+    @Test
+    void awaitAbortsWhenCurrentLeaderSupplierChanges() throws Exception {
+        ReplicaStateManager manager = new ReplicaStateManager();
+        manager.noteLeadership("orders", 0, 0, 3);
+        manager.updateReplicaLeo("orders", 0, 1, 3);
+        AtomicInteger leader = new AtomicInteger(0);
+        CountDownLatch started = new CountDownLatch(1);
+        AtomicReference<ReplicaStateManager.ReplicationWaitResult> result = new AtomicReference<>();
+        Thread waiter = new Thread(() -> {
+            started.countDown();
+            result.set(manager.awaitReplicationHighWatermark(
+                    "orders",
+                    0,
+                    5,
+                    0,
+                    1_000,
+                    leader::get,
+                    () -> List.of(0, 1),
+                    1));
+        });
+        waiter.start();
+        assertTrue(started.await(1, TimeUnit.SECONDS));
+        Thread.sleep(20);
+        leader.set(1);
+        waiter.join(1_000);
+        assertEquals(ReplicaStateManager.ReplicationWaitResult.NOT_LEADER, result.get());
+    }
+
+    @Test
+    void awaitAbortsWhenLiveIsrDropsBelowMinInSync() throws Exception {
+        ReplicaStateManager manager = new ReplicaStateManager();
+        manager.noteLeadership("orders", 0, 0, 3);
+        manager.updateReplicaLeo("orders", 0, 1, 3);
+        AtomicReference<List<Integer>> isr = new AtomicReference<>(List.of(0, 1));
+        CountDownLatch started = new CountDownLatch(1);
+        AtomicReference<ReplicaStateManager.ReplicationWaitResult> result = new AtomicReference<>();
+        Thread waiter = new Thread(() -> {
+            started.countDown();
+            result.set(manager.awaitReplicationHighWatermark(
+                    "orders",
+                    0,
+                    5,
+                    0,
+                    1_000,
+                    () -> 0,
+                    isr::get,
+                    2));
+        });
+        waiter.start();
+        assertTrue(started.await(1, TimeUnit.SECONDS));
+        Thread.sleep(20);
+        isr.set(List.of(0));
+        waiter.join(1_000);
+        assertEquals(ReplicaStateManager.ReplicationWaitResult.NOT_ENOUGH_REPLICAS, result.get());
     }
 }

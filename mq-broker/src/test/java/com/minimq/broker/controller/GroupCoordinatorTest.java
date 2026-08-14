@@ -266,8 +266,21 @@ class GroupCoordinatorTest {
         var remaining = groupCoordinator.heartbeat(
                 new HeartbeatRequest("g1", second.memberId(), second.generationId()));
         assertEquals(ErrorCode.REBALANCE_IN_PROGRESS, remaining);
-        assertEquals(ErrorCode.GROUP_NOT_FOUND, groupCoordinator.leaveGroup(
+        assertEquals(ErrorCode.NONE, groupCoordinator.leaveGroup(
                 new LeaveGroupRequest("g1", first.memberId(), first.generationId())));
+    }
+
+    @Test
+    void leaveUnknownOrAlreadyLeftMemberIsIdempotent() {
+        assertEquals(ErrorCode.NONE, groupCoordinator.leaveGroup(
+                new LeaveGroupRequest("missing", "member", 1)));
+        var join = groupCoordinator.joinGroup(new JoinGroupRequest("g1", "", "orders"));
+        assertEquals(ErrorCode.NONE, groupCoordinator.leaveGroup(
+                new LeaveGroupRequest("g1", join.memberId(), join.generationId())));
+        assertEquals(ErrorCode.NONE, groupCoordinator.leaveGroup(
+                new LeaveGroupRequest("g1", join.memberId(), join.generationId())));
+        assertEquals(ErrorCode.GROUP_NOT_FOUND, groupCoordinator.heartbeat(
+                new HeartbeatRequest("g1", join.memberId(), join.generationId())));
     }
 
     @Test

@@ -19,9 +19,9 @@ V4 已经有副本和 ISR LEO，但生产在 Leader 本地追加后立即返回�
 4. Encode always writes the current fields.
 5. `ALL` waits until `ReplicaStateManager.replicationHighWatermark` is at least the Leader log-end offset after the append.
 6. Append-only error codes `NOT_ENOUGH_REPLICAS=20` and `REQUEST_TIMED_OUT=21`.
-7. Dedicated produce-ack executor so `ALL` waits do not block the Netty event loop.
+7. Broker-scoped produce-ack executor (4 daemon threads, shared across connections) so `ALL` waits do not block the Netty event loop.
 8. Topic-level `min.insync.replicas` (default 1, must be `1..replicationFactor`) on `CREATE_TOPIC` / `CREATE_TOPIC_ADMIN`, exposed as an optional trailing field on `DESCRIBE_TOPIC`.
-9. `LEAVE_GROUP` (key 38). Leave is allowed during rebalance. Empty groups keep committed offsets.
+9. `LEAVE_GROUP` (key 38). Leave is allowed during rebalance and is idempotent (`NONE` for unknown or already-left members). Empty groups keep committed offsets. Heartbeat after leave is still `GROUP_NOT_FOUND`.
 10. Optional trailing `sessionTimeoutMs` on `JOIN_GROUP` (default 10000, range 1000..300000). Eviction uses that member's timeout. `Consumer.close()` sends leave.
 11. `ALTER_TOPIC_CONFIG` (key 39) changes `min.insync.replicas` after create (`1..replicationFactor`).
 12. `REASSIGN_PARTITIONS` (key 40) replaces a partition replica list. The new set must overlap the current ISR so leadership stays clean. New replicas start out of ISR until they catch up.
@@ -88,8 +88,8 @@ After a successful local append and the existing local LEO / replica-state repor
 
 1. `LEADER` returns `ProduceResponse` / `ProduceV2Response` immediately on the request thread.
 2. `ALL` reads `ClusterController.getIsrBrokerIds` and the topic's `min.insync.replicas`. Empty ISR or `isr.size() < minInSync` → `NOT_ENOUGH_REPLICAS`.
-3. Otherwise the wait is submitted to a per-handler bounded produce-ack executor. The Netty event loop is not blocked for `ackTimeoutMs`.
-4. The waiter uses `ReplicaStateManager` until `replicationHighWatermark(topic, partition, leaderLeo, isr, leaderId) >= leaderLeo` or `ackTimeoutMs` elapses.
+3. Otherwise the wait is submitted to the broker-scoped produce-ack executor. The Netty event loop is not blocked for `ackTimeoutMs`.
+4. The waiter uses the **current** ISR and aborts if this node is no longer leader (`NOT_LEADER`) or live ISR size drops below `min.insync.replicas` (`NOT_ENOUGH_REPLICAS`). ISR is rechecked every 50 ms. Success is `replicationHighWatermark(topic, partition, leaderLeo, liveIsr, leaderId) >= leaderLeo`.
 5. Timeout → `REQUEST_TIMED_OUT` with no response body. Shutdown/rejection of the executor is treated the same way.
 
 `leaderLeo` is the partition `highWatermark()` after the append (next offset). That is the same value already reported as the Leader LEO today.

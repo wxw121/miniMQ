@@ -124,7 +124,7 @@ public class GroupCoordinator {
                 evictStaleMembers(group, true);
             }
             if (group == null || !group.members.containsKey(request.memberId())) {
-                return ErrorCode.GROUP_NOT_FOUND;
+                return ErrorCode.NONE;
             }
             group.members.remove(request.memberId());
             if (group.leaderMemberId == null

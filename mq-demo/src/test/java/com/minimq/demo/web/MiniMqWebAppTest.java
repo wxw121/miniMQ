@@ -139,6 +139,9 @@ class MiniMqWebAppTest {
                     "/api/topic/create",
                     "/api/topic/delete",
                     "/api/topic/increase",
+                    "/api/topic/alter-config",
+                    "/api/topic/reassign",
+                    "/api/topic/elect-preferred",
                     "/api/topic/reliability",
                     "/api/broker/offline",
                     "/api/retry-produce",
@@ -705,6 +708,9 @@ class MiniMqWebAppTest {
                     "/api/topic/describe",
                     "/api/topic/delete",
                     "/api/topic/increase",
+                    "/api/topic/alter-config",
+                    "/api/topic/reassign",
+                    "/api/topic/elect-preferred",
                     "/api/failover-audit",
                     "/api/auth-status",
                     "/api/topic/reliability",
@@ -771,6 +777,30 @@ class MiniMqWebAppTest {
             assertOk(postJson(baseUrl + "/api/topic/increase", """
                     {%s,"topic":"web-ops","targetPartitionCount":2}
                     """.formatted(controller)));
+            assertOk(postJson(baseUrl + "/api/topic/alter-config", """
+                    {%s,"topic":"web-ops","minInSyncReplicas":1}
+                    """.formatted(controller)));
+            assertOk(postJson(baseUrl + "/api/topic/reassign", """
+                    {%s,"topic":"web-ops","assignment":"0:0"}
+                    """.formatted(controller)));
+            assertOk(postJson(baseUrl + "/api/topic/elect-preferred", """
+                    {%s,"topic":"web-ops","partition":0}
+                    """.formatted(controller)));
+            assertOk(postJson(baseUrl + "/api/topic/elect-preferred", """
+                    {%s,"topic":"web-ops"}
+                    """.formatted(controller)));
+            assertEquals(400, postJson(baseUrl + "/api/topic/reassign", """
+                    {%s,"topic":"web-ops","assignment":"0"}
+                    """.formatted(controller)).statusCode());
+            assertEquals(400, postJson(baseUrl + "/api/topic/reassign", """
+                    {%s,"topic":"web-ops","assignment":"x:1"}
+                    """.formatted(controller)).statusCode());
+            assertEquals(400, postJson(baseUrl + "/api/topic/reassign", """
+                    {%s,"topic":"web-ops","assignment":"0:a"}
+                    """.formatted(controller)).statusCode());
+            assertEquals(400, postJson(baseUrl + "/api/topic/reassign", """
+                    {%s,"topic":"web-ops","assignment":"0:"}
+                    """.formatted(controller)).statusCode());
             assertOk(postJson(baseUrl + "/api/topics", "{%s,\"limit\":25}".formatted(controller)));
             assertOk(postJson(baseUrl + "/api/topic/describe", """
                     {%s,"topic":"web-ops","partitionLimit":25}

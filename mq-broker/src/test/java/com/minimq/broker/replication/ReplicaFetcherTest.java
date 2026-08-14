@@ -90,6 +90,38 @@ class ReplicaFetcherTest {
     }
 
     @Test
+    void newReplicaStartsFetchAtLeaderEpochStartOffset() throws Exception {
+        AtomicReference<ReplicaFetchV2Request> captured = new AtomicReference<>();
+        try (CountingReplicaLeader leader = CountingReplicaLeader.start(captured)) {
+            ClusterController controller =
+                    new ClusterController(new MetadataStore(tempDir.resolve("epoch-start-controller")));
+            controller.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", leader.port()));
+            controller.registerBroker(new RegisterBrokerRequest(1, "127.0.0.1", 19093));
+            assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("orders", 1, 2)));
+            controller.updateMetadata(metadata -> {
+                metadata.topics.get("orders").partitions.get(0).leaderEpochStartOffset = 10L;
+                return null;
+            });
+
+            PartitionManager partitionManager =
+                    new PartitionManager(new LogManager(tempDir.resolve("epoch-start-follower")));
+            ReplicaFetcher fetcher = new ReplicaFetcher(
+                    new BrokerConfig(1, "127.0.0.1", 19093, tempDir.resolve("epoch-start-broker"),
+                            true, "127.0.0.1", 9092, false, BrokerTestHarness.ADMIN_TOKEN),
+                    controller,
+                    partitionManager);
+            try {
+                fetcher.start();
+                waitForCapturedFetchOffset(captured, 10L);
+                assertEquals(10L, captured.get().fetchOffset());
+            } finally {
+                fetcher.close();
+                partitionManager.close();
+            }
+        }
+    }
+
+    @Test
     void reusesLeaderConnectionAcrossFetchLoops() throws Exception {
         try (CountingReplicaLeader leader = CountingReplicaLeader.start()) {
             ClusterController controller = new ClusterController(new MetadataStore(tempDir.resolve("controller-pool")));
@@ -244,6 +276,21 @@ class ReplicaFetcherTest {
             Thread.sleep(25);
         }
         assertEquals(expectedHighWatermark, partitionManager.highWatermark(topicName, partitionId));
+    }
+
+    private static void waitForCapturedFetchOffset(
+            AtomicReference<ReplicaFetchV2Request> captured,
+            long expectedFetchOffset) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (System.nanoTime() < deadline) {
+            ReplicaFetchV2Request request = captured.get();
+            if (request != null && request.fetchOffset() == expectedFetchOffset) {
+                return;
+            }
+            Thread.sleep(25);
+        }
+        ReplicaFetchV2Request request = captured.get();
+        assertEquals(expectedFetchOffset, request == null ? -1L : request.fetchOffset());
     }
 
     private static void waitForAcceptedConnections(

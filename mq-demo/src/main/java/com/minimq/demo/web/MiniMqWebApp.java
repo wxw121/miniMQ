@@ -367,6 +367,9 @@ public final class MiniMqWebApp implements AutoCloseable {
         registerOperatorRoute("/api/topic/describe", this::describeTopic);
         registerOperatorRoute("/api/topic/delete", this::deleteTopic);
         registerOperatorRoute("/api/topic/increase", this::increasePartitions);
+        registerOperatorRoute("/api/topic/alter-config", this::alterTopicConfig);
+        registerOperatorRoute("/api/topic/reassign", this::reassignPartitions);
+        registerOperatorRoute("/api/topic/elect-preferred", this::electPreferredLeaders);
         registerOperatorRoute("/api/failover-audit", this::failoverAudit);
         registerOperatorRoute("/api/auth-status", this::authStatus);
         registerOperatorRoute("/api/topic/reliability", this::configureTopicReliability);
@@ -474,6 +477,43 @@ public final class MiniMqWebApp implements AutoCloseable {
                         required(request.topic, "topic"),
                         required(request.targetPartitionCount, "targetPartitionCount")),
                 "increase partitions");
+    }
+
+    private AlterTopicConfigResponse alterTopicConfig(OperatorRequest request) throws Exception {
+        return (AlterTopicConfigResponse) sendController(
+                request,
+                ApiKeys.ALTER_TOPIC_CONFIG,
+                new AlterTopicConfigRequest(
+                        adminCredential,
+                        required(request.topic, "topic"),
+                        required(request.minInSyncReplicas, "minInSyncReplicas")),
+                "alter topic config");
+    }
+
+    private ReassignPartitionsResponse reassignPartitions(OperatorRequest request) throws Exception {
+        return (ReassignPartitionsResponse) sendController(
+                request,
+                ApiKeys.REASSIGN_PARTITIONS,
+                new ReassignPartitionsRequest(
+                        adminCredential,
+                        required(request.topic, "topic"),
+                        parseAssignments(required(request.assignment, "assignment"))),
+                "reassign partitions");
+    }
+
+    private ElectPreferredLeadersResponse electPreferredLeaders(OperatorRequest request)
+            throws Exception {
+        List<Integer> partitionIds = request.partition == null
+                ? List.of()
+                : List.of(request.partition);
+        return (ElectPreferredLeadersResponse) sendController(
+                request,
+                ApiKeys.ELECT_PREFERRED_LEADERS,
+                new ElectPreferredLeadersRequest(
+                        adminCredential,
+                        required(request.topic, "topic"),
+                        partitionIds),
+                "elect preferred leaders");
     }
 
     private FailoverAuditResponse failoverAudit(OperatorRequest request) throws Exception {
@@ -708,6 +748,48 @@ public final class MiniMqWebApp implements AutoCloseable {
             throw new IllegalArgumentException(field + " is required");
         }
         return value;
+    }
+
+    private static List<PartitionReplicaAssignment> parseAssignments(String assignment) {
+        List<PartitionReplicaAssignment> assignments = new ArrayList<>();
+        for (String token : assignment.split("[;\\s]+")) {
+            if (token.isBlank()) {
+                continue;
+            }
+            assignments.add(parseAssignment(token));
+        }
+        if (assignments.isEmpty()) {
+            throw new IllegalArgumentException("assignment is required");
+        }
+        return assignments;
+    }
+
+    private static PartitionReplicaAssignment parseAssignment(String value) {
+        if (!value.contains(":")) {
+            throw new IllegalArgumentException("assignment must be partitionId:brokerId[,brokerId...]");
+        }
+        String[] parts = value.split(":", 2);
+        int partitionId;
+        try {
+            partitionId = Integer.parseInt(parts[0].trim());
+        } catch (NumberFormatException ex) {
+            throw new IllegalArgumentException("assignment partition id must be an integer", ex);
+        }
+        List<Integer> replicas = new ArrayList<>();
+        for (String token : parts[1].split(",")) {
+            if (token.isBlank()) {
+                continue;
+            }
+            try {
+                replicas.add(Integer.parseInt(token.trim()));
+            } catch (NumberFormatException ex) {
+                throw new IllegalArgumentException("assignment replica ids must be integers", ex);
+            }
+        }
+        if (replicas.isEmpty()) {
+            throw new IllegalArgumentException("assignment must include replica ids");
+        }
+        return new PartitionReplicaAssignment(partitionId, replicas);
     }
 
     private FlowResult runAutoFlow(FlowRequest request) throws Exception {
@@ -1026,6 +1108,9 @@ public final class MiniMqWebApp implements AutoCloseable {
         private Integer lagLimit;
         private boolean includeDeleted;
         private Integer targetPartitionCount;
+        private Integer minInSyncReplicas;
+        private String assignment;
+        private Integer partition;
         private String retryTopic;
         private String deadLetterTopic;
         private boolean clearRetry;
@@ -1052,6 +1137,9 @@ public final class MiniMqWebApp implements AutoCloseable {
         public void setIncludeDeleted(boolean value) { includeDeleted = value; }
         public void setTargetPartitionCount(Integer value) { targetPartitionCount = value; }
         public void setTargetPartitions(Integer value) { targetPartitionCount = value; }
+        public void setMinInSyncReplicas(Integer value) { minInSyncReplicas = value; }
+        public void setAssignment(String value) { assignment = value; }
+        public void setPartition(Integer value) { partition = value; }
         public void setRetryTopic(String value) { retryTopic = value; }
         public void setDeadLetterTopic(String value) { deadLetterTopic = value; }
         public void setClearRetry(boolean value) { clearRetry = value; }

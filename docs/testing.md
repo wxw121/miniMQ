@@ -88,7 +88,7 @@ xychart-beta
     title "Line Coverage By Module / 模块行覆盖率"
     x-axis ["broker/代理", "client/客户端", "common/公共", "demo/演示", "protocol/协议", "storage/存储"]
     y-axis "Line % / 行覆盖率 %" 0 --> 100
-    bar [90.43, 90.09, 97.73, 93.14, 94.79, 90.10]
+    bar [90.75, 90.09, 97.73, 93.29, 94.73, 90.10]
 ```
 
 ```mermaid

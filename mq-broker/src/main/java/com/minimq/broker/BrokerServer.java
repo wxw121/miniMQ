@@ -35,6 +35,8 @@ import io.netty.channel.socket.SocketChannel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.concurrent.ExecutorService;
+
 /**
  * Broker 网络服务入口，负责启动 Netty、注册 Controller，并暴露 MiniMQ 协议处理链。
  */
@@ -65,6 +67,7 @@ public class BrokerServer {
     private BrokerStatusService brokerStatusService;
     private TopicDeletionReconciler topicDeletionReconciler;
     private TopicAdminService topicAdminService;
+    private ExecutorService produceAckExecutor;
     private final FailoverAuditLog failoverAuditLog;
     private boolean stopped;
 
@@ -157,6 +160,7 @@ public class BrokerServer {
                 availabilityGuard,
                 controllerRole,
                 replicaStateReporter);
+        produceAckExecutor = MqRequestHandler.newProduceAckExecutor();
         brokerLeaseService = new BrokerLeaseService(
                 config, clusterController, availabilityGuard, controllerRole, failoverAuditLog);
         brokerLeaseService.holdActivation();
@@ -203,7 +207,8 @@ public class BrokerServer {
                                         requestThrottler,
                                         brokerStatusService,
                                         failoverAuditLog,
-                                        topicAdminService))
+                                        topicAdminService,
+                                        produceAckExecutor))
                                 .addLast(new MqEncoder());
                     }
                 });
@@ -326,6 +331,10 @@ public class BrokerServer {
         }
         if (channelFuture != null) {
             channelFuture.channel().close().sync();
+        }
+        if (produceAckExecutor != null) {
+            produceAckExecutor.shutdownNow();
+            produceAckExecutor = null;
         }
         if (maintenanceAdminService != null) {
             maintenanceAdminService.close();
