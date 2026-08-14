@@ -18,6 +18,7 @@ public final class DeliverySchedule {
     private final LongSupplier clockMillis;
     private final Map<PartitionKey, Map<Long, Long>> entries = new HashMap<>();
     private final Map<PartitionKey, Long> visibleWatermarks = new HashMap<>();
+    private int reservedFutureSlots;
 
     public DeliverySchedule() {
         this(System::currentTimeMillis);
@@ -35,6 +36,9 @@ public final class DeliverySchedule {
         }
         entries.computeIfAbsent(new PartitionKey(topic, partitionId), ignored -> new HashMap<>())
                 .put(offset, deliverAtEpochMs);
+        if (reservedFutureSlots > 0) {
+            reservedFutureSlots--;
+        }
     }
 
     public synchronized void restore(String topic, int partitionId, long offset, long deliverAtEpochMs) {
@@ -259,6 +263,24 @@ public final class DeliverySchedule {
 
     public synchronized int count() {
         return entries.values().stream().mapToInt(Map::size).sum();
+    }
+
+    synchronized boolean tryReserveFutureSlots(int n, int maxScheduledRecords) {
+        if (n < 0) {
+            throw new IllegalArgumentException("n must be non-negative");
+        }
+        if (n == 0) {
+            return true;
+        }
+        if (count() + reservedFutureSlots + n > maxScheduledRecords) {
+            return false;
+        }
+        reservedFutureSlots += n;
+        return true;
+    }
+
+    synchronized void releaseFutureSlots(int n) {
+        reservedFutureSlots = Math.max(0, reservedFutureSlots - n);
     }
 
     public synchronized Map<String, Map<Long, Long>> snapshotByPartitionKey() {

@@ -658,7 +658,7 @@ The local scripts own one run directory through `.minimq-run-directory`, record 
 | Segmented local log per partition / 每分区本地分段日志 | Supports sparse indexing, faster recovery boundaries, whole-segment retention, sealed-segment compaction, dry-run reports, and maintenance metrics. / 支持稀疏索引、更清晰的恢复边界、整段保留删除、sealed segment 压缩、dry-run 报告和维护指标。 | External operator APIs still need to render maintenance reports and metrics. / 仍需要外部运维 API 输出维护报告与指标。 |
 | JSON metadata store / JSON 元数据存储 | Human-readable and easy for demos. / 人类可读，适合演示。 | Not a scalable metadata log. / 不是可扩展的元数据日志。 |
 | etcd-fenced Controller role / etcd fencing 的 Controller 角色 | Automatic takeover with epoch and revision fencing. / 使用 epoch 与 revision fencing 自动接管。 | Production Brokers require reachable etcd; SDK clients do not. / 生产 Broker 依赖可达 etcd，但 SDK 不依赖。 |
-| Synchronous client API / 同步客户端 API | Easy to use and test. / 易用且易测。 | Lower throughput than async batching. / 吞吐低于异步批量方案。 |
+| Synchronous send with optional partition batches / 同步发送并支持按分区批量 | Easy to use and test; one Produce request can carry many records. / 易用且易测，一次 Produce 可携带多条记录。 | Still no client-side linger accumulator. / 仍无客户端 linger 攒批器。 |
 | Sendfile FETCH path / sendfile FETCH 路径 | Removes payload copies on the Broker network write path. / 去掉 Broker 网络写路径上的 payload 复制。 | TLS and unsupported pipelines still use heap fallback. / TLS 与不支持的 pipeline 仍走 heap 回退。 |
 
 ## 14. Professional Terms / 专业名词解释

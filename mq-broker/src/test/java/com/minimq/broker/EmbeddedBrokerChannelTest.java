@@ -583,7 +583,7 @@ class EmbeddedBrokerChannelTest {
                         new ProduceRecord("k1".getBytes(), "v1".getBytes()),
                         new ProduceRecord("k2".getBytes(), "v2".getBytes()))));
         assertEquals(ErrorCode.NONE, produceResponse.header().errorCode());
-        assertEquals(1, ((ProduceResponse) produceResponse.body()).baseOffset());
+        assertEquals(0, ((ProduceResponse) produceResponse.body()).baseOffset());
         assertEquals(2L, clusterController.replicaLogEndOffset("orders", 0, 0));
 
         MqDecoder.DecodedResponse fetchResponse = send(channel, ApiKeys.FETCH,

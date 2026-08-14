@@ -62,7 +62,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     private static final Logger log = LoggerFactory.getLogger(MqRequestHandler.class);
     private static final int MAX_V4_FETCH_RECORDS = 10_000;
-    private static final int PRODUCE_ACK_THREADS = 4;
+    private static final int PRODUCE_ACK_THREADS =
+            Math.max(4, Runtime.getRuntime().availableProcessors());
     private static final AtomicInteger PRODUCE_ACK_THREAD_INDEX = new AtomicInteger();
     private final BrokerConfig config;
     private final ClusterController clusterController;
@@ -1162,15 +1163,17 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     }
 
     private ProduceResponse handleProduce(ProduceRequest request) {
-        long baseOffset = -1;
         long payloadBytes = 0L;
+        List<LogManager.AppendRecord> records = new ArrayList<>(request.records().size());
         for (ProduceRecord record : request.records()) {
             payloadBytes = Math.addExact(
                     payloadBytes,
                     (record.key() == null ? 0L : record.key().length)
                             + (record.value() == null ? 0L : record.value().length));
-            baseOffset = partitionManager.append(request.topicName(), request.partitionId(), record.key(), record.value());
+            records.add(new LogManager.AppendRecord(record.key(), record.value(), 0L));
         }
+        long baseOffset = partitionManager.appendBatch(
+                request.topicName(), request.partitionId(), records);
         runtimeMetrics.recordProduceBytes(payloadBytes);
         PartitionLog partitionLog = partitionManager.getOrCreate(request.topicName(), request.partitionId());
         replicaStateManager.updateReplicaLeo(

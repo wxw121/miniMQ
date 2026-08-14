@@ -15,7 +15,8 @@ import com.minimq.protocol.message.MqResponseHeader;
 import com.minimq.protocol.message.ProtocolMessages.*;
 import com.minimq.protocol.message.ProtocolMessages.PartitionMetadata;
 
-import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,7 +26,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 /**
- * 同步生产者客户端，负责获取元数据、选择目标分区并把消息发送到 leader Broker。
+ * 生产者客户端：同步 {@link #send(ProducerRecord)} 仍可用；同一连接上的多线程发送
+ * 与按分区聚合的 {@link #send(List)} 批量请求可提高吞吐。
  */
 public class Producer implements AutoCloseable {
     public static final long DEFAULT_METADATA_CACHE_MAX_AGE_MS = 30_000L;
@@ -36,9 +38,9 @@ public class Producer implements AutoCloseable {
     private final ControllerAwareNetworkClient client;
     private final Function<String, NetworkClient> brokerClientFactory;
     private final Map<Integer, NetworkClient> brokerClients = new ConcurrentHashMap<>();
-    private final Map<String, CachedMetadata> metadataCache = new HashMap<>();
+    private final Map<String, CachedMetadata> metadataCache = new ConcurrentHashMap<>();
     private final Map<String, CachedReliabilityMetadata> reliabilityMetadataCache =
-            new BoundedLruCache<>(DEFAULT_RELIABILITY_LINK_CACHE_MAX_ENTRIES);
+            Collections.synchronizedMap(new BoundedLruCache<>(DEFAULT_RELIABILITY_LINK_CACHE_MAX_ENTRIES));
 
     public Producer(String bootstrapServers, String clientId) {
         this(bootstrapServers, clientId, NetworkClient::new);
@@ -121,6 +123,121 @@ public class Producer implements AutoCloseable {
                     produceResponse.topicName(),
                     produceResponse.partitionId(),
                     produceResponse.baseOffset());
+        }
+        throw new IllegalStateException("unreachable");
+    }
+
+    /**
+     * Sends every record in one round-trip per destination partition.
+     * Results are aligned with {@code records} so {@code results.get(i)} is the
+     * assigned offset of {@code records.get(i)}.
+     */
+    public List<ProduceResult> send(List<ProducerRecord> records) throws InterruptedException {
+        return send(records, ProduceAcks.LEADER, ProduceAcks.DEFAULT_TIMEOUT_MS);
+    }
+
+    public List<ProduceResult> send(List<ProducerRecord> records, ProduceAcks acks)
+            throws InterruptedException {
+        return send(records, acks, ProduceAcks.DEFAULT_TIMEOUT_MS);
+    }
+
+    public List<ProduceResult> send(
+            List<ProducerRecord> records, ProduceAcks acks, int ackTimeoutMs)
+            throws InterruptedException {
+        ProduceAcks.requireTimeoutMs(ackTimeoutMs);
+        if (records == null || records.isEmpty()) {
+            throw new IllegalArgumentException("records must not be empty");
+        }
+        ProduceResult[] results = new ProduceResult[records.size()];
+        Map<String, List<IndexedRecord>> byTopic = new LinkedHashMap<>();
+        for (int i = 0; i < records.size(); i++) {
+            ProducerRecord record = records.get(i);
+            if (record == null) {
+                throw new IllegalArgumentException("records must not contain null");
+            }
+            byTopic.computeIfAbsent(record.topic(), ignored -> new ArrayList<>())
+                    .add(new IndexedRecord(i, record));
+        }
+        for (Map.Entry<String, List<IndexedRecord>> topicEntry : byTopic.entrySet()) {
+            sendTopicBatch(topicEntry.getKey(), topicEntry.getValue(), acks, ackTimeoutMs, results);
+        }
+        return List.of(results);
+    }
+
+    private void sendTopicBatch(
+            String topic,
+            List<IndexedRecord> topicRecords,
+            ProduceAcks acks,
+            int ackTimeoutMs,
+            ProduceResult[] results) throws InterruptedException {
+        MetadataResponse metadata = cachedMetadata(topic);
+        Map<Integer, List<IndexedRecord>> byPartition = new LinkedHashMap<>();
+        for (IndexedRecord indexed : topicRecords) {
+            ProduceRoute route = routeWithRefresh(indexed.record(), metadata, 0);
+            byPartition.computeIfAbsent(route.partitionId(), ignored -> new ArrayList<>())
+                    .add(indexed);
+            metadata = cachedMetadata(topic);
+        }
+        for (List<IndexedRecord> partitionRecords : byPartition.values()) {
+            sendPartitionBatch(topic, partitionRecords, acks, ackTimeoutMs, true, results);
+        }
+    }
+
+    private void sendPartitionBatch(
+            String topic,
+            List<IndexedRecord> partitionRecords,
+            ProduceAcks acks,
+            int ackTimeoutMs,
+            boolean retryConnectionFailure,
+            ProduceResult[] results) throws InterruptedException {
+        ProducerRecord first = partitionRecords.get(0).record();
+        MetadataResponse metadata = cachedMetadata(topic);
+        for (int attempt = 0; attempt < 2; attempt++) {
+            ProduceRoute route = routeWithRefresh(first, metadata, attempt);
+            List<ProduceRecord> payload = new ArrayList<>(partitionRecords.size());
+            for (IndexedRecord indexed : partitionRecords) {
+                payload.add(new ProduceRecord(indexed.record().key(), indexed.record().value()));
+            }
+            ProduceRequest request = new ProduceRequest(
+                    topic,
+                    route.partitionId(),
+                    route.leaderEpoch(),
+                    payload,
+                    acks.code(),
+                    ackTimeoutMs);
+            MqDecoder.DecodedResponse response;
+            try {
+                response = sendProduce(route.leader(), request);
+            } catch (MiniMqConnectionException failure) {
+                invalidateMetadata(topic);
+                invalidateBrokerClient(route.leader().brokerId());
+                if (retryConnectionFailure && attempt == 0) {
+                    metadata = refreshMetadata(topic);
+                    continue;
+                }
+                throw failure;
+            }
+            MqResponseHeader header = response.header();
+            if (isStaleLeaderError(header.errorCode()) && attempt == 0) {
+                invalidateMetadata(topic);
+                invalidateBrokerClient(route.leader().brokerId());
+                metadata = refreshMetadata(topic);
+                continue;
+            }
+            client.ensureSuccess(response, "PRODUCE topic=" + topic
+                    + " partition=" + route.partitionId()
+                    + " broker=" + route.leader().brokerId()
+                    + " attempt=" + (attempt + 1) + "/2");
+            ProduceResponse produceResponse = (ProduceResponse) response.body();
+            long baseOffset = produceResponse.baseOffset();
+            for (int i = 0; i < partitionRecords.size(); i++) {
+                IndexedRecord indexed = partitionRecords.get(i);
+                results[indexed.index()] = new ProduceResult(
+                        produceResponse.topicName(),
+                        produceResponse.partitionId(),
+                        baseOffset + i);
+            }
+            return;
         }
         throw new IllegalStateException("unreachable");
     }
@@ -458,6 +575,9 @@ public class Producer implements AutoCloseable {
     }
 
     private record ProduceRoute(int partitionId, long leaderEpoch, BrokerMetadata leader) {
+    }
+
+    private record IndexedRecord(int index, ProducerRecord record) {
     }
 
     private enum ReliabilityTarget {

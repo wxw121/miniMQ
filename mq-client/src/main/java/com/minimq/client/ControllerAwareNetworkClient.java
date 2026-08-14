@@ -18,8 +18,9 @@ public final class ControllerAwareNetworkClient implements AutoCloseable {
     private final String clientId;
     private final Duration requestTimeout;
     private final NetworkClientFactory clientFactory;
-    private NetworkClient controllerClient;
-    private long controllerEpoch = -1L;
+    private final Object stateLock = new Object();
+    private volatile NetworkClient controllerClient;
+    private volatile long controllerEpoch = -1L;
 
     public ControllerAwareNetworkClient(String bootstrapServers, String clientId) {
         this(bootstrapServers, clientId, NetworkClient.DEFAULT_REQUEST_TIMEOUT);
@@ -45,16 +46,18 @@ public final class ControllerAwareNetworkClient implements AutoCloseable {
         NetworkClient.durationToNanos(requestTimeout);
     }
 
-    public synchronized void connect() throws InterruptedException {
-        rediscover(configuredDeadlineNanos());
+    public void connect() throws InterruptedException {
+        synchronized (stateLock) {
+            rediscover(configuredDeadlineNanos());
+        }
     }
 
-    public synchronized MqDecoder.DecodedResponse send(short apiKey, Object body)
+    public MqDecoder.DecodedResponse send(short apiKey, Object body)
             throws InterruptedException {
         return sendInternal(apiKey, body, configuredDeadlineNanos());
     }
 
-    public synchronized MqDecoder.DecodedResponse send(
+    public MqDecoder.DecodedResponse send(
             short apiKey, Object body, Duration timeout) throws InterruptedException {
         Duration requestedTimeout = Objects.requireNonNull(timeout, "timeout");
         if (requestedTimeout.isNegative()) {
@@ -67,7 +70,7 @@ public final class ControllerAwareNetworkClient implements AutoCloseable {
         return sendInternal(apiKey, body, deadlineNanos);
     }
 
-    synchronized MqDecoder.DecodedResponse sendUntil(
+    MqDecoder.DecodedResponse sendUntil(
             short apiKey, Object body, long deadlineNanos) throws InterruptedException {
         return sendInternal(apiKey, body, deadlineNanos);
     }
@@ -75,8 +78,14 @@ public final class ControllerAwareNetworkClient implements AutoCloseable {
     private MqDecoder.DecodedResponse sendInternal(
             short apiKey, Object body, Long deadlineNanos) throws InterruptedException {
         for (int attempt = 0; attempt < 2; attempt++) {
-            if (controllerClient == null) {
-                rediscover(deadlineNanos);
+            NetworkClient client = controllerClient;
+            if (client == null) {
+                synchronized (stateLock) {
+                    if (controllerClient == null) {
+                        rediscover(deadlineNanos);
+                    }
+                    client = controllerClient;
+                }
             }
             Duration remainingTimeout = deadlineNanos == null
                     ? null
@@ -88,23 +97,32 @@ public final class ControllerAwareNetworkClient implements AutoCloseable {
             MqDecoder.DecodedResponse response;
             try {
                 response = remainingTimeout == null
-                        ? controllerClient.send(apiKey, body)
-                        : controllerClient.send(apiKey, body, remainingTimeout);
+                        ? client.send(apiKey, body)
+                        : client.send(apiKey, body, remainingTimeout);
             } catch (MiniMqConnectionException failure) {
-                boolean cleanupInterrupted = invalidateCurrent(failure, deadlineNanos);
-                if (attempt == 0
-                        && !cleanupInterrupted
-                        && hasRemainingTime(deadlineNanos)) {
-                    rediscover(deadlineNanos);
-                    continue;
+                boolean cleanupInterrupted;
+                synchronized (stateLock) {
+                    cleanupInterrupted = invalidateCurrent(failure, deadlineNanos, client);
+                    if (attempt == 0
+                            && !cleanupInterrupted
+                            && hasRemainingTime(deadlineNanos)) {
+                        rediscover(deadlineNanos);
+                        continue;
+                    }
                 }
                 throw failure;
             } catch (RuntimeException | Error failure) {
-                invalidateCurrent(failure, deadlineNanos);
+                synchronized (stateLock) {
+                    invalidateCurrent(failure, deadlineNanos, client);
+                }
                 throw failure;
             }
             if (isStaleController(response.header().errorCode()) && attempt == 0) {
-                rediscover(deadlineNanos);
+                synchronized (stateLock) {
+                    if (controllerClient == client) {
+                        rediscover(deadlineNanos);
+                    }
+                }
                 continue;
             }
             return response;
@@ -133,12 +151,8 @@ public final class ControllerAwareNetworkClient implements AutoCloseable {
         }
     }
 
-    public synchronized long controllerEpoch() {
+    public long controllerEpoch() {
         return controllerEpoch;
-    }
-
-    private void rediscover() throws InterruptedException {
-        rediscover(configuredDeadlineNanos());
     }
 
     private long configuredDeadlineNanos() {
@@ -292,11 +306,11 @@ public final class ControllerAwareNetworkClient implements AutoCloseable {
         return interrupted;
     }
 
-    private boolean invalidateCurrent(Throwable failure) {
-        return invalidateCurrent(failure, null);
-    }
-
-    private boolean invalidateCurrent(Throwable failure, Long deadlineNanos) {
+    private boolean invalidateCurrent(
+            Throwable failure, Long deadlineNanos, NetworkClient expected) {
+        if (expected != null && controllerClient != expected) {
+            return false;
+        }
         NetworkClient stale = controllerClient;
         controllerClient = null;
         if (stale == null) {
@@ -336,8 +350,10 @@ public final class ControllerAwareNetworkClient implements AutoCloseable {
     }
 
     @Override
-    public synchronized void close() throws InterruptedException {
-        closeCurrent();
+    public void close() throws InterruptedException {
+        synchronized (stateLock) {
+            closeCurrent();
+        }
     }
 
     @FunctionalInterface

@@ -76,6 +76,45 @@ class LogManagerFlushPolicyTest {
     }
 
     @Test
+    void concurrentAppendsToDistinctPartitionsDoNotShareOffsets(@TempDir Path dir) throws Exception {
+        LogManager manager = new LogManager(dir, new LogManagerConfig(FlushPolicy.always(), 0));
+        int partitions = 4;
+        int perPartition = 32;
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(partitions);
+        List<Future<?>> futures = new ArrayList<>();
+
+        try {
+            for (int partitionId = 0; partitionId < partitions; partitionId++) {
+                final int id = partitionId;
+                futures.add(executor.submit(() -> {
+                    start.await();
+                    for (int i = 0; i < perPartition; i++) {
+                        manager.append(
+                                "orders",
+                                id,
+                                ("k" + id + "-" + i).getBytes(),
+                                ("v" + id + "-" + i).getBytes());
+                    }
+                    return null;
+                }));
+            }
+
+            start.countDown();
+            for (Future<?> future : futures) {
+                future.get();
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+
+        for (int partitionId = 0; partitionId < partitions; partitionId++) {
+            assertEquals(perPartition, manager.getOrCreate("orders", partitionId).highWatermark());
+        }
+        manager.close();
+    }
+
+    @Test
     void closeFlushesCheckpointAndRejectsFurtherAppends(@TempDir Path dir) {
         LogManager manager = new LogManager(dir, new LogManagerConfig(FlushPolicy.manualOnClose(), 0));
         manager.append("orders", 0, "k0".getBytes(), "v0".getBytes());

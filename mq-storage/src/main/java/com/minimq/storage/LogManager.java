@@ -16,6 +16,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 日志管理器，按 TopicPartition 创建和缓存 FilePartitionLog。
@@ -33,8 +34,8 @@ public class LogManager implements AutoCloseable {
     /** Names deleted by a durable tombstone stay blocked for this process. */
     private final Set<String> deletedTopics = ConcurrentHashMap.newKeySet();
     private final Map<String, String> topicStorageOwners = new ConcurrentHashMap<>();
-    private long successfulAppends;
-    private long lastFlushEpochMs;
+    private final AtomicLong successfulAppends = new AtomicLong();
+    private volatile long lastFlushEpochMs;
     private long maintenanceRuns;
     private long maintenanceDryRuns;
     private long maintenanceDeletedBytes;
@@ -43,8 +44,8 @@ public class LogManager implements AutoCloseable {
     private long maintenanceCompactedSegments;
     private long maintenanceSkippedDueToReaders;
     private long maintenanceCleanupFailures;
-    private MaintenanceStatus lastMaintenanceStatus = MaintenanceStatus.NEVER_RUN;
-    private boolean closed;
+    private volatile MaintenanceStatus lastMaintenanceStatus = MaintenanceStatus.NEVER_RUN;
+    private volatile boolean closed;
 
     public LogManager(Path dataDir) {
         this(dataDir, LogManagerConfig.defaults());
@@ -71,17 +72,27 @@ public class LogManager implements AutoCloseable {
         }
     }
 
-    public synchronized PartitionLog getOrCreate(String topic, int partitionId) {
+    public PartitionLog getOrCreate(String topic, int partitionId) {
         ensureOpen();
         if (!TopicNames.isValidReference(topic) || partitionId < 0) {
             throw new IllegalArgumentException("invalid topic partition");
         }
-        registerTopicStorageOwner(topic);
         if (deletedTopics.contains(topic)) {
             throw new IllegalStateException("Topic has been deleted: " + topic);
         }
         String partitionKey = topic + "-" + partitionId;
-        return logs.computeIfAbsent(partitionKey, this::openPartitionLog);
+        PartitionLog existing = logs.get(partitionKey);
+        if (existing != null) {
+            return existing;
+        }
+        synchronized (this) {
+            ensureOpen();
+            registerTopicStorageOwner(topic);
+            if (deletedTopics.contains(topic)) {
+                throw new IllegalStateException("Topic has been deleted: " + topic);
+            }
+            return logs.computeIfAbsent(partitionKey, this::openPartitionLog);
+        }
     }
 
     /**
@@ -97,18 +108,21 @@ public class LogManager implements AutoCloseable {
         if (deletedTopics.contains(topic)) {
             return;
         }
+        // Block new opens/appends, then drain in-flight per-partition appends
+        // (which hold the partition log lock across WAL) before touching WAL.
+        deletedTopics.add(topic);
+        closeCachedLogsForTopic(topic);
         writeAheadLog.append(WalRecord.topicDeleteBegin(topic, tombstoneVersion), true);
         deleteTopicFiles(topic);
-        deletedTopics.add(topic);
         writeAheadLog.append(WalRecord.topicDeleteCommit(topic, tombstoneVersion), true);
         saveCheckpoint();
     }
 
-    public synchronized long append(String topic, int partitionId, byte[] key, byte[] value) {
+    public long append(String topic, int partitionId, byte[] key, byte[] value) {
         return append(topic, partitionId, key, value, 0L);
     }
 
-    public synchronized long append(
+    public long append(
             String topic,
             int partitionId,
             byte[] key,
@@ -120,23 +134,37 @@ public class LogManager implements AutoCloseable {
         }
         long now = clock.millis();
         long persistedDeliverAtEpochMs = deliverAtEpochMs > now ? deliverAtEpochMs : 0L;
-        if (persistedDeliverAtEpochMs > 0) {
+        boolean reserved = persistedDeliverAtEpochMs > 0;
+        if (reserved) {
             ensureScheduledCapacity(1);
         }
-        PartitionLog log = getOrCreate(topic, partitionId);
-        long offset = log.highWatermark();
-        writeAheadLog.append(WalRecord.dataAppend(
-                topic, partitionId, offset, key, value, persistedDeliverAtEpochMs), false);
-        log.appendAt(offset, key, value);
-        scheduleIfFuture(topic, partitionId, offset, persistedDeliverAtEpochMs, now);
-        successfulAppends++;
-        flushAfterAppendIfNeeded();
-        checkpointAfterAppendIfNeeded();
-        maintenanceAfterAppendIfNeeded();
-        return offset;
+        boolean reservationConsumed = false;
+        try {
+            PartitionLog log = getOrCreate(topic, partitionId);
+            long offset;
+            synchronized (log) {
+                ensureActivePartition(topic, partitionId, log);
+                offset = log.highWatermark();
+                writeAheadLog.append(WalRecord.dataAppend(
+                        topic, partitionId, offset, key, value, persistedDeliverAtEpochMs), false);
+                log.appendAt(offset, key, value);
+                recordScheduledDelivery(topic, partitionId, offset, persistedDeliverAtEpochMs, now);
+                reservationConsumed = reserved;
+            }
+            long appends = successfulAppends.incrementAndGet();
+            flushAfterAppendIfNeeded(log, appends);
+            checkpointAfterAppendIfNeeded(appends);
+            maintenanceAfterAppendIfNeeded(appends);
+            return offset;
+        } catch (RuntimeException | Error failure) {
+            if (reserved && !reservationConsumed) {
+                releaseScheduledReservation(1);
+            }
+            throw failure;
+        }
     }
 
-    public synchronized long appendBatch(String topic, int partitionId, List<AppendRecord> records) {
+    public long appendBatch(String topic, int partitionId, List<AppendRecord> records) {
         ensureOpen();
         if (records == null || records.isEmpty()) {
             return -1L;
@@ -151,36 +179,55 @@ public class LogManager implements AutoCloseable {
                 futureRecordCount++;
             }
         }
-        ensureScheduledCapacity(futureRecordCount);
-        PartitionLog log = getOrCreate(topic, partitionId);
-        long baseOffset = log.highWatermark();
-        for (int i = 0; i < records.size(); i++) {
-            AppendRecord record = records.get(i);
-            long offset = baseOffset + i;
-            long persistedDeliverAtEpochMs =
-                    record.deliverAtEpochMs() > now ? record.deliverAtEpochMs() : 0L;
-            writeAheadLog.append(WalRecord.dataAppend(
-                    topic,
-                    partitionId,
-                    offset,
-                    record.key(),
-                    record.value(),
-                    persistedDeliverAtEpochMs), false);
-            log.appendAt(offset, record.key(), record.value());
-            scheduleIfFuture(topic, partitionId, offset, persistedDeliverAtEpochMs, now);
-            successfulAppends++;
+        if (futureRecordCount > 0) {
+            ensureScheduledCapacity(futureRecordCount);
         }
-        flushAfterAppendIfNeeded();
-        checkpointAfterAppendIfNeeded();
-        maintenanceAfterAppendIfNeeded();
-        return baseOffset;
+        int remainingReservation = futureRecordCount;
+        try {
+            PartitionLog log = getOrCreate(topic, partitionId);
+            long baseOffset;
+            synchronized (log) {
+                ensureActivePartition(topic, partitionId, log);
+                baseOffset = log.highWatermark();
+                for (int i = 0; i < records.size(); i++) {
+                    AppendRecord record = records.get(i);
+                    long offset = baseOffset + i;
+                    long persistedDeliverAtEpochMs =
+                            record.deliverAtEpochMs() > now ? record.deliverAtEpochMs() : 0L;
+                    writeAheadLog.append(WalRecord.dataAppend(
+                            topic,
+                            partitionId,
+                            offset,
+                            record.key(),
+                            record.value(),
+                            persistedDeliverAtEpochMs), false);
+                    log.appendAt(offset, record.key(), record.value());
+                    recordScheduledDelivery(
+                            topic, partitionId, offset, persistedDeliverAtEpochMs, now);
+                    if (persistedDeliverAtEpochMs > 0) {
+                        remainingReservation--;
+                    }
+                    successfulAppends.incrementAndGet();
+                }
+            }
+            long appends = successfulAppends.get();
+            flushAfterAppendIfNeeded(log, appends);
+            checkpointAfterAppendIfNeeded(appends);
+            maintenanceAfterAppendIfNeeded(appends);
+            return baseOffset;
+        } catch (RuntimeException | Error failure) {
+            if (remainingReservation > 0) {
+                releaseScheduledReservation(remainingReservation);
+            }
+            throw failure;
+        }
     }
 
-    public synchronized void replicateAt(String topic, int partitionId, long offset, byte[] key, byte[] value) {
+    public void replicateAt(String topic, int partitionId, long offset, byte[] key, byte[] value) {
         replicateAt(topic, partitionId, offset, key, value, 0L);
     }
 
-    public synchronized void replicateAt(
+    public void replicateAt(
             String topic,
             int partitionId,
             long offset,
@@ -193,45 +240,60 @@ public class LogManager implements AutoCloseable {
         }
         long now = clock.millis();
         long persistedDeliverAtEpochMs = deliverAtEpochMs > now ? deliverAtEpochMs : 0L;
-        if (persistedDeliverAtEpochMs > 0) {
+        boolean reserved = persistedDeliverAtEpochMs > 0;
+        if (reserved) {
             ensureScheduledCapacity(1);
         }
-        PartitionLog log = getOrCreate(topic, partitionId);
-        writeAheadLog.append(WalRecord.dataAppend(
-                topic, partitionId, offset, key, value, persistedDeliverAtEpochMs), false);
-        log.appendAt(offset, key, value);
-        scheduleIfFuture(topic, partitionId, offset, persistedDeliverAtEpochMs, now);
-        successfulAppends++;
-        flushAfterAppendIfNeeded();
-        checkpointAfterAppendIfNeeded();
-        maintenanceAfterAppendIfNeeded();
+        boolean reservationConsumed = false;
+        try {
+            PartitionLog log = getOrCreate(topic, partitionId);
+            synchronized (log) {
+                ensureActivePartition(topic, partitionId, log);
+                writeAheadLog.append(WalRecord.dataAppend(
+                        topic, partitionId, offset, key, value, persistedDeliverAtEpochMs), false);
+                log.appendAt(offset, key, value);
+                recordScheduledDelivery(topic, partitionId, offset, persistedDeliverAtEpochMs, now);
+                reservationConsumed = reserved;
+            }
+            long appends = successfulAppends.incrementAndGet();
+            flushAfterAppendIfNeeded(log, appends);
+            checkpointAfterAppendIfNeeded(appends);
+            maintenanceAfterAppendIfNeeded(appends);
+        } catch (RuntimeException | Error failure) {
+            if (reserved && !reservationConsumed) {
+                releaseScheduledReservation(1);
+            }
+            throw failure;
+        }
     }
 
     public synchronized void truncateTo(String topic, int partitionId, long offset) {
         ensureOpen();
         PartitionLog log = getOrCreate(topic, partitionId);
-        if (offset < 0 || offset > log.highWatermark()) {
-            throw new IllegalArgumentException("truncate offset outside log range: " + offset);
+        synchronized (log) {
+            if (offset < 0 || offset > log.highWatermark()) {
+                throw new IllegalArgumentException("truncate offset outside log range: " + offset);
+            }
+            if (offset == log.highWatermark()) {
+                return;
+            }
+            writeAheadLog.append(WalRecord.truncateBegin(topic, partitionId, offset), true);
+            log.truncateTo(offset);
+            deliverySchedule.truncatePartition(topic, partitionId, offset);
+            writeAheadLog.append(WalRecord.truncateCommit(topic, partitionId, offset), true);
         }
-        if (offset == log.highWatermark()) {
-            return;
-        }
-        writeAheadLog.append(WalRecord.truncateBegin(topic, partitionId, offset), true);
-        log.truncateTo(offset);
-        deliverySchedule.truncatePartition(topic, partitionId, offset);
-        writeAheadLog.append(WalRecord.truncateCommit(topic, partitionId, offset), true);
         saveCheckpoint();
     }
 
-    public synchronized long visibleHighWatermark(String topic, int partitionId) {
+    public long visibleHighWatermark(String topic, int partitionId) {
         return visibilitySnapshot(topic, partitionId).visibleHighWatermark();
     }
 
-    public synchronized long nextVisibleAtEpochMs(String topic, int partitionId) {
+    public long nextVisibleAtEpochMs(String topic, int partitionId) {
         return visibilitySnapshot(topic, partitionId).nextVisibleAtEpochMs();
     }
 
-    public synchronized VisibilitySnapshot visibilitySnapshot(String topic, int partitionId) {
+    public VisibilitySnapshot visibilitySnapshot(String topic, int partitionId) {
         ensureOpen();
         PartitionLog log = getOrCreate(topic, partitionId);
         long physicalHighWatermark = log.highWatermark();
@@ -239,7 +301,7 @@ public class LogManager implements AutoCloseable {
         DeliverySchedule.VisibilityUpdate visibility = deliverySchedule.pruneAndGetVisibilityAt(
                 topic, partitionId, physicalHighWatermark, now);
         if (visibility.prunedCount() > 0) {
-            saveCheckpoint(now);
+            checkpoint();
         }
         return new VisibilitySnapshot(
                 physicalHighWatermark,
@@ -247,7 +309,7 @@ public class LogManager implements AutoCloseable {
                 visibility.nextVisibleAtEpochMs());
     }
 
-    public synchronized long deliveryAtEpochMs(String topic, int partitionId, long offset) {
+    public long deliveryAtEpochMs(String topic, int partitionId, long offset) {
         ensureOpen();
         return deliverySchedule.deliveryAt(topic, partitionId, offset).orElse(0L);
     }
@@ -275,11 +337,15 @@ public class LogManager implements AutoCloseable {
         if (pruneDueDeliveries(highWatermarks()) > 0) {
             saveCheckpoint();
         }
-        int requestedScheduledRecords = deliverySchedule.count() + futureRecordCount;
-        if (requestedScheduledRecords > maxScheduledRecords) {
+        if (!deliverySchedule.tryReserveFutureSlots(futureRecordCount, maxScheduledRecords)) {
+            int requestedScheduledRecords = deliverySchedule.count() + futureRecordCount;
             throw new ScheduledCapacityExceededException("Scheduled delivery capacity exceeded: "
                     + requestedScheduledRecords + " > " + maxScheduledRecords);
         }
+    }
+
+    private void releaseScheduledReservation(int n) {
+        deliverySchedule.releaseFutureSlots(n);
     }
 
     private void warnIfRecoveredScheduleExceedsCap() {
@@ -400,10 +466,10 @@ public class LogManager implements AutoCloseable {
         lastMaintenanceStatus = MaintenanceStatus.SKIPPED_WINDOW;
     }
 
-    private void maintenanceAfterAppendIfNeeded() {
-        if (config.maintenanceConfig().shouldRunAfterAppend(successfulAppends, clock)) {
+    private void maintenanceAfterAppendIfNeeded(long appends) {
+        if (config.maintenanceConfig().shouldRunAfterAppend(appends, clock)) {
             maintain();
-        } else if (config.maintenanceConfig().shouldSkipAfterAppendForWindow(successfulAppends, clock)) {
+        } else if (config.maintenanceConfig().shouldSkipAfterAppendForWindow(appends, clock)) {
             recordWindowSkip();
         }
     }
@@ -418,13 +484,12 @@ public class LogManager implements AutoCloseable {
             return;
         }
         saveCheckpoint();
+        closed = true;
+        logs.values().forEach(PartitionLog::close);
         try {
             writeAheadLog.close();
         } catch (IOException e) {
             throw new IllegalStateException("Failed to close WAL", e);
-        } finally {
-            logs.values().forEach(PartitionLog::close);
-            closed = true;
         }
     }
 
@@ -566,8 +631,7 @@ public class LogManager implements AutoCloseable {
         }
     }
 
-    private void deleteTopicFiles(String topic) {
-        deliverySchedule.removeTopic(topic);
+    private void closeCachedLogsForTopic(String topic) {
         // Close/remove cached logs first. Partition keys are parsed at the
         // final '-' so topics containing '-' are not confused with prefixes.
         for (Map.Entry<String, PartitionLog> entry : new ArrayList<>(logs.entrySet())) {
@@ -575,15 +639,17 @@ public class LogManager implements AutoCloseable {
             if (ref == null || !topic.equals(ref.topic())) {
                 continue;
             }
-            entry.getValue().close();
-            logs.remove(entry.getKey(), entry.getValue());
-            try {
-                deleteRecursively(dataDir.resolve("segments").resolve(entry.getKey()));
-                Files.deleteIfExists(dataDir.resolve(entry.getKey() + ".log"));
-            } catch (IOException e) {
-                throw new IllegalStateException("Failed to delete topic partition " + entry.getKey(), e);
+            PartitionLog log = entry.getValue();
+            synchronized (log) {
+                log.close();
             }
+            logs.remove(entry.getKey(), log);
         }
+    }
+
+    private void deleteTopicFiles(String topic) {
+        deliverySchedule.removeTopic(topic);
+        closeCachedLogsForTopic(topic);
         Path segmentsRoot = dataDir.resolve("segments");
         try {
             if (Files.exists(segmentsRoot)) {
@@ -643,22 +709,31 @@ public class LogManager implements AutoCloseable {
         cleanupMigratedLegacyFiles();
     }
 
-    private void flushAfterAppendIfNeeded() {
-        if (config.flushPolicy().shouldFlush(successfulAppends, clock.millis(), lastFlushEpochMs)) {
-            flushAll();
+    private void flushAfterAppendIfNeeded(PartitionLog log, long appends) {
+        if (config.flushPolicy().shouldFlush(appends, clock.millis(), lastFlushEpochMs)) {
+            log.flush();
+            writeAheadLog.flush();
+            lastFlushEpochMs = clock.millis();
         }
     }
 
-    private void scheduleIfFuture(String topic, int partitionId, long offset, long deliverAtEpochMs) {
-        scheduleIfFuture(topic, partitionId, offset, deliverAtEpochMs, clock.millis());
-    }
-
-    private void scheduleIfFuture(
-            String topic, int partitionId, long offset, long deliverAtEpochMs, long now) {
+    private void recordScheduledDelivery(
+            String topic,
+            int partitionId,
+            long offset,
+            long deliverAtEpochMs,
+            long now) {
         if (deliverAtEpochMs > now) {
             deliverySchedule.put(topic, partitionId, offset, deliverAtEpochMs);
         } else {
             deliverySchedule.noteReadyOffset(topic, partitionId, offset);
+        }
+    }
+
+    private void ensureActivePartition(String topic, int partitionId, PartitionLog log) {
+        ensureOpen();
+        if (deletedTopics.contains(topic) || logs.get(topic + "-" + partitionId) != log) {
+            throw new IllegalStateException("Topic has been deleted: " + topic);
         }
     }
 
@@ -699,15 +774,15 @@ public class LogManager implements AutoCloseable {
         }
     }
 
-    private void checkpointAfterAppendIfNeeded() {
-        if (config.shouldCheckpointAfterAppend(successfulAppends)) {
-            saveCheckpoint();
+    private void checkpointAfterAppendIfNeeded(long appends) {
+        if (config.shouldCheckpointAfterAppend(appends)) {
+            checkpoint();
         }
     }
 
     private void flushAll() {
-        writeAheadLog.flush();
         logs.values().forEach(PartitionLog::flush);
+        writeAheadLog.flush();
         lastFlushEpochMs = clock.millis();
     }
 

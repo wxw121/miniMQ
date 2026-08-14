@@ -102,6 +102,31 @@ class ProducerRoutingValidationTest {
         }
     }
 
+    @Test
+    void sendBatchUsesOneRequestAndAssignsContiguousOffsets() throws Exception {
+        try (MetadataOnlyProducer producer = new MetadataOnlyProducer()) {
+            producer.enqueueMetadata(metadata(
+                    List.of(new BrokerMetadata(0, "127.0.0.1", 19092)),
+                    List.of(new PartitionMetadata(0, 0))));
+            producer.enqueueProduceResponse(successResponse(4));
+
+            List<ProduceResult> results = producer.send(List.of(record(0), record(0), record(0)));
+
+            assertEquals(List.of(4L, 5L, 6L), results.stream().map(ProduceResult::offset).toList());
+            assertEquals(1, producer.produceRequests());
+            assertEquals(3, producer.lastRequest().records().size());
+        }
+    }
+
+    @Test
+    void sendBatchRejectsEmptyAndNullRecords() throws Exception {
+        try (MetadataOnlyProducer producer = new MetadataOnlyProducer()) {
+            assertThrows(IllegalArgumentException.class, () -> producer.send(List.of()));
+            assertThrows(IllegalArgumentException.class,
+                    () -> producer.send(java.util.Arrays.asList(record(0), null)));
+        }
+    }
+
     private static void assertRouteFailure(
             MetadataResponse metadata,
             ProducerRecord record,
@@ -145,6 +170,7 @@ class ProducerRoutingValidationTest {
         private final Queue<MetadataResponse> metadataResponses = new ArrayDeque<>();
         private final Queue<MqDecoder.DecodedResponse> produceResponses = new ArrayDeque<>();
         private int metadataFetches;
+        private int produceRequests;
         private ProduceRequest lastRequest;
 
         private MetadataOnlyProducer() {
@@ -163,6 +189,10 @@ class ProducerRoutingValidationTest {
             return metadataFetches;
         }
 
+        private int produceRequests() {
+            return produceRequests;
+        }
+
         private ProduceRequest lastRequest() {
             return lastRequest;
         }
@@ -177,6 +207,7 @@ class ProducerRoutingValidationTest {
         protected MqDecoder.DecodedResponse sendProduce(
                 BrokerMetadata leader,
                 ProduceRequest request) {
+            produceRequests++;
             lastRequest = request;
             return produceResponses.remove();
         }

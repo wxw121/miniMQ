@@ -233,4 +233,20 @@ class DeliveryScheduleTest {
         assertEquals(Map.of("orders-0", 6L),
                 schedule.visibleWatermarkSnapshotByPartitionKey());
     }
+
+    @Test
+    void reservedFutureSlotsAreConsumedByPutAndReleasedOnDemand() {
+        DeliverySchedule schedule = new DeliverySchedule(() -> 1_000L);
+
+        assertTrue(schedule.tryReserveFutureSlots(2, 2));
+        assertFalse(schedule.tryReserveFutureSlots(1, 2));
+        schedule.put("orders", 0, 0L, 5_000L);
+        assertEquals(1, schedule.count());
+        assertFalse(schedule.tryReserveFutureSlots(1, 2));
+        schedule.releaseFutureSlots(1);
+        assertTrue(schedule.tryReserveFutureSlots(1, 2));
+        schedule.releaseFutureSlots(1);
+        assertThrows(IllegalArgumentException.class, () -> schedule.tryReserveFutureSlots(-1, 2));
+        assertTrue(schedule.tryReserveFutureSlots(0, 2));
+    }
 }

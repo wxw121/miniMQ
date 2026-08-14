@@ -11,11 +11,13 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -532,6 +534,58 @@ class LogManagerTopicDeletionTest {
             assertEquals(2L, manager.visibleHighWatermark("scheduled", 0));
             assertEquals(-1L, manager.nextVisibleAtEpochMs("scheduled", 0));
         } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void concurrentFutureAppendsDoNotExceedScheduledCapacity() throws Exception {
+        MutableClock clock = new MutableClock(1_000L);
+        LogManagerConfig config = new LogManagerConfig(
+                FlushPolicy.always(),
+                0,
+                SegmentedLogConfig.defaults(),
+                LogMaintenanceConfig.disabled(),
+                8);
+        LogManager manager = new LogManager(tempDir, config, clock);
+        int workers = 16;
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(workers);
+        AtomicInteger admitted = new AtomicInteger();
+        AtomicInteger rejected = new AtomicInteger();
+        try {
+            List<Future<?>> futures = new java.util.ArrayList<>();
+            for (int i = 0; i < workers; i++) {
+                final int partitionId = i;
+                futures.add(executor.submit(() -> {
+                    start.await();
+                    try {
+                        manager.append(
+                                "scheduled",
+                                partitionId,
+                                bytes("k" + partitionId),
+                                bytes("future"),
+                                50_000L);
+                        admitted.incrementAndGet();
+                    } catch (LogManager.ScheduledCapacityExceededException ignored) {
+                        rejected.incrementAndGet();
+                    }
+                    return null;
+                }));
+            }
+            start.countDown();
+            for (Future<?> future : futures) {
+                future.get();
+            }
+            assertEquals(8, admitted.get());
+            assertEquals(8, rejected.get());
+            assertEquals(8, manager.scheduledRecordCount());
+
+            assertThrows(
+                    LogManager.ScheduledCapacityExceededException.class,
+                    () -> manager.append("scheduled", 0, bytes("overflow"), bytes("future"), 60_000L));
+        } finally {
+            executor.shutdownNow();
             manager.close();
         }
     }
