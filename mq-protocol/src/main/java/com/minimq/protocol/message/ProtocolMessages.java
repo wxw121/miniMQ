@@ -6,8 +6,11 @@ import com.minimq.common.group.GroupSessionTimeouts;
 import com.minimq.common.validation.TopicNames;
 import com.minimq.protocol.MqFrame;
 
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 协议消息集合，集中定义各 API 的请求、响应和元数据 record。
@@ -552,6 +555,74 @@ public final class ProtocolMessages {
         }
     }
 
+    public record AlterTopicConfigRequest(
+            String credential, String topicName, int minInSyncReplicas) {
+        public AlterTopicConfigRequest {
+            requireNonEmpty(credential, "credential");
+            requireTopicName(topicName, "topicName");
+            MinInSyncReplicas.requireRange(minInSyncReplicas);
+        }
+    }
+
+    public record PartitionReplicaAssignment(int partitionId, List<Integer> replicaBrokerIds) {
+        public PartitionReplicaAssignment {
+            requireRange(partitionId, 0, 9_999, "partitionId");
+            if (replicaBrokerIds == null
+                    || replicaBrokerIds.isEmpty()
+                    || replicaBrokerIds.size() > 10_000) {
+                throw new IllegalArgumentException("replicaBrokerIds must contain 1..10000 ids");
+            }
+            Set<Integer> unique = new LinkedHashSet<>(replicaBrokerIds);
+            if (unique.size() != replicaBrokerIds.size()) {
+                throw new IllegalArgumentException("replicaBrokerIds must be unique");
+            }
+            replicaBrokerIds = List.copyOf(replicaBrokerIds);
+        }
+    }
+
+    public record ReassignPartitionsRequest(
+            String credential, String topicName, List<PartitionReplicaAssignment> assignments) {
+        public ReassignPartitionsRequest {
+            requireNonEmpty(credential, "credential");
+            requireTopicName(topicName, "topicName");
+            if (assignments == null || assignments.isEmpty() || assignments.size() > 1_000) {
+                throw new IllegalArgumentException("assignments must contain 1..1000 entries");
+            }
+            Set<Integer> partitionIds = new HashSet<>();
+            for (PartitionReplicaAssignment assignment : assignments) {
+                if (assignment == null) {
+                    throw new IllegalArgumentException("assignments must not contain null");
+                }
+                if (!partitionIds.add(assignment.partitionId())) {
+                    throw new IllegalArgumentException("assignments must not repeat partitionId");
+                }
+            }
+            assignments = List.copyOf(assignments);
+        }
+    }
+
+    public record ElectPreferredLeadersRequest(
+            String credential, String topicName, List<Integer> partitionIds) {
+        public ElectPreferredLeadersRequest {
+            requireNonEmpty(credential, "credential");
+            requireTopicName(topicName, "topicName");
+            if (partitionIds == null || partitionIds.size() > 1_000) {
+                throw new IllegalArgumentException("partitionIds must contain 0..1000 entries");
+            }
+            Set<Integer> unique = new LinkedHashSet<>();
+            for (Integer partitionId : partitionIds) {
+                if (partitionId == null) {
+                    throw new IllegalArgumentException("partitionIds must not contain null");
+                }
+                requireRange(partitionId, 0, 9_999, "partitionId");
+                if (!unique.add(partitionId)) {
+                    throw new IllegalArgumentException("partitionIds must be unique");
+                }
+            }
+            partitionIds = List.copyOf(partitionIds);
+        }
+    }
+
     public record FailoverAuditRequest(String credential, int limit) {
         public FailoverAuditRequest {
             requireNonEmpty(credential, "credential");
@@ -986,6 +1057,33 @@ public final class ProtocolMessages {
             int previousPartitionCount,
             int newPartitionCount,
             long metadataVersion) {
+    }
+
+    public record AlterTopicConfigResponse(
+            String topicName, int minInSyncReplicas, long metadataVersion) {
+        public AlterTopicConfigResponse {
+            MinInSyncReplicas.requireRange(minInSyncReplicas);
+        }
+    }
+
+    public record ReassignPartitionsResponse(
+            String topicName, long metadataVersion, List<Integer> changedPartitionIds) {
+        public ReassignPartitionsResponse {
+            if (changedPartitionIds == null || changedPartitionIds.size() > 1_000) {
+                throw new IllegalArgumentException("changedPartitionIds must contain 0..1000 entries");
+            }
+            changedPartitionIds = List.copyOf(changedPartitionIds);
+        }
+    }
+
+    public record ElectPreferredLeadersResponse(
+            String topicName, long metadataVersion, List<Integer> electedPartitionIds) {
+        public ElectPreferredLeadersResponse {
+            if (electedPartitionIds == null || electedPartitionIds.size() > 1_000) {
+                throw new IllegalArgumentException("electedPartitionIds must contain 0..1000 entries");
+            }
+            electedPartitionIds = List.copyOf(electedPartitionIds);
+        }
     }
 
     public record FailoverAuditResponse(

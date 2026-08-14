@@ -6,7 +6,7 @@ This roadmap summarizes the completed baseline, the current V4 Operator Readines
 
 ## 1. Current State
 
-MiniMQ 5.0.0 is open. V4 Operator Readiness is the completed baseline; V5 adds producer acknowledgements, `min.insync.replicas`, a dedicated produce-ack executor, `LEAVE_GROUP`, and per-member session timeouts. Latest evidence: [test-report-2026-08-14-v5.0.0-acks-minisr-leave.md](test-report-2026-08-14-v5.0.0-acks-minisr-leave.md) (781 tests, 91.34% overall line coverage).
+MiniMQ 5.0.0 is open. V4 Operator Readiness is the completed baseline; V5 adds producer acknowledgements, `min.insync.replicas`, a dedicated produce-ack executor, `LEAVE_GROUP`, per-member session timeouts, topic config changes, partition reassignment, and preferred-leader election. Latest evidence: [test-report-2026-08-14-v5.0.0-acks-minisr-leave.md](test-report-2026-08-14-v5.0.0-acks-minisr-leave.md) (781 tests, 91.34% overall line coverage).
 
 Current implemented capabilities include:
 
@@ -42,7 +42,7 @@ V5.0 adds `LEADER` and `ALL` (current-ISR) produce acknowledgements, plus group-
 - [V5.0 Producer Acknowledgements Design](designs/v5-producer-acks-design.md)
 - [V5.0 Producer Acknowledgements Implementation Plan](plans/v5-producer-acks-implementation.md)
 
-Default produce remains Leader-local, matching V4. `ALL` waits on a dedicated executor until the current ISR high watermark meets the post-append Leader LEO and `isr.size() >= min.insync.replicas`, or returns `REQUEST_TIMED_OUT` / `NOT_ENOUGH_REPLICAS`. Consumers leave with `LEAVE_GROUP` and expire on a per-member session timeout. Transactions and exactly-once stay out of scope.
+Default produce remains Leader-local, matching V4. `ALL` waits on a dedicated executor until the current ISR high watermark meets the post-append Leader LEO and `isr.size() >= min.insync.replicas`, or returns `REQUEST_TIMED_OUT` / `NOT_ENOUGH_REPLICAS`. Consumers leave with `LEAVE_GROUP` and expire on a per-member session timeout. Operators can change `min.insync.replicas`, reassign partition replicas, and elect the preferred leader. Transactions and exactly-once stay out of scope.
 
 ## 3a. Previous Major Version: V4.0 Operator Readiness
 

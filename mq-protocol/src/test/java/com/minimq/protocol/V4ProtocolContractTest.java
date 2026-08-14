@@ -39,6 +39,13 @@ class V4ProtocolContractTest {
                 () -> new CreateTopicAdminRequest("token", "con.events", 1, 1));
         assertThrows(IllegalArgumentException.class,
                 () -> new CreateTopicAdminRequest("token", "orders.", 1, 1));
+        assertThrows(IllegalArgumentException.class,
+                () -> new AlterTopicConfigRequest("token", "../orders", 1));
+        assertThrows(IllegalArgumentException.class,
+                () -> new ReassignPartitionsRequest(
+                        "token", "orders", List.of(new PartitionReplicaAssignment(0, List.of(0, 0)))));
+        assertThrows(IllegalArgumentException.class,
+                () -> new ElectPreferredLeadersRequest("token", "orders", List.of(0, 0)));
         assertDoesNotThrow(() -> new CreateTopicAdminRequest(
                 "token", "orders.retry-v2_1", 1, 1));
     }
@@ -100,12 +107,15 @@ class V4ProtocolContractTest {
         expected.put("RUNTIME_METRICS_V2", 36);
         expected.put("UPDATE_REPLICA_STATE_V2", 37);
         expected.put("LEAVE_GROUP", 38);
+        expected.put("ALTER_TOPIC_CONFIG", 39);
+        expected.put("REASSIGN_PARTITIONS", 40);
+        expected.put("ELECT_PREFERRED_LEADERS", 41);
 
         Map<String, Integer> actual = publicShortConstants(ApiKeys.class);
 
         assertEquals(expected, actual);
         assertEquals(
-                IntStream.rangeClosed(0, 38).boxed().collect(Collectors.toCollection(TreeSet::new)),
+                IntStream.rangeClosed(0, 41).boxed().collect(Collectors.toCollection(TreeSet::new)),
                 new TreeSet<>(actual.values()));
     }
 
@@ -175,6 +185,14 @@ class V4ProtocolContractTest {
         assertRecordComponents(DeleteTopicRequest.class, "credential", "topicName");
         assertRecordComponents(IncreasePartitionsRequest.class,
                 "credential", "topicName", "targetPartitionCount");
+        assertRecordComponents(AlterTopicConfigRequest.class,
+                "credential", "topicName", "minInSyncReplicas");
+        assertRecordComponents(PartitionReplicaAssignment.class,
+                "partitionId", "replicaBrokerIds");
+        assertRecordComponents(ReassignPartitionsRequest.class,
+                "credential", "topicName", "assignments");
+        assertRecordComponents(ElectPreferredLeadersRequest.class,
+                "credential", "topicName", "partitionIds");
         assertRecordComponents(FailoverAuditRequest.class, "credential", "limit");
         assertRecordComponents(AuthStatusRequest.class, "credential");
         assertRecordComponents(ConfigureTopicReliabilityRequest.class,
@@ -271,6 +289,12 @@ class V4ProtocolContractTest {
                 "pendingBrokerIds");
         assertRecordComponents(IncreasePartitionsResponse.class,
                 "topicName", "previousPartitionCount", "newPartitionCount", "metadataVersion");
+        assertRecordComponents(AlterTopicConfigResponse.class,
+                "topicName", "minInSyncReplicas", "metadataVersion");
+        assertRecordComponents(ReassignPartitionsResponse.class,
+                "topicName", "metadataVersion", "changedPartitionIds");
+        assertRecordComponents(ElectPreferredLeadersResponse.class,
+                "topicName", "metadataVersion", "electedPartitionIds");
         assertRecordComponents(FailoverAuditResponse.class,
                 "brokerId", "brokerStartedAtEpochMs", "overwrittenCount", "events");
         assertRecordComponents(AuthStatusResponse.class, "targetBrokerId", "scopes");
@@ -327,6 +351,9 @@ class V4ProtocolContractTest {
                 DescribeTopicResponse.class,
                 DeleteTopicResponse.class,
                 IncreasePartitionsResponse.class,
+                AlterTopicConfigResponse.class,
+                ReassignPartitionsResponse.class,
+                ElectPreferredLeadersResponse.class,
                 FailoverAuditResponse.class,
                 AuthStatusResponse.class,
                 ConfigureTopicReliabilityResponse.class,
@@ -347,6 +374,7 @@ class V4ProtocolContractTest {
     @Test
     void v4ReusableItemRecordsFreezeCanonicalFieldOrder() {
         assertRecordComponents(V4BoundedList.class, "total", "truncated", "items");
+        assertRecordComponents(PartitionReplicaAssignment.class, "partitionId", "replicaBrokerIds");
         assertRecordComponents(OpsBrokerInfo.class,
                 "brokerId", "host", "port", "state", "brokerEpoch", "leaseDeadlineEpochMs");
         assertRecordComponents(OpsPartitionInfo.class,

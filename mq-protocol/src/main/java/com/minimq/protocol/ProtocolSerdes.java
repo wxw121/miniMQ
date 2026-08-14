@@ -231,6 +231,15 @@ public final class ProtocolSerdes {
                     payload.readLong(),
                     payload.readLong(),
                     payload.readLong());
+            case ApiKeys.ALTER_TOPIC_CONFIG -> new AlterTopicConfigRequest(
+                    readV4Credential(payload),
+                    readV4String(payload, "topic name"),
+                    payload.readInt());
+            case ApiKeys.REASSIGN_PARTITIONS -> decodeReassignPartitionsRequest(payload);
+            case ApiKeys.ELECT_PREFERRED_LEADERS -> new ElectPreferredLeadersRequest(
+                    readV4Credential(payload),
+                    readV4String(payload, "topic name"),
+                    readIntIdList(payload, "partition ids"));
             default -> throw new IllegalArgumentException("Unknown apiKey: " + apiKey);
         };
         requireFullyConsumed(payload, "request body for apiKey " + apiKey);
@@ -335,6 +344,18 @@ public final class ProtocolSerdes {
             case ApiKeys.METADATA_V2 -> decodeMetadataV2Response(payload);
             case ApiKeys.RUNTIME_METRICS_V2 -> decodeRuntimeMetricsV2Response(payload);
             case ApiKeys.UPDATE_REPLICA_STATE_V2 -> new UpdateReplicaStateV2Response();
+            case ApiKeys.ALTER_TOPIC_CONFIG -> new AlterTopicConfigResponse(
+                    readV4String(payload, "topic name"),
+                    payload.readInt(),
+                    payload.readLong());
+            case ApiKeys.REASSIGN_PARTITIONS -> new ReassignPartitionsResponse(
+                    readV4String(payload, "topic name"),
+                    payload.readLong(),
+                    readIntIdList(payload, "changed partition ids"));
+            case ApiKeys.ELECT_PREFERRED_LEADERS -> new ElectPreferredLeadersResponse(
+                    readV4String(payload, "topic name"),
+                    payload.readLong(),
+                    readIntIdList(payload, "elected partition ids"));
             default -> throw new IllegalArgumentException("Unknown apiKey: " + apiKey);
         };
         requireFullyConsumed(payload, "response body for apiKey " + apiKey);
@@ -564,6 +585,20 @@ public final class ProtocolSerdes {
                 buf.writeLong(req.visibleLogEndOffset());
                 buf.writeLong(req.nextVisibleAtEpochMs());
             }
+            case ApiKeys.ALTER_TOPIC_CONFIG -> {
+                AlterTopicConfigRequest req = (AlterTopicConfigRequest) body;
+                ByteBufSerde.writeString(buf, req.credential());
+                ByteBufSerde.writeString(buf, req.topicName());
+                buf.writeInt(req.minInSyncReplicas());
+            }
+            case ApiKeys.REASSIGN_PARTITIONS ->
+                    writeReassignPartitionsRequest(buf, (ReassignPartitionsRequest) body);
+            case ApiKeys.ELECT_PREFERRED_LEADERS -> {
+                ElectPreferredLeadersRequest req = (ElectPreferredLeadersRequest) body;
+                ByteBufSerde.writeString(buf, req.credential());
+                ByteBufSerde.writeString(buf, req.topicName());
+                writeIntIdList(buf, req.partitionIds(), "partition ids");
+            }
             default -> throw new IllegalArgumentException("Unknown apiKey: " + apiKey);
         }
     }
@@ -648,6 +683,18 @@ public final class ProtocolSerdes {
         } else if (body instanceof CreateTopicAdminResponse res) {
             ByteBufSerde.writeString(buf, res.topicName());
             buf.writeLong(res.metadataVersion());
+        } else if (body instanceof AlterTopicConfigResponse res) {
+            ByteBufSerde.writeString(buf, res.topicName());
+            buf.writeInt(res.minInSyncReplicas());
+            buf.writeLong(res.metadataVersion());
+        } else if (body instanceof ReassignPartitionsResponse res) {
+            ByteBufSerde.writeString(buf, res.topicName());
+            buf.writeLong(res.metadataVersion());
+            writeIntIdList(buf, res.changedPartitionIds(), "changed partition ids");
+        } else if (body instanceof ElectPreferredLeadersResponse res) {
+            ByteBufSerde.writeString(buf, res.topicName());
+            buf.writeLong(res.metadataVersion());
+            writeIntIdList(buf, res.electedPartitionIds(), "elected partition ids");
         } else if (body instanceof ProduceV2Response res) {
             ByteBufSerde.writeString(buf, res.topicName());
             buf.writeInt(res.partitionId());
@@ -816,6 +863,47 @@ public final class ProtocolSerdes {
             ByteBufSerde.writeString(buf, req.deadLetterTopicName());
         }
         writeBoolean(buf, req.clearDeadLetterTopic());
+    }
+
+    private static ReassignPartitionsRequest decodeReassignPartitionsRequest(ByteBuf buf) {
+        String credential = readV4Credential(buf);
+        String topicName = readV4String(buf, "topic name");
+        int assignmentCount = readItemCount(buf, "partition assignments");
+        List<PartitionReplicaAssignment> assignments = new ArrayList<>(assignmentCount);
+        for (int i = 0; i < assignmentCount; i++) {
+            requireReadable(buf, Integer.BYTES, "assignment partition id");
+            int partitionId = buf.readInt();
+            assignments.add(new PartitionReplicaAssignment(
+                    partitionId, readIntIdList(buf, "replica broker ids")));
+        }
+        return new ReassignPartitionsRequest(credential, topicName, assignments);
+    }
+
+    private static void writeReassignPartitionsRequest(ByteBuf buf, ReassignPartitionsRequest req) {
+        ByteBufSerde.writeString(buf, req.credential());
+        ByteBufSerde.writeString(buf, req.topicName());
+        writeItemCount(buf, req.assignments().size(), "partition assignments");
+        for (PartitionReplicaAssignment assignment : req.assignments()) {
+            buf.writeInt(assignment.partitionId());
+            writeIntIdList(buf, assignment.replicaBrokerIds(), "replica broker ids");
+        }
+    }
+
+    private static List<Integer> readIntIdList(ByteBuf buf, String fieldName) {
+        int count = readItemCount(buf, fieldName);
+        List<Integer> ids = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            requireReadable(buf, Integer.BYTES, fieldName);
+            ids.add(buf.readInt());
+        }
+        return ids;
+    }
+
+    private static void writeIntIdList(ByteBuf buf, List<Integer> ids, String fieldName) {
+        writeItemCount(buf, ids.size(), fieldName);
+        for (int id : ids) {
+            buf.writeInt(id);
+        }
     }
 
     private static MetadataResponse decodeMetadataResponse(ByteBuf buf) {
@@ -2089,7 +2177,10 @@ public final class ProtocolSerdes {
                     ApiKeys.REPLICA_FETCH_V2,
                     ApiKeys.TOPIC_DELETE_ACK,
                     ApiKeys.RUNTIME_METRICS_V2,
-                    ApiKeys.UPDATE_REPLICA_STATE_V2 -> true;
+                    ApiKeys.UPDATE_REPLICA_STATE_V2,
+                    ApiKeys.ALTER_TOPIC_CONFIG,
+                    ApiKeys.REASSIGN_PARTITIONS,
+                    ApiKeys.ELECT_PREFERRED_LEADERS -> true;
             default -> false;
         };
     }

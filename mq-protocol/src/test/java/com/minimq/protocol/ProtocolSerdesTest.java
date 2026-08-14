@@ -858,6 +858,12 @@ class ProtocolSerdesTest {
                         bounded(2))),
                 new ResponseCase(ApiKeys.INCREASE_PARTITIONS,
                         new IncreasePartitionsResponse("orders", 3, 6, 10L)),
+                new ResponseCase(ApiKeys.ALTER_TOPIC_CONFIG,
+                        new AlterTopicConfigResponse("orders", 2, 11L)),
+                new ResponseCase(ApiKeys.REASSIGN_PARTITIONS,
+                        new ReassignPartitionsResponse("orders", 12L, List.of(0, 1))),
+                new ResponseCase(ApiKeys.ELECT_PREFERRED_LEADERS,
+                        new ElectPreferredLeadersResponse("orders", 13L, List.of(0))),
                 new ResponseCase(ApiKeys.FAILOVER_AUDIT, new FailoverAuditResponse(
                         1,
                         100L,
@@ -966,6 +972,15 @@ class ProtocolSerdesTest {
                 new RequestCase(ApiKeys.DELETE_TOPIC, new DeleteTopicRequest("operator", "orders")),
                 new RequestCase(ApiKeys.INCREASE_PARTITIONS,
                         new IncreasePartitionsRequest("operator", "orders", 6)),
+                new RequestCase(ApiKeys.ALTER_TOPIC_CONFIG,
+                        new AlterTopicConfigRequest("operator", "orders", 2)),
+                new RequestCase(ApiKeys.REASSIGN_PARTITIONS,
+                        new ReassignPartitionsRequest(
+                                "operator",
+                                "orders",
+                                List.of(new PartitionReplicaAssignment(0, List.of(1, 2, 0))))),
+                new RequestCase(ApiKeys.ELECT_PREFERRED_LEADERS,
+                        new ElectPreferredLeadersRequest("operator", "orders", List.of(0, 1))),
                 new RequestCase(ApiKeys.FAILOVER_AUDIT, new FailoverAuditRequest("operator", 50)),
                 new RequestCase(ApiKeys.AUTH_STATUS, new AuthStatusRequest("operator")),
                 new RequestCase(ApiKeys.CONFIGURE_TOPIC_RELIABILITY,
@@ -1130,7 +1145,10 @@ class ProtocolSerdesTest {
                 ApiKeys.REPLICA_FETCH_V2,
                 ApiKeys.TOPIC_DELETE_ACK,
                 ApiKeys.RUNTIME_METRICS_V2,
-                ApiKeys.UPDATE_REPLICA_STATE_V2)) {
+                ApiKeys.UPDATE_REPLICA_STATE_V2,
+                ApiKeys.ALTER_TOPIC_CONFIG,
+                ApiKeys.REASSIGN_PARTITIONS,
+                ApiKeys.ELECT_PREFERRED_LEADERS)) {
             ByteBuf incompleteBody = Unpooled.buffer();
             try {
                 writeString(incompleteBody, "credential");

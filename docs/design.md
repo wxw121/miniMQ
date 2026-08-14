@@ -9,9 +9,9 @@ MiniMQ aims to be small enough to read, but realistic enough to explain the esse
 
 MiniMQ 的目标是“小到能读完，大到能讲清消息队列核心机制”。项目有意避免把关键行为藏在框架里：协议序列化是手写的，存储格式是显式的，消费组分配逻辑也直接体现在代码里。因此它适合作为学习项目、设计讨论材料以及后续贡献者继续迭代的上下文载体。
 
-The design optimizes for clarity, determinism, and testability. V4 added etcd-fenced Controller HA, exact Leader epochs, automatic Broker failure detection, physical/visible replica watermarks, scoped operator APIs, crash-safe Topic deletion, explicit retry/DLQ links, and required delayed-message delivery. V5 adds producer `LEADER` / `ALL` acknowledgements, `min.insync.replicas`, a dedicated produce-ack executor, `LEAVE_GROUP`, and per-member session timeouts. Transactions and exactly-once semantics remain future work.
+The design optimizes for clarity, determinism, and testability. V4 added etcd-fenced Controller HA, exact Leader epochs, automatic Broker failure detection, physical/visible replica watermarks, scoped operator APIs, crash-safe Topic deletion, explicit retry/DLQ links, and required delayed-message delivery. V5 adds producer `LEADER` / `ALL` acknowledgements, `min.insync.replicas`, a dedicated produce-ack executor, `LEAVE_GROUP`, per-member session timeouts, topic config changes, partition reassignment, and preferred-leader election. Transactions and exactly-once semantics remain future work.
 
-当前设计优先考虑清晰性、确定性和可测试性。V4 已增加 etcd fencing 的 Controller HA、精确 Leader epoch、Broker 自动故障检测、物理/可见副本水位、细粒度运维 API、崩溃安全 Topic 删除、显式 retry/DLQ 关联和必需的延迟投递。V5 增加 Producer `LEADER` / `ALL` 确认、`min.insync.replicas`、专用 produce-ack 线程池、`LEAVE_GROUP` 和按成员 session timeout。事务与 exactly-once 语义仍属于后续工作。
+当前设计优先考虑清晰性、确定性和可测试性。V4 已增加 etcd fencing 的 Controller HA、精确 Leader epoch、Broker 自动故障检测、物理/可见副本水位、细粒度运维 API、崩溃安全 Topic 删除、显式 retry/DLQ 关联和必需的延迟投递。V5 增加 Producer `LEADER` / `ALL` 确认、`min.insync.replicas`、专用 produce-ack 线程池、`LEAVE_GROUP`、按成员 session timeout、Topic 配置变更、分区重分配和 preferred Leader 选举。事务与 exactly-once 语义仍属于后续工作。
 
 ## 2. Protocol Design / 协议设计
 
@@ -105,6 +105,9 @@ If `errorCode != NONE`, response body is omitted. This rule keeps error response
 | 36 | `RUNTIME_METRICS_V2` | Admin / 管理面 | Bounded rates, payload bytes, latency, lag, and audit overwrite metrics. / 有界速率、payload 字节、延迟、lag 与审计覆盖指标。 |
 | 37 | `UPDATE_REPLICA_STATE_V2` | Internal control / 内部控制面 | Report fenced physical and visible replica progress. / 上报带 fencing 的物理与可见副本进度。 |
 | 38 | `LEAVE_GROUP` | Control / 控制面 | Remove a consumer-group member. Leave is allowed during rebalance. / 移除消费组成员；rebalance 期间也可离开。 |
+| 39 | `ALTER_TOPIC_CONFIG` | Control / 控制面 | Change `min.insync.replicas` for an existing topic. / 修改已有 Topic 的 `min.insync.replicas`。 |
+| 40 | `REASSIGN_PARTITIONS` | Control / 控制面 | Replace a partition replica list without unclean leader election. / 替换分区副本列表，不允许 unclean 选举。 |
+| 41 | `ELECT_PREFERRED_LEADERS` | Control / 控制面 | Move leadership to `replicaBrokerIds[0]` when that replica is in the ISR. / 在 preferred replica 属于 ISR 时把它选为 Leader。 |
 
 ### 2.5 HEARTBEAT and OFFSET_COMMIT bodies / HEARTBEAT 与 OFFSET_COMMIT 报文体
 

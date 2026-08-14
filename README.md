@@ -22,7 +22,7 @@ Kafka 风格的 Java 分布式消息队列。
 - **3 Broker + etcd** Controller 自动选举、分区副本、Leader epoch fencing 与自动故障转移
 - **Consumer Group** + Offset 提交
 - **V4 Operator Readiness** 运维状态、Consumer lag、Topic admin、failover audit、retry/DLQ、delayed delivery
-- **V5 Producer acks** `LEADER`（默认）或 `ALL`（等待当前 ISR）；`min.insync.replicas`；`LEAVE_GROUP` 与按成员 session timeout
+- **V5 Producer acks** `LEADER`（默认）或 `ALL`（等待当前 ISR）；`min.insync.replicas`；`LEAVE_GROUP`；topic 配置变更、分区重分配与 preferred Leader
 
 ## 模块
 
@@ -110,7 +110,7 @@ Leader 切换会先按旧 ISR 已确认 LEO 计算恢复点，持久化 Leader e
 
 ## V4 Operator Readiness
 
-当前工作树已经包含 V4 operator-readiness 协议与服务实现，不再只是 roadmap 或 design-only 规划。API 20-38 覆盖 OPS_STATUS、GROUP_STATUS、Topic list/describe/delete/increase、FAILOVER_AUDIT、AUTH_STATUS、CONFIGURE_TOPIC_RELIABILITY、admin create-topic、PRODUCE_V2、REPLICA_FETCH_V2、FETCH_V2、METADATA_V2、RUNTIME_METRICS_V2 与 replica-state 上报与 `LEAVE_GROUP`。
+当前工作树已经包含 V4 operator-readiness 协议与服务实现，不再只是 roadmap 或 design-only 规划。API 20-41 覆盖 OPS_STATUS、GROUP_STATUS、Topic list/describe/delete/increase、FAILOVER_AUDIT、AUTH_STATUS、CONFIGURE_TOPIC_RELIABILITY、admin create-topic、PRODUCE_V2、REPLICA_FETCH_V2、FETCH_V2、METADATA_V2、RUNTIME_METRICS_V2 与 replica-state 上报、`LEAVE_GROUP`、`ALTER_TOPIC_CONFIG`、`REASSIGN_PARTITIONS` 与 `ELECT_PREFERRED_LEADERS`。
 
 Reliability links are explicit: operators configure retry and dead-letter topics through CONFIGURE_TOPIC_RELIABILITY; the client Producer resolves those links through METADATA_V2. sendToDeadLetter writes immediately with the normal produce path, while sendToRetry uses PRODUCE_V2 and an exact deliverAtEpochMs.
 
@@ -230,6 +230,7 @@ Additional V4 API keys:
 - 32: REPLICA_FETCH_V2 with delivery timestamps and visibility watermarks.
 - 34: FETCH_V2 with visible watermark and nextVisibleAtEpochMs; Consumer uses this path by default.
 - 35-37: METADATA_V2, RUNTIME_METRICS_V2, and replica-state V2 reporting.
+- 38-41: LEAVE_GROUP, ALTER_TOPIC_CONFIG, REASSIGN_PARTITIONS, and ELECT_PREFERRED_LEADERS.
 
 ## 已实现里程碑
 

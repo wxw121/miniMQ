@@ -12,7 +12,7 @@ MiniMQ 是一个 Java 17 实现的轻量消息队列项目，概念上参考 Kaf
 
 The current implementation uses etcd-backed Controller election and a single-leader partition model. Any Broker can become Controller; clients discover it through the bootstrap list and route produce/fetch with an exact Leader epoch.
 
-The current V4 layer is implemented in source: operator APIs expose status, group lag, topic administration, failover audit, auth status, reliability links, metadata V2, metrics V2, and replica-state V2 reporting. Delayed messages use PRODUCE_V2, WAL type 8, visible-prefix fetches, and bounded Consumer waits. V5 adds produce acknowledgements (`LEADER` / `ALL`), `min.insync.replicas`, a dedicated produce-ack executor, `LEAVE_GROUP`, and per-member session timeouts.
+The current V4 layer is implemented in source: operator APIs expose status, group lag, topic administration, failover audit, auth status, reliability links, metadata V2, metrics V2, and replica-state V2 reporting. Delayed messages use PRODUCE_V2, WAL type 8, visible-prefix fetches, and bounded Consumer waits. V5 adds produce acknowledgements (`LEADER` / `ALL`), `min.insync.replicas`, a dedicated produce-ack executor, `LEAVE_GROUP`, per-member session timeouts, topic config changes, partition reassignment, and preferred-leader election.
 
 当前实现采用 etcd 支持的 Controller 自动选举与单 Leader 分区模型。任意 Broker 都可接管 Controller；客户端通过 bootstrap 列表发现 Controller，并携带精确 Leader epoch 路由生产和拉取请求。
 
@@ -38,7 +38,7 @@ The current V4 layer is implemented in source: operator APIs expose status, grou
 | 7h | [V4 Operator Readiness Design](designs/v4-operator-readiness-design.md) | Understand the implemented operations-focused major version and its compatibility rules. |
 | 7i | [V4 Operator Readiness Implementation Plan](plans/v4-operator-readiness-implementation.md) | Historical implementation checklist; use source and focused tests as current truth. |
 | 7j | [V3.3-V3.5 Production Hardening Test Report](test-report-2026-07-21-v3.3-v3.5-production-hardening.md) | See runtime metrics export, resilience matrix, benchmark transport selector, and bounded verification evidence. |
-| 7k | [V5.0 Producer Acknowledgements Design](designs/v5-producer-acks-design.md) | Understand `LEADER` / `ALL` produce acks, `min.insync.replicas`, the ack executor, `LEAVE_GROUP`, and session timeouts. |
+| 7k | [V5.0 Producer Acknowledgements Design](designs/v5-producer-acks-design.md) | Understand `LEADER` / `ALL` produce acks, `min.insync.replicas`, the ack executor, `LEAVE_GROUP`, session timeouts, reassignment, and preferred-leader election. |
 | 7l | [V4.0.0 Operator Readiness Test Report](test-report-2026-07-22-v4.0.0-operator-readiness.md) | See the 2026-07-29 full-reactor test counts, coverage, review regressions, and Docker-gated etcd status. |
 | 7n | [V5.0 Producer Acknowledgements Test Report](test-report-2026-08-14-v5.0.0-producer-acks.md) | Historical acks-only slice: 2026-08-14 `mvn clean verify` for `LEADER` / `ALL` (767 tests, line ≥ 90%). |
 | 7o | [V5.0 Expanded Verify (acks + min.insync + leave)](test-report-2026-08-14-v5.0.0-acks-minisr-leave.md) | Latest 2026-08-14 full `mvn clean verify` after min.insync, leave-group, session timeout, and the produce-ack executor (781 tests, line ≥ 90%). |
@@ -58,7 +58,7 @@ The current V4 layer is implemented in source: operator APIs expose status, grou
 | Tests / 测试 | JUnit 5 + Surefire |
 | Coverage / 覆盖率 | JaCoCo |
 | Latest milestone tag | Not cut for the current working tree; Maven project version is 5.0.0 |
-| Latest release | V5.0.0 in progress: producer acks, min.insync, leave-group, and session timeout on top of the completed V4 operator-readiness tree |
+| Latest release | V5.0.0 in progress: producer acks, min.insync, leave-group, session timeout, alter-config, reassignment, and preferred-leader election on top of the completed V4 operator-readiness tree |
 | Latest evidence | [V5.0.0 acks + min.insync + leave](test-report-2026-08-14-v5.0.0-acks-minisr-leave.md): 781 tests, 0 failures/errors, 6 Linux-skipped Windows cases, 91.34% overall line coverage, every module above 90%. Docker/etcd ITs remain unrun. |
 
 ## 4. Module Map / 模块地图
@@ -178,6 +178,9 @@ java -jar mq-demo/target/mq-demo-5.0.0.jar group-status --brokers localhost:9092
 java -jar mq-demo/target/mq-demo-5.0.0.jar list-topics --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret>
 java -jar mq-demo/target/mq-demo-5.0.0.jar describe-topic --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --topic orders
 java -jar mq-demo/target/mq-demo-5.0.0.jar delete-topic --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --topic orders
+java -jar mq-demo/target/mq-demo-5.0.0.jar alter-topic-config --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --topic orders --min-insync-replicas 2
+java -jar mq-demo/target/mq-demo-5.0.0.jar reassign-partitions --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --topic orders --assignment 0:1,2,0
+java -jar mq-demo/target/mq-demo-5.0.0.jar elect-preferred-leaders --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --topic orders
 ```
 
 The local workflow scripts use a PID/start-time manifest and bounded readiness. Recursive cleanup

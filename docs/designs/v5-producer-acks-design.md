@@ -23,6 +23,9 @@ V4 已经有副本和 ISR LEO，但生产在 Leader 本地追加后立即返回�
 8. Topic-level `min.insync.replicas` (default 1, must be `1..replicationFactor`) on `CREATE_TOPIC` / `CREATE_TOPIC_ADMIN`, exposed as an optional trailing field on `DESCRIBE_TOPIC`.
 9. `LEAVE_GROUP` (key 38). Leave is allowed during rebalance. Empty groups keep committed offsets.
 10. Optional trailing `sessionTimeoutMs` on `JOIN_GROUP` (default 10000, range 1000..300000). Eviction uses that member's timeout. `Consumer.close()` sends leave.
+11. `ALTER_TOPIC_CONFIG` (key 39) changes `min.insync.replicas` after create (`1..replicationFactor`).
+12. `REASSIGN_PARTITIONS` (key 40) replaces a partition replica list. The new set must overlap the current ISR so leadership stays clean. New replicas start out of ISR until they catch up.
+13. `ELECT_PREFERRED_LEADERS` (key 41) moves leadership to `replicaBrokerIds[0]` when that replica is in the ISR.
 
 ## Non-Goals
 
@@ -68,7 +71,16 @@ Missing trailing fields default to `acks=1`, `ackTimeoutMs=5000`. A body that in
 
 A V4 client that omits the fields keeps Leader-ack behavior. A V5 client talking to a V4 Broker is unsupported for `ALL` (the V4 Broker rejects trailing bytes). Mixed V4/V5 Broker clusters remain unsupported, same as V3/V4.
 
-`CREATE_TOPIC` and `CREATE_TOPIC_ADMIN` append optional `minInSyncReplicas` (i32, default 1). `JOIN_GROUP` appends optional `sessionTimeoutMs` (i32, default 10000). `DESCRIBE_TOPIC` responses append optional `minInSyncReplicas` (i32, default 1). `LEAVE_GROUP` is a new key (38) with `groupId`, `memberId`, `generationId` and an empty success body.
+`CREATE_TOPIC` and `CREATE_TOPIC_ADMIN` append optional `minInSyncReplicas` (i32, default 1). `JOIN_GROUP` appends optional `sessionTimeoutMs` (i32, default 10000). `DESCRIBE_TOPIC` responses append optional `minInSyncReplicas` (i32, default 1). `LEAVE_GROUP` is a new key (38) with `groupId`, `memberId`, `generationId` and an empty success body. `ALTER_TOPIC_CONFIG` (39), `REASSIGN_PARTITIONS` (40), and `ELECT_PREFERRED_LEADERS` (41) are append-only `TOPIC_ADMIN` APIs after `LEAVE_GROUP`. Nested replica/partition lists use the existing item-count encoding (max 10000), not `V4BoundedList`.
+
+```text
+ALTER_TOPIC_CONFIG request:  credential, topicName, minInSyncReplicas (i32)
+ALTER_TOPIC_CONFIG response: topicName, minInSyncReplicas, metadataVersion
+REASSIGN_PARTITIONS request: credential, topicName, assignmentCount, {partitionId, replicaCount, replicaIds…}…
+REASSIGN_PARTITIONS response: topicName, metadataVersion, changedCount, changedPartitionIds…
+ELECT_PREFERRED_LEADERS request: credential, topicName, partitionCount (0=all), partitionIds…
+ELECT_PREFERRED_LEADERS response: topicName, metadataVersion, electedCount, electedPartitionIds…
+```
 
 ## Broker Behavior
 
@@ -91,6 +103,7 @@ After a successful local append and the existing local LEO / replica-state repor
 CLI `produce` gains `--acks leader|all` and optional `--ack-timeout-ms`.
 CLI `create-topic` gains `--min-insync-replicas`.
 CLI `consume` gains `--session-timeout-ms`. Heartbeat interval is `max(100, sessionTimeoutMs / 3)`.
+CLI `alter-topic-config --min-insync-replicas`, `reassign-partitions --assignment partitionId:brokerId[,brokerId...]`, and `elect-preferred-leaders [--partition id]`.
 
 ## Compatibility
 
@@ -103,10 +116,12 @@ CLI `consume` gains `--session-timeout-ms`. Heartbeat interval is `max(100, sess
 | V4 join (no session timeout) | V5 | Decodes as 10000 ms |
 | V4 create-topic (no min ISR) | V5 | Decodes as `min.insync.replicas=1` |
 
-Keys 0-19 keep original field order. New fields follow the same optional-trailing pattern as `HEARTBEAT` / `OFFSET_COMMIT`. `LEAVE_GROUP=38` is append-only after `UPDATE_REPLICA_STATE_V2=37`.
+Keys 0-19 keep original field order. New fields follow the same optional-trailing pattern as `HEARTBEAT` / `OFFSET_COMMIT`. `LEAVE_GROUP=38` is append-only after `UPDATE_REPLICA_STATE_V2=37`. `ALTER_TOPIC_CONFIG=39`, `REASSIGN_PARTITIONS=40`, and `ELECT_PREFERRED_LEADERS=41` follow `LEAVE_GROUP`.
 
 ## Follow-ups (not V5.0)
 
 - Optional unclean election.
 - Transactional produce / exactly-once research.
 - Optional experimental LSM state-store module.
+- Cooperative rebalance / static membership.
+- Record headers or compression.

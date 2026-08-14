@@ -14,6 +14,9 @@ import com.minimq.protocol.message.ProtocolMessages.DescribeTopicRequest;
 import com.minimq.protocol.message.ProtocolMessages.IncreasePartitionsRequest;
 import com.minimq.protocol.message.ProtocolMessages.ListTopicsRequest;
 import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
+import com.minimq.protocol.message.ProtocolMessages.AlterTopicConfigRequest;
+import com.minimq.protocol.message.ProtocolMessages.ReassignPartitionsRequest;
+import com.minimq.protocol.message.ProtocolMessages.ElectPreferredLeadersRequest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -62,6 +65,32 @@ class TopicAdminServiceTest {
         assertEquals(replicasBefore,
                 controller.snapshot().topics.get("orders").partitions.get(0).replicaBrokerIds);
         assertEquals(4, description.response().partitions().items().get(4).partitionId());
+
+        assertEquals(ErrorCode.NONE, service.alterConfig(
+                new AlterTopicConfigRequest("token", "orders", 2)).errorCode());
+        assertEquals(2, service.describe(new DescribeTopicRequest("token", "orders", 10, false))
+                .response().minInSyncReplicas());
+        var reassigned = service.reassign(new ReassignPartitionsRequest(
+                "token",
+                "orders",
+                List.of(new com.minimq.protocol.message.ProtocolMessages.PartitionReplicaAssignment(
+                        0, List.of(1, 0, 2)))));
+        assertEquals(ErrorCode.NONE, reassigned.errorCode());
+        assertEquals(List.of(1, 0, 2),
+                controller.snapshot().topics.get("orders").partitions.get(0).replicaBrokerIds);
+        var elected = service.electPreferred(new ElectPreferredLeadersRequest(
+                "token", "orders", List.of()));
+        assertEquals(ErrorCode.NONE, elected.errorCode());
+        assertEquals(1, controller.snapshot().topics.get("orders").partitions.get(0).leaderBrokerId);
+        assertEquals(ErrorCode.UNKNOWN_TOPIC, service.alterConfig(
+                new AlterTopicConfigRequest("token", "missing", 1)).errorCode());
+        assertEquals(ErrorCode.UNKNOWN_TOPIC, service.reassign(new ReassignPartitionsRequest(
+                "token",
+                "missing",
+                List.of(new com.minimq.protocol.message.ProtocolMessages.PartitionReplicaAssignment(
+                        0, List.of(0, 1))))).errorCode());
+        assertEquals(ErrorCode.UNKNOWN_TOPIC, service.electPreferred(
+                new ElectPreferredLeadersRequest("token", "missing", List.of())).errorCode());
     }
 
     @Test

@@ -8,6 +8,7 @@ import com.minimq.broker.metadata.ClusterMetadata.PartitionEntry;
 import com.minimq.broker.metadata.ClusterMetadata.TopicEntry;
 import com.minimq.broker.metadata.ClusterMetadataRepository;
 import com.minimq.broker.metadata.VersionedClusterMetadata;
+import com.minimq.common.acks.MinInSyncReplicas;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.common.validation.TopicNames;
 import com.minimq.protocol.message.ProtocolMessages.BrokerMetadata;
@@ -30,6 +31,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
@@ -69,6 +71,18 @@ public class ClusterController {
 
     public record ReliabilityConfigResult(
             ErrorCode errorCode, String retryTopicName, String deadLetterTopicName, long metadataVersion) {
+    }
+
+    public record TopicConfigResult(
+            ErrorCode errorCode, int minInSyncReplicas, long metadataVersion) {
+    }
+
+    public record ReassignPartitionsResult(
+            ErrorCode errorCode, List<Integer> changedPartitionIds, long metadataVersion) {
+    }
+
+    public record ElectPreferredLeadersResult(
+            ErrorCode errorCode, List<Integer> electedPartitionIds, long metadataVersion) {
     }
 
     private record BrokerLease(long brokerEpoch, long deadlineNanos) {
@@ -583,6 +597,320 @@ public class ClusterController {
                 previousCount,
                 error == ErrorCode.NONE ? targetPartitionCount : previousCount,
                 error == ErrorCode.NONE ? metadata.metadataVersion : metadata.metadataVersion);
+    }
+
+    public synchronized TopicConfigResult alterTopicConfig(String topicName, int minInSyncReplicas) {
+        if (recovering) {
+            return new TopicConfigResult(
+                    ErrorCode.CONTROLLER_NOT_READY,
+                    0,
+                    metadata.metadataVersion);
+        }
+        TopicEntry currentTopic = metadata.topics.get(topicName);
+        if (currentTopic == null) {
+            return new TopicConfigResult(ErrorCode.UNKNOWN_TOPIC, 0, metadata.metadataVersion);
+        }
+        int replicationFactor = topicReplicationFactor(currentTopic);
+        if (!MinInSyncReplicas.isValid(minInSyncReplicas, replicationFactor)) {
+            return new TopicConfigResult(
+                    ErrorCode.INVALID_REQUEST,
+                    currentTopic.effectiveMinInSyncReplicas(),
+                    metadata.metadataVersion);
+        }
+        if (currentTopic.minInSyncReplicas == minInSyncReplicas) {
+            return new TopicConfigResult(
+                    ErrorCode.NONE,
+                    currentTopic.effectiveMinInSyncReplicas(),
+                    metadata.metadataVersion);
+        }
+        ClusterMetadata next = copyMetadata(metadata);
+        next.topics.get(topicName).minInSyncReplicas = minInSyncReplicas;
+        ErrorCode error = commit(next);
+        return new TopicConfigResult(
+                error,
+                error == ErrorCode.NONE
+                        ? metadata.topics.get(topicName).effectiveMinInSyncReplicas()
+                        : currentTopic.effectiveMinInSyncReplicas(),
+                metadata.metadataVersion);
+    }
+
+    public synchronized ReassignPartitionsResult reassignPartitions(
+            String topicName,
+            List<com.minimq.protocol.message.ProtocolMessages.PartitionReplicaAssignment> assignments) {
+        if (recovering) {
+            return new ReassignPartitionsResult(
+                    ErrorCode.CONTROLLER_NOT_READY, List.of(), metadata.metadataVersion);
+        }
+        TopicEntry currentTopic = metadata.topics.get(topicName);
+        if (currentTopic == null) {
+            return new ReassignPartitionsResult(
+                    ErrorCode.UNKNOWN_TOPIC, List.of(), metadata.metadataVersion);
+        }
+        ClusterMetadata next = copyMetadata(metadata);
+        TopicEntry topic = next.topics.get(topicName);
+        List<Integer> changed = new ArrayList<>();
+        List<LeaderChange> leaderChanges = new ArrayList<>();
+        for (var assignment : assignments) {
+            PartitionEntry partition = partitionById(topic, assignment.partitionId());
+            if (partition == null) {
+                return new ReassignPartitionsResult(
+                        ErrorCode.UNKNOWN_PARTITION, List.of(), metadata.metadataVersion);
+            }
+            ErrorCode error = applyPartitionReassignment(
+                    next, topic, partition, assignment.replicaBrokerIds(), changed, leaderChanges);
+            if (error != ErrorCode.NONE) {
+                return new ReassignPartitionsResult(error, List.of(), metadata.metadataVersion);
+            }
+        }
+        if (changed.isEmpty()) {
+            return new ReassignPartitionsResult(
+                    ErrorCode.NONE, List.of(), metadata.metadataVersion);
+        }
+        changed.sort(Integer::compareTo);
+        ErrorCode error = commit(next);
+        if (error == ErrorCode.NONE) {
+            for (LeaderChange change : leaderChanges) {
+                audit(
+                        FailoverAuditEventType.LEADER_CHANGED,
+                        change.newLeaderId(),
+                        topicName,
+                        change.partitionId(),
+                        String.valueOf(change.oldLeaderId()),
+                        String.valueOf(change.newLeaderId()),
+                        "preferred or reassigned replica became leader");
+            }
+        }
+        return new ReassignPartitionsResult(
+                error,
+                error == ErrorCode.NONE ? List.copyOf(changed) : List.of(),
+                metadata.metadataVersion);
+    }
+
+    public synchronized ElectPreferredLeadersResult electPreferredLeaders(
+            String topicName, List<Integer> partitionIds) {
+        if (recovering) {
+            return new ElectPreferredLeadersResult(
+                    ErrorCode.CONTROLLER_NOT_READY, List.of(), metadata.metadataVersion);
+        }
+        TopicEntry currentTopic = metadata.topics.get(topicName);
+        if (currentTopic == null) {
+            return new ElectPreferredLeadersResult(
+                    ErrorCode.UNKNOWN_TOPIC, List.of(), metadata.metadataVersion);
+        }
+        boolean explicit = partitionIds != null && !partitionIds.isEmpty();
+        List<Integer> targets = explicit
+                ? partitionIds
+                : currentTopic.partitions.stream()
+                        .map(partition -> partition.partitionId)
+                        .sorted()
+                        .toList();
+        ClusterMetadata next = copyMetadata(metadata);
+        TopicEntry topic = next.topics.get(topicName);
+        List<Integer> elected = new ArrayList<>();
+        List<LeaderChange> leaderChanges = new ArrayList<>();
+        for (int partitionId : targets) {
+            PartitionEntry partition = partitionById(topic, partitionId);
+            if (partition == null) {
+                return new ElectPreferredLeadersResult(
+                        ErrorCode.UNKNOWN_PARTITION, List.of(), metadata.metadataVersion);
+            }
+            if (partition.frozen || partition.replicaBrokerIds == null
+                    || partition.replicaBrokerIds.isEmpty()) {
+                if (explicit) {
+                    return new ElectPreferredLeadersResult(
+                            ErrorCode.INVALID_REQUEST, List.of(), metadata.metadataVersion);
+                }
+                continue;
+            }
+            int preferred = partition.replicaBrokerIds.get(0);
+            if (preferred == partition.leaderBrokerId) {
+                continue;
+            }
+            BrokerEntry preferredBroker = next.brokers.get(preferred);
+            if (preferredBroker == null
+                    || !preferredBroker.online
+                    || !partition.isrBrokerIds.contains(preferred)) {
+                if (explicit) {
+                    return new ElectPreferredLeadersResult(
+                            ErrorCode.INVALID_REQUEST, List.of(), metadata.metadataVersion);
+                }
+                continue;
+            }
+            int oldLeader = partition.leaderBrokerId;
+            promoteLeader(partition, preferred);
+            elected.add(partitionId);
+            leaderChanges.add(new LeaderChange(partitionId, oldLeader, preferred));
+        }
+        if (elected.isEmpty()) {
+            return new ElectPreferredLeadersResult(
+                    ErrorCode.NONE, List.of(), metadata.metadataVersion);
+        }
+        ErrorCode error = commit(next);
+        if (error == ErrorCode.NONE) {
+            for (LeaderChange change : leaderChanges) {
+                audit(
+                        FailoverAuditEventType.LEADER_CHANGED,
+                        change.newLeaderId(),
+                        topicName,
+                        change.partitionId(),
+                        String.valueOf(change.oldLeaderId()),
+                        String.valueOf(change.newLeaderId()),
+                        "preferred replica elected");
+            }
+        }
+        return new ElectPreferredLeadersResult(
+                error,
+                error == ErrorCode.NONE ? List.copyOf(elected) : List.of(),
+                metadata.metadataVersion);
+    }
+
+    private static PartitionEntry partitionById(TopicEntry topic, int partitionId) {
+        for (PartitionEntry partition : topic.partitions) {
+            if (partition.partitionId == partitionId) {
+                return partition;
+            }
+        }
+        return null;
+    }
+
+    private static int topicReplicationFactor(TopicEntry topic) {
+        int factor = Integer.MAX_VALUE;
+        if (topic.partitions == null || topic.partitions.isEmpty()) {
+            return 1;
+        }
+        for (PartitionEntry partition : topic.partitions) {
+            int size = partition.replicaBrokerIds == null ? 0 : partition.replicaBrokerIds.size();
+            factor = Math.min(factor, size);
+        }
+        return factor == Integer.MAX_VALUE || factor < 1 ? 1 : factor;
+    }
+
+    private ErrorCode applyPartitionReassignment(
+            ClusterMetadata next,
+            TopicEntry topic,
+            PartitionEntry partition,
+            List<Integer> newReplicas,
+            List<Integer> changed,
+            List<LeaderChange> leaderChanges) {
+        if (partition.frozen) {
+            return ErrorCode.INVALID_REQUEST;
+        }
+        if (newReplicas.size() < topic.effectiveMinInSyncReplicas()) {
+            return ErrorCode.INVALID_REQUEST;
+        }
+        for (int replicaId : newReplicas) {
+            BrokerEntry broker = next.brokers.get(replicaId);
+            if (broker == null) {
+                return ErrorCode.UNKNOWN_BROKER;
+            }
+            if (!broker.online) {
+                return ErrorCode.INVALID_REQUEST;
+            }
+        }
+        Set<Integer> newSet = new LinkedHashSet<>(newReplicas);
+        Set<Integer> isrOverlap = new LinkedHashSet<>();
+        if (partition.isrBrokerIds != null) {
+            for (int replicaId : partition.isrBrokerIds) {
+                if (!newSet.contains(replicaId)) {
+                    continue;
+                }
+                BrokerEntry broker = next.brokers.get(replicaId);
+                if (broker != null && broker.online) {
+                    isrOverlap.add(replicaId);
+                }
+            }
+        }
+        if (isrOverlap.isEmpty()) {
+            return ErrorCode.INVALID_REQUEST;
+        }
+        int newLeader;
+        if (newSet.contains(partition.leaderBrokerId)
+                && isrOverlap.contains(partition.leaderBrokerId)) {
+            newLeader = partition.leaderBrokerId;
+        } else {
+            Integer preferred = null;
+            for (int replicaId : newReplicas) {
+                if (isrOverlap.contains(replicaId)) {
+                    preferred = replicaId;
+                    break;
+                }
+            }
+            if (preferred == null) {
+                return ErrorCode.INVALID_REQUEST;
+            }
+            newLeader = preferred;
+        }
+        boolean replicaSetChanged = !newReplicas.equals(partition.replicaBrokerIds);
+        boolean leaderChanged = newLeader != partition.leaderBrokerId;
+        if (!replicaSetChanged && !leaderChanged) {
+            return ErrorCode.NONE;
+        }
+        long recoveryOffset = recoveryOffsetFor(partition, isrOverlap);
+        int oldLeader = partition.leaderBrokerId;
+        partition.replicaBrokerIds = new ArrayList<>(newReplicas);
+        partition.isrBrokerIds = new ArrayList<>(isrOverlap);
+        if (!partition.isrBrokerIds.contains(newLeader)) {
+            partition.isrBrokerIds.add(0, newLeader);
+        }
+        if (partition.replicaLogEndOffsets == null) {
+            partition.replicaLogEndOffsets = new HashMap<>();
+        } else {
+            partition.replicaLogEndOffsets.keySet().retainAll(newSet);
+        }
+        if (partition.replicaProgress != null) {
+            partition.replicaProgress.keySet().retainAll(newSet);
+        }
+        for (int replicaId : newReplicas) {
+            partition.replicaLogEndOffsets.putIfAbsent(replicaId, 0L);
+        }
+        ensureReplicaProgressState(next, partition);
+        if (leaderChanged) {
+            partition.leaderBrokerId = newLeader;
+            partition.frozen = false;
+            partition.activationRequired = false;
+            partition.leaderEpoch = Math.addExact(partition.leaderEpoch, 1L);
+            partition.leaderEpochStartOffset = recoveryOffset;
+            partition.leaderReady = false;
+            invalidateWatermarkSnapshot(partition);
+            leaderChanges.add(new LeaderChange(partition.partitionId, oldLeader, newLeader));
+        } else {
+            invalidateWatermarkSnapshot(partition);
+        }
+        reconcileIsrByLeo(next, partition);
+        changed.add(partition.partitionId);
+        return ErrorCode.NONE;
+    }
+
+    private void promoteLeader(PartitionEntry partition, int newLeader) {
+        long recoveryOffset = recoveryOffset(partition);
+        partition.leaderBrokerId = newLeader;
+        partition.frozen = false;
+        partition.activationRequired = false;
+        partition.leaderEpoch = Math.addExact(partition.leaderEpoch, 1L);
+        partition.leaderEpochStartOffset = recoveryOffset;
+        partition.leaderReady = false;
+        if (!partition.isrBrokerIds.contains(newLeader)) {
+            partition.isrBrokerIds.add(0, newLeader);
+        }
+        invalidateWatermarkSnapshot(partition);
+    }
+
+    private static long recoveryOffsetFor(PartitionEntry partition, Set<Integer> isrMembers) {
+        if (isrMembers == null || isrMembers.isEmpty() || partition.replicaLogEndOffsets == null) {
+            return 0L;
+        }
+        long recoveryOffset = Long.MAX_VALUE;
+        for (int brokerId : isrMembers) {
+            Long leo = partition.replicaLogEndOffsets.get(brokerId);
+            if (leo == null || leo < 0) {
+                return 0L;
+            }
+            recoveryOffset = Math.min(recoveryOffset, leo);
+        }
+        return recoveryOffset == Long.MAX_VALUE ? 0L : recoveryOffset;
+    }
+
+    private record LeaderChange(int partitionId, int oldLeaderId, int newLeaderId) {
     }
 
     /** Returns active topic names in deterministic order. */

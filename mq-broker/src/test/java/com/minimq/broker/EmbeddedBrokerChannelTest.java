@@ -46,6 +46,11 @@ import com.minimq.protocol.message.ProtocolMessages.GroupStatusResponse;
 import com.minimq.protocol.message.ProtocolMessages.HeartbeatRequest;
 import com.minimq.protocol.message.ProtocolMessages.IncreasePartitionsRequest;
 import com.minimq.protocol.message.ProtocolMessages.IncreasePartitionsResponse;
+import com.minimq.protocol.message.ProtocolMessages.AlterTopicConfigRequest;
+import com.minimq.protocol.message.ProtocolMessages.AlterTopicConfigResponse;
+import com.minimq.protocol.message.ProtocolMessages.ReassignPartitionsRequest;
+import com.minimq.protocol.message.ProtocolMessages.ElectPreferredLeadersRequest;
+import com.minimq.protocol.message.ProtocolMessages.PartitionReplicaAssignment;
 import com.minimq.protocol.message.ProtocolMessages.JoinGroupRequest;
 import com.minimq.protocol.message.ProtocolMessages.JoinGroupResponse;
 import com.minimq.protocol.message.ProtocolMessages.LeaveGroupRequest;
@@ -1401,6 +1406,31 @@ class EmbeddedBrokerChannelTest {
         IncreasePartitionsResponse increased = (IncreasePartitionsResponse) increase.body();
         assertEquals(2, increased.previousPartitionCount());
         assertEquals(3, increased.newPartitionCount());
+
+        assertEquals(ErrorCode.NONE, clusterController.registerBroker(
+                new RegisterBrokerRequest(1, "127.0.0.1", 9093)).errorCode());
+        assertEquals(ErrorCode.NONE, clusterController.registerBroker(
+                new RegisterBrokerRequest(2, "127.0.0.1", 9094)).errorCode());
+        MqDecoder.DecodedResponse alter = send(
+                channel,
+                ApiKeys.ALTER_TOPIC_CONFIG,
+                new AlterTopicConfigRequest(BrokerTestHarness.ADMIN_TOKEN, "orders", 1));
+        assertEquals(ErrorCode.NONE, alter.header().errorCode());
+        assertEquals(1, ((AlterTopicConfigResponse) alter.body()).minInSyncReplicas());
+        MqDecoder.DecodedResponse reassign = send(
+                channel,
+                ApiKeys.REASSIGN_PARTITIONS,
+                new ReassignPartitionsRequest(
+                        BrokerTestHarness.ADMIN_TOKEN,
+                        "orders",
+                        List.of(new PartitionReplicaAssignment(0, List.of(0, 1)))));
+        assertEquals(ErrorCode.NONE, reassign.header().errorCode());
+        MqDecoder.DecodedResponse elect = send(
+                channel,
+                ApiKeys.ELECT_PREFERRED_LEADERS,
+                new ElectPreferredLeadersRequest(
+                        BrokerTestHarness.ADMIN_TOKEN, "orders", List.of()));
+        assertEquals(ErrorCode.NONE, elect.header().errorCode());
 
         MqDecoder.DecodedResponse ops = send(
                 channel,

@@ -10,7 +10,7 @@ Implement the V5 contract in [v5-producer-acks-design.md](../designs/v5-producer
 ## Execution Rules
 
 - Keep protocol frame version 1 and original field order for existing produce bytes.
-- Error codes and API keys stay append-only. New codes are 20 and 21. New API key is `LEAVE_GROUP=38`.
+- Error codes and API keys stay append-only. New codes are 20 and 21. New API keys are `LEAVE_GROUP=38`, `ALTER_TOPIC_CONFIG=39`, `REASSIGN_PARTITIONS=40`, and `ELECT_PREFERRED_LEADERS=41`.
 - Bound every wait (`ackTimeoutMs` max 60_000, session timeout max 300_000).
 - Do not lower the JaCoCo line ≥ 90% gate.
 - Use `.mvn/settings.xml` for Maven commands.
@@ -46,6 +46,13 @@ Implement the V5 contract in [v5-producer-acks-design.md](../designs/v5-producer
 - Optional trailing `sessionTimeoutMs` on `JOIN_GROUP`; eviction and `GROUP_STATUS` alive bits use the per-member value.
 - Consumer heartbeat interval scales with session timeout; `close()` sends leave.
 - CLI `--min-insync-replicas` and `--session-timeout-ms`.
+
+## Stage 4b: Topic config, reassignment, preferred leader
+
+- `ALTER_TOPIC_CONFIG` updates `min.insync.replicas` when `1..min(partition RF)`.
+- `REASSIGN_PARTITIONS` replaces replica lists; require ISR overlap; new replicas join ISR only after catching up.
+- `ELECT_PREFERRED_LEADERS` promotes `replicaBrokerIds[0]` when it is in the ISR.
+- CLI: `alter-topic-config`, `reassign-partitions --assignment`, `elect-preferred-leaders`.
 
 ## Stage 5: Docs And Version
 

@@ -739,6 +739,27 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                     errorCode = result.errorCode();
                     responseBody = result.response();
                 }
+                case ApiKeys.ALTER_TOPIC_CONFIG -> {
+                    ensureController();
+                    TopicAdminService.Result<AlterTopicConfigResponse> result =
+                            topicAdminService.alterConfig((AlterTopicConfigRequest) requestBody);
+                    errorCode = result.errorCode();
+                    responseBody = result.response();
+                }
+                case ApiKeys.REASSIGN_PARTITIONS -> {
+                    ensureController();
+                    TopicAdminService.Result<ReassignPartitionsResponse> result =
+                            topicAdminService.reassign((ReassignPartitionsRequest) requestBody);
+                    errorCode = result.errorCode();
+                    responseBody = result.response();
+                }
+                case ApiKeys.ELECT_PREFERRED_LEADERS -> {
+                    ensureController();
+                    TopicAdminService.Result<ElectPreferredLeadersResponse> result =
+                            topicAdminService.electPreferred((ElectPreferredLeadersRequest) requestBody);
+                    errorCode = result.errorCode();
+                    responseBody = result.response();
+                }
                 case ApiKeys.CONFIGURE_TOPIC_RELIABILITY -> {
                     ensureController();
                     TopicAdminService.Result<ConfigureTopicReliabilityResponse> result =
@@ -868,7 +889,10 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                     ApiKeys.DELETE_TOPIC,
                     ApiKeys.INCREASE_PARTITIONS,
                     ApiKeys.CONFIGURE_TOPIC_RELIABILITY,
-                    ApiKeys.CREATE_TOPIC_ADMIN -> OperatorScope.TOPIC_ADMIN;
+                    ApiKeys.CREATE_TOPIC_ADMIN,
+                    ApiKeys.ALTER_TOPIC_CONFIG,
+                    ApiKeys.REASSIGN_PARTITIONS,
+                    ApiKeys.ELECT_PREFERRED_LEADERS -> OperatorScope.TOPIC_ADMIN;
             case ApiKeys.MARK_BROKER_OFFLINE_ADMIN -> OperatorScope.BROKER_OFFLINE;
             default -> null;
         };

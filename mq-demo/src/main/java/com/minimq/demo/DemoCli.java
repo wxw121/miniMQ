@@ -52,6 +52,9 @@ public final class DemoCli {
             case "describe-topic" -> describeTopic(args);
             case "delete-topic" -> deleteTopic(args);
             case "increase-partitions" -> increasePartitions(args);
+            case "alter-topic-config" -> alterTopicConfig(args);
+            case "reassign-partitions" -> reassignPartitions(args);
+            case "elect-preferred-leaders" -> electPreferredLeaders(args);
             case "failover-audit" -> failoverAudit(args);
             case "auth-status" -> authStatus(args);
             case "configure-topic-reliability" -> configureTopicReliability(args);
@@ -287,6 +290,49 @@ public final class DemoCli {
                 response.metadataVersion());
     }
 
+    private static void alterTopicConfig(String[] args) throws Exception {
+        String credential = arg(args, "--admin-token", null);
+        AlterTopicConfigResponse response = (AlterTopicConfigResponse) sendController(
+                args, ApiKeys.ALTER_TOPIC_CONFIG,
+                new AlterTopicConfigRequest(
+                        credential,
+                        arg(args, "--topic", null),
+                        Integer.parseInt(arg(args, "--min-insync-replicas", null))),
+                "alter topic config").body();
+        System.out.printf("Topic config topic=%s minInSyncReplicas=%d metadataVersion=%d%n",
+                response.topicName(), response.minInSyncReplicas(), response.metadataVersion());
+    }
+
+    private static void reassignPartitions(String[] args) throws Exception {
+        String credential = arg(args, "--admin-token", null);
+        List<PartitionReplicaAssignment> assignments = new java.util.ArrayList<>();
+        for (String value : repeatedArg(args, "--assignment")) {
+            assignments.add(parseAssignment(value));
+        }
+        ReassignPartitionsResponse response = (ReassignPartitionsResponse) sendController(
+                args, ApiKeys.REASSIGN_PARTITIONS,
+                new ReassignPartitionsRequest(
+                        credential, arg(args, "--topic", null), assignments),
+                "reassign partitions").body();
+        System.out.printf("Partitions reassigned topic=%s changed=%s metadataVersion=%d%n",
+                response.topicName(), response.changedPartitionIds(), response.metadataVersion());
+    }
+
+    private static void electPreferredLeaders(String[] args) throws Exception {
+        String credential = arg(args, "--admin-token", null);
+        List<Integer> partitionIds = new java.util.ArrayList<>();
+        for (String value : repeatedArg(args, "--partition")) {
+            partitionIds.add(Integer.parseInt(value));
+        }
+        ElectPreferredLeadersResponse response = (ElectPreferredLeadersResponse) sendController(
+                args, ApiKeys.ELECT_PREFERRED_LEADERS,
+                new ElectPreferredLeadersRequest(
+                        credential, arg(args, "--topic", null), partitionIds),
+                "elect preferred leaders").body();
+        System.out.printf("Preferred leaders elected topic=%s elected=%s metadataVersion=%d%n",
+                response.topicName(), response.electedPartitionIds(), response.metadataVersion());
+    }
+
     private static void failoverAudit(String[] args) throws Exception {
         String credential = arg(args, "--admin-token", null);
         FailoverAuditResponse response = (FailoverAuditResponse) sendBroker(
@@ -493,6 +539,42 @@ public final class DemoCli {
         return null;
     }
 
+    static List<String> repeatedArg(String[] args, String name) {
+        List<String> values = new java.util.ArrayList<>();
+        for (int i = 0; i < args.length; i++) {
+            if (args[i].equals(name)) {
+                if (i == args.length - 1 || args[i + 1].startsWith("--")) {
+                    throw new IllegalArgumentException("Missing " + name);
+                }
+                values.add(args[++i]);
+            }
+        }
+        return values;
+    }
+
+    static PartitionReplicaAssignment parseAssignment(String value) {
+        if (value == null || !value.contains(":")) {
+            throw new IllegalArgumentException(
+                    "--assignment must be partitionId:brokerId[,brokerId...]");
+        }
+        String[] parts = value.split(":", 2);
+        int partitionId;
+        try {
+            partitionId = Integer.parseInt(parts[0].trim());
+        } catch (NumberFormatException ex) {
+            throw new IllegalArgumentException("--assignment partition id must be an integer", ex);
+        }
+        List<Integer> replicas = new java.util.ArrayList<>();
+        for (String token : parts[1].split(",")) {
+            try {
+                replicas.add(Integer.parseInt(token.trim()));
+            } catch (NumberFormatException ex) {
+                throw new IllegalArgumentException("--assignment replica ids must be integers", ex);
+            }
+        }
+        return new PartitionReplicaAssignment(partitionId, replicas);
+    }
+
     static boolean hasFlag(String[] args, String name) {
         for (String value : args) {
             if (value.equals(name)) {
@@ -568,6 +650,9 @@ public final class DemoCli {
                   java -jar mq-demo.jar describe-topic --brokers localhost:9092 --admin-token <secret> --topic orders [--include-deleted]
                   java -jar mq-demo.jar delete-topic --brokers localhost:9092 --admin-token <secret> --topic orders [--request-timeout-ms 15000]
                   java -jar mq-demo.jar increase-partitions --brokers localhost:9092 --admin-token <secret> --topic orders --target-count 6
+                  java -jar mq-demo.jar alter-topic-config --brokers localhost:9092 --admin-token <secret> --topic orders --min-insync-replicas 2
+                  java -jar mq-demo.jar reassign-partitions --brokers localhost:9092 --admin-token <secret> --topic orders --assignment 0:1,2,0
+                  java -jar mq-demo.jar elect-preferred-leaders --brokers localhost:9092 --admin-token <secret> --topic orders [--partition 0]
                   java -jar mq-demo.jar failover-audit --broker localhost:9092 --admin-token <secret> [--limit 100]
                   java -jar mq-demo.jar auth-status --broker localhost:9092 --admin-token <secret>
                   java -jar mq-demo.jar configure-topic-reliability --brokers localhost:9092 --admin-token <secret> --source-topic orders [--retry-topic orders-retry] [--dead-letter-topic orders-dlq]
