@@ -41,7 +41,8 @@ The current V4 layer is implemented in source: operator APIs expose status, grou
 | 7k | [V5.0 Producer Acknowledgements Design](designs/v5-producer-acks-design.md) | Understand `LEADER` / `ALL` produce acks, `min.insync.replicas`, the ack executor, `LEAVE_GROUP`, session timeouts, reassignment, and preferred-leader election. |
 | 7l | [V4.0.0 Operator Readiness Test Report](test-report-2026-07-22-v4.0.0-operator-readiness.md) | See the 2026-07-29 full-reactor test counts, coverage, review regressions, and Docker-gated etcd status. |
 | 7n | [V5.0 Producer Acknowledgements Test Report](test-report-2026-08-14-v5.0.0-producer-acks.md) | Historical acks-only slice: 2026-08-14 `mvn clean verify` for `LEADER` / `ALL` (767 tests, line ≥ 90%). |
-| 7o | [V5.0 Expanded Verify (acks + min.insync + leave)](test-report-2026-08-14-v5.0.0-acks-minisr-leave.md) | Latest 2026-08-14 full `mvn clean verify` after min.insync, leave-group, session timeout, and the produce-ack executor (781 tests, line ≥ 90%). |
+| 7o | [V5.0 Expanded Verify (acks + min.insync + leave)](test-report-2026-08-14-v5.0.0-acks-minisr-leave.md) | Historical 2026-08-14 full `mvn clean verify` after min.insync, leave-group, session timeout, and the produce-ack executor (781 tests, line ≥ 90%). |
+| 7p | [V5.0 Expanded Verify (reassign + preferred leader)](test-report-2026-08-14-v5.0.0-reassign-preferred.md) | Latest 2026-08-14 full `mvn clean verify` after `ALTER_TOPIC_CONFIG`, `REASSIGN_PARTITIONS`, and `ELECT_PREFERRED_LEADERS` (785 tests, line ≥ 90%). |
 | 8 | [Troubleshooting Guide](troubleshooting.md) / [故障排查指南](troubleshooting.md) | Resolve common Maven, port, Windows, test report, and GitHub/SSH issues. / 排查 Maven、端口、Windows、测试报告、GitHub/SSH 常见问题。 |
 
 ## 3. Current Snapshot / 当前快照
@@ -59,7 +60,7 @@ The current V4 layer is implemented in source: operator APIs expose status, grou
 | Coverage / 覆盖率 | JaCoCo |
 | Latest milestone tag | Not cut for the current working tree; Maven project version is 5.0.0 |
 | Latest release | V5.0.0 in progress: producer acks, min.insync, leave-group, session timeout, alter-config, reassignment, and preferred-leader election on top of the completed V4 operator-readiness tree |
-| Latest evidence | [V5.0.0 acks + min.insync + leave](test-report-2026-08-14-v5.0.0-acks-minisr-leave.md): 781 tests, 0 failures/errors, 6 Linux-skipped Windows cases, 91.34% overall line coverage, every module above 90%. Docker/etcd ITs remain unrun. |
+| Latest evidence | [V5.0.0 reassign + preferred leader](test-report-2026-08-14-v5.0.0-reassign-preferred.md): 785 tests, 0 failures/errors, 6 Linux-skipped Windows cases, 91.52% overall line coverage, every module above 90%. Docker/etcd ITs remain unrun. |
 
 ## 4. Module Map / 模块地图
 

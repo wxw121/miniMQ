@@ -58,29 +58,29 @@ Latest V5.0.0 result / 最新 V5.0.0 结果（2026-08-14, OpenJDK 21, Linux）�
 
 | Metric / 指标 | Value / 数值 |
 | --- | ---: |
-| Tests run / 测试总数 | 781 |
+| Tests run / 测试总数 | 785 |
 | Failures / 失败数 | 0 |
 | Errors / 错误数 | 0 |
 | Skipped / 跳过数 | 6 (`@DisabledOnOs(LINUX)` Windows script/ownership cases) |
-| Overall line coverage / 总体行覆盖率 | 91.34% (`11395 / 12475`) |
-| Overall instruction coverage / 总体指令覆盖率 | 92.20% (`51968 / 56364`) |
-| Overall branch coverage / 总体分支覆盖率 | 79.13% (`4228 / 5343`) |
-| Overall method coverage / 总体方法覆盖率 | 95.06% (`1885 / 1983`) |
-| Overall class coverage / 总体类覆盖率 | 99.68% (`309 / 310`) |
+| Overall line coverage / 总体行覆盖率 | 91.52% (`11823 / 12918`) |
+| Overall instruction coverage / 总体指令覆盖率 | 92.36% (`53924 / 58383`) |
+| Overall branch coverage / 总体分支覆盖率 | 79.21% (`4423 / 5584`) |
+| Overall method coverage / 总体方法覆盖率 | 95.14% (`1917 / 2015`) |
+| Overall class coverage / 总体类覆盖率 | 99.69% (`320 / 321`) |
 
-Evidence / 验证证据：`docs/test-report-2026-08-14-v5.0.0-acks-minisr-leave.md`. The earlier same-day acks-only pass (`767` tests) remains in `docs/test-report-2026-08-14-v5.0.0-producer-acks.md`. The V4.0.0 timeout/wire closeout (`754` tests) remains in `docs/test-report-2026-08-13-v4.0.0-timeout-and-wire.md`. Docker/etcd Failsafe suites were not run on machines without Docker.
+Evidence / 验证证据：`docs/test-report-2026-08-14-v5.0.0-reassign-preferred.md`. The earlier same-day acks + min.insync + leave pass (`781` tests) remains in `docs/test-report-2026-08-14-v5.0.0-acks-minisr-leave.md`. The acks-only pass (`767` tests) remains in `docs/test-report-2026-08-14-v5.0.0-producer-acks.md`. The V4.0.0 timeout/wire closeout (`754` tests) remains in `docs/test-report-2026-08-13-v4.0.0-timeout-and-wire.md`. Docker/etcd Failsafe suites were not run on machines without Docker.
 
-验证证据见 `docs/test-report-2026-08-14-v5.0.0-acks-minisr-leave.md`。同日较早仅 acks 全量（767 tests）仍在 `docs/test-report-2026-08-14-v5.0.0-producer-acks.md`。V4.0.0 超时与协议兼容收口（754 tests）仍保留在 `docs/test-report-2026-08-13-v4.0.0-timeout-and-wire.md`。无 Docker 的机器未跑 etcd Failsafe。
+验证证据见 `docs/test-report-2026-08-14-v5.0.0-reassign-preferred.md`。同日较早 acks + min.insync + leave 全量（781 tests）仍在 `docs/test-report-2026-08-14-v5.0.0-acks-minisr-leave.md`。仅 acks 全量（767 tests）仍在 `docs/test-report-2026-08-14-v5.0.0-producer-acks.md`。V4.0.0 超时与协议兼容收口（754 tests）仍保留在 `docs/test-report-2026-08-13-v4.0.0-timeout-and-wire.md`。无 Docker 的机器未跑 etcd Failsafe。
 
 ## 5. Coverage By Module / 模块覆盖率
 
 | Module / 模块 | Instruction / 指令 | Branch / 分支 | Line / 行 | Method / 方法 | Class / 类 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `mq-broker` | 91.25% | 77.04% | 90.43% | 94.64% | 100.00% |
+| `mq-broker` | 91.57% | 77.34% | 90.75% | 94.74% | 100.00% |
 | `mq-client` | 90.88% | 76.23% | 90.09% | 93.85% | 100.00% |
 | `mq-common` | 97.84% | 92.90% | 97.73% | 97.22% | 100.00% |
-| `mq-demo` | 95.08% | 77.97% | 93.14% | 94.02% | 100.00% |
-| `mq-protocol` | 94.87% | 82.50% | 94.79% | 93.86% | 100.00% |
+| `mq-demo` | 95.16% | 78.42% | 93.29% | 94.18% | 100.00% |
+| `mq-protocol` | 94.75% | 81.74% | 94.73% | 94.10% | 100.00% |
 | `mq-storage` | 90.93% | 81.69% | 90.10% | 97.57% | 98.00% |
 
 ```mermaid
@@ -96,15 +96,15 @@ xychart-beta
     title "Overall Coverage / 总体覆盖率"
     x-axis ["Instruction/指令", "Branch/分支", "Line/行", "Method/方法", "Class/类"]
     y-axis "Coverage % / 覆盖率 %" 0 --> 100
-    bar [92.20, 79.13, 91.34, 95.06, 99.68]
+    bar [92.36, 79.21, 91.52, 95.14, 99.69]
 ```
 
 
 ## 6. Key Flow Test Evidence / 关键流程测试结果截图
 
-The [2026-08-14 expanded V5 report](test-report-2026-08-14-v5.0.0-acks-minisr-leave.md) is the source of truth for the latest verified Surefire and JaCoCo numbers. Browser operator-console results remain in the [2026-08-13 full-verification report](test-report-2026-08-13-v4.0.0-full-verification.md). The screenshots below remain historical visual aids for the core flows, so a new reader can inspect the main testing shape without opening every `target` report directory.
+The [2026-08-14 reassign + preferred-leader V5 report](test-report-2026-08-14-v5.0.0-reassign-preferred.md) is the source of truth for the latest verified Surefire and JaCoCo numbers. Browser operator-console results remain in the [2026-08-13 full-verification report](test-report-2026-08-13-v4.0.0-full-verification.md). The screenshots below remain historical visual aids for the core flows, so a new reader can inspect the main testing shape without opening every `target` report directory.
 
-最新 Surefire / JaCoCo 数字以 [2026-08-14 扩展 V5 报告](test-report-2026-08-14-v5.0.0-acks-minisr-leave.md) 为准。操作台浏览器验收仍见 [2026-08-13 全量报告](test-report-2026-08-13-v4.0.0-full-verification.md)。下面截图保留为核心流程的历史可视化辅助，新读者无需逐个打开 `target` 报告目录，也能快速看到关键测试形态。
+最新 Surefire / JaCoCo 数字以 [2026-08-14 reassign + preferred Leader 报告](test-report-2026-08-14-v5.0.0-reassign-preferred.md) 为准。操作台浏览器验收仍见 [2026-08-13 全量报告](test-report-2026-08-13-v4.0.0-full-verification.md)。下面截图保留为核心流程的历史可视化辅助，新读者无需逐个打开 `target` 报告目录，也能快速看到关键测试形态。
 
 ### 6.1 Full Build Verification / 完整构建验证
 
