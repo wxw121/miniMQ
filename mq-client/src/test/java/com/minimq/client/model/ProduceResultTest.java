@@ -18,6 +18,9 @@ class ProduceResultTest {
         assertEquals("orders", result.topic());
         assertEquals(2, result.partitionId());
         assertEquals(9L, result.offset());
+        assertEquals("orders", result.getTopic());
+        assertEquals(2, result.getPartitionId());
+        assertEquals(9L, result.getOffset());
     }
 
     @Test

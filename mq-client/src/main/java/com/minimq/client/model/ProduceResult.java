@@ -60,6 +60,18 @@ public final class ProduceResult {
         }
     }
 
+    public String getTopic() {
+        return topic();
+    }
+
+    public int getPartitionId() {
+        return partitionId();
+    }
+
+    public long getOffset() {
+        return offset();
+    }
+
     private static RuntimeException unwrap(ExecutionException failure) {
         Throwable cause = failure.getCause();
         if (cause instanceof RuntimeException runtime) {
