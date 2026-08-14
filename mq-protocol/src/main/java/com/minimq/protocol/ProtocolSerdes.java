@@ -1,7 +1,9 @@
 package com.minimq.protocol;
 
+import com.minimq.common.acks.MinInSyncReplicas;
 import com.minimq.common.acks.ProduceAcks;
 import com.minimq.common.error.ErrorCode;
+import com.minimq.common.group.GroupSessionTimeouts;
 import com.minimq.protocol.codec.ByteBufSerde;
 import com.minimq.protocol.message.MqRequestHeader;
 import com.minimq.protocol.message.MqResponseHeader;
@@ -93,8 +95,7 @@ public final class ProtocolSerdes {
 
     private static Object decodeRequestBodyUnchecked(short apiKey, ByteBuf payload) {
         Object body = switch (apiKey) {
-            case ApiKeys.CREATE_TOPIC -> new CreateTopicRequest(
-                    ByteBufSerde.readString(payload), payload.readInt(), payload.readInt());
+            case ApiKeys.CREATE_TOPIC -> decodeCreateTopicRequest(payload);
             case ApiKeys.METADATA -> new MetadataRequest(ByteBufSerde.readString(payload));
             case ApiKeys.PRODUCE -> decodeProduceRequest(payload);
             case ApiKeys.FETCH -> new FetchRequest(
@@ -103,16 +104,17 @@ public final class ProtocolSerdes {
                     payload.readLong(),
                     payload.readLong(),
                     payload.readInt());
-            case ApiKeys.JOIN_GROUP -> new JoinGroupRequest(
-                    ByteBufSerde.readString(payload),
-                    ByteBufSerde.readString(payload),
-                    ByteBufSerde.readString(payload));
+            case ApiKeys.JOIN_GROUP -> decodeJoinGroupRequest(payload);
             case ApiKeys.SYNC_GROUP -> new SyncGroupRequest(
                     ByteBufSerde.readString(payload),
                     payload.readInt(),
                     ByteBufSerde.readString(payload),
                     readByteArrayWithShortPrefix(payload));
             case ApiKeys.HEARTBEAT -> decodeHeartbeatRequest(payload);
+            case ApiKeys.LEAVE_GROUP -> new LeaveGroupRequest(
+                    ByteBufSerde.readString(payload),
+                    ByteBufSerde.readString(payload),
+                    payload.readInt());
             case ApiKeys.OFFSET_COMMIT -> decodeOffsetCommitRequest(payload);
             case ApiKeys.OFFSET_FETCH -> new OffsetFetchRequest(
                     ByteBufSerde.readString(payload),
@@ -182,11 +184,7 @@ public final class ProtocolSerdes {
                     decodeConfigureTopicReliabilityRequest(payload);
             case ApiKeys.MARK_BROKER_OFFLINE_ADMIN -> new MarkBrokerOfflineAdminRequest(
                     readV4Credential(payload), payload.readInt());
-            case ApiKeys.CREATE_TOPIC_ADMIN -> new CreateTopicAdminRequest(
-                    readV4Credential(payload),
-                    readV4String(payload, "topic name"),
-                    payload.readInt(),
-                    payload.readInt());
+            case ApiKeys.CREATE_TOPIC_ADMIN -> decodeCreateTopicAdminRequest(payload);
             case ApiKeys.PRODUCE_V2 -> decodeProduceV2Request(payload);
             case ApiKeys.REPLICA_FETCH_V2 -> new ReplicaFetchV2Request(
                     readV4Credential(payload),
@@ -282,6 +280,7 @@ public final class ProtocolSerdes {
             case ApiKeys.JOIN_GROUP -> decodeJoinGroupResponse(payload);
             case ApiKeys.SYNC_GROUP -> new SyncGroupResponse(readByteArrayWithShortPrefix(payload));
             case ApiKeys.HEARTBEAT -> new HeartbeatResponse();
+            case ApiKeys.LEAVE_GROUP -> new LeaveGroupResponse();
             case ApiKeys.OFFSET_COMMIT -> new OffsetCommitResponse();
             case ApiKeys.OFFSET_FETCH -> new OffsetFetchResponse(payload.readLong());
             case ApiKeys.REGISTER_BROKER ->
@@ -349,6 +348,7 @@ public final class ProtocolSerdes {
                 ByteBufSerde.writeString(buf, req.topicName());
                 buf.writeInt(req.numPartitions());
                 buf.writeInt(req.replicationFactor());
+                buf.writeInt(req.minInSyncReplicas());
             }
             case ApiKeys.METADATA -> ByteBufSerde.writeString(buf, ((MetadataRequest) body).topicName());
             case ApiKeys.PRODUCE -> writeProduceRequest(buf, (ProduceRequest) body);
@@ -365,6 +365,7 @@ public final class ProtocolSerdes {
                 ByteBufSerde.writeString(buf, req.groupId());
                 ByteBufSerde.writeString(buf, req.memberId());
                 ByteBufSerde.writeString(buf, req.topicName());
+                buf.writeInt(req.sessionTimeoutMs());
             }
             case ApiKeys.SYNC_GROUP -> {
                 SyncGroupRequest req = (SyncGroupRequest) body;
@@ -375,6 +376,12 @@ public final class ProtocolSerdes {
             }
             case ApiKeys.HEARTBEAT -> {
                 HeartbeatRequest req = (HeartbeatRequest) body;
+                ByteBufSerde.writeString(buf, req.groupId());
+                ByteBufSerde.writeString(buf, req.memberId());
+                buf.writeInt(req.generationId());
+            }
+            case ApiKeys.LEAVE_GROUP -> {
+                LeaveGroupRequest req = (LeaveGroupRequest) body;
                 ByteBufSerde.writeString(buf, req.groupId());
                 ByteBufSerde.writeString(buf, req.memberId());
                 buf.writeInt(req.generationId());
@@ -497,6 +504,7 @@ public final class ProtocolSerdes {
                 ByteBufSerde.writeString(buf, req.topicName());
                 buf.writeInt(req.numPartitions());
                 buf.writeInt(req.replicationFactor());
+                buf.writeInt(req.minInSyncReplicas());
             }
             case ApiKeys.PRODUCE_V2 -> writeProduceV2Request(buf, (ProduceV2Request) body);
             case ApiKeys.REPLICA_FETCH_V2 -> {
@@ -653,6 +661,7 @@ public final class ProtocolSerdes {
         } else if (body instanceof RuntimeMetricsV2Response res) {
             writeRuntimeMetricsV2Response(buf, res);
         } else if (body instanceof HeartbeatResponse
+                || body instanceof LeaveGroupResponse
                 || body instanceof OffsetCommitResponse
                 || body instanceof MarkBrokerOfflineResponse
                 || body instanceof UpdateReplicaLeoResponse
@@ -1168,6 +1177,44 @@ public final class ProtocolSerdes {
     }
 
     /**
+     * Current CREATE_TOPIC body is {@code topicName, numPartitions, replicationFactor, minInSyncReplicas}.
+     * Legacy bodies omit {@code minInSyncReplicas}; decode defaults it to 1.
+     */
+    private static CreateTopicRequest decodeCreateTopicRequest(ByteBuf buf) {
+        String topicName = ByteBufSerde.readString(buf);
+        int numPartitions = buf.readInt();
+        int replicationFactor = buf.readInt();
+        int minInSyncReplicas = buf.isReadable() ? buf.readInt() : MinInSyncReplicas.DEFAULT;
+        return new CreateTopicRequest(topicName, numPartitions, replicationFactor, minInSyncReplicas);
+    }
+
+    /**
+     * Current CREATE_TOPIC_ADMIN body appends {@code minInSyncReplicas} after replication factor.
+     * Legacy bodies omit it; decode defaults it to 1.
+     */
+    private static CreateTopicAdminRequest decodeCreateTopicAdminRequest(ByteBuf buf) {
+        String credential = readV4Credential(buf);
+        String topicName = readV4String(buf, "topic name");
+        int numPartitions = buf.readInt();
+        int replicationFactor = buf.readInt();
+        int minInSyncReplicas = buf.isReadable() ? buf.readInt() : MinInSyncReplicas.DEFAULT;
+        return new CreateTopicAdminRequest(
+                credential, topicName, numPartitions, replicationFactor, minInSyncReplicas);
+    }
+
+    /**
+     * Current JOIN_GROUP body is {@code groupId, memberId, topicName, sessionTimeoutMs}.
+     * Legacy bodies omit {@code sessionTimeoutMs}; decode defaults it to 10_000.
+     */
+    private static JoinGroupRequest decodeJoinGroupRequest(ByteBuf buf) {
+        String groupId = ByteBufSerde.readString(buf);
+        String memberId = ByteBufSerde.readString(buf);
+        String topicName = ByteBufSerde.readString(buf);
+        int sessionTimeoutMs = buf.isReadable() ? buf.readInt() : GroupSessionTimeouts.DEFAULT_MS;
+        return new JoinGroupRequest(groupId, memberId, topicName, sessionTimeoutMs);
+    }
+
+    /**
      * Current HEARTBEAT body is {@code groupId, memberId, generationId}.
      * Legacy bodies omit {@code generationId}; decode defaults it to 0 so old frames
      * are not rejected as malformed. Coordinator still requires a matching generation
@@ -1480,6 +1527,11 @@ public final class ProtocolSerdes {
         TopicTombstoneInfo tombstone = readBoolean(buf, "tombstone present")
                 ? readTopicTombstoneInfo(buf)
                 : null;
+        int minInSyncReplicas = MinInSyncReplicas.DEFAULT;
+        if (buf.isReadable()) {
+            requireReadable(buf, Integer.BYTES, "min in-sync replicas");
+            minInSyncReplicas = buf.readInt();
+        }
         return new DescribeTopicResponse(
                 topicName,
                 metadataVersion,
@@ -1487,7 +1539,8 @@ public final class ProtocolSerdes {
                 retryTopic,
                 deadLetterTopic,
                 partitions,
-                tombstone);
+                tombstone,
+                minInSyncReplicas);
     }
 
     private static void writeDescribeTopicResponse(ByteBuf buf, DescribeTopicResponse res) {
@@ -1505,6 +1558,7 @@ public final class ProtocolSerdes {
         if (res.tombstone() != null) {
             writeTopicTombstoneInfo(buf, res.tombstone());
         }
+        buf.writeInt(res.minInSyncReplicas());
     }
 
     private static DeleteTopicResponse decodeDeleteTopicResponse(ByteBuf buf) {

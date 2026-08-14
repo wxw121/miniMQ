@@ -9,7 +9,7 @@ MiniMQ is a modular Java message queue. It separates shared models, protocol enc
 
 MiniMQ 是一个多模块 Java 消息队列系统。它把公共模型、协议编解码、本地存储、Broker 运行时、客户端 SDK、Demo CLI 拆成独立 Maven 模块。项目规模不大，但保留了分区消息系统的核心结构：Producer 按 Topic/Partition 写入消息，Consumer 按 Offset 拉取消息，Controller 维护元数据并指导客户端把请求路由到正确的 Leader Broker。
 
-The architecture supports partition replicas, physical and visible ISR-aware watermarks, persisted replica state, Broker heartbeat leases, etcd-backed Controller election, exact data-plane Leader epochs, crash-safe failover truncation, and automatic clean Leader failover. It remains an educational architecture rather than a production quorum system: unclean election, transactions, and exactly-once semantics are not implemented. V5 produce can wait for the current ISR (`acks=ALL`) or return after the Leader append (`acks=LEADER`).
+The architecture supports partition replicas, physical and visible ISR-aware watermarks, persisted replica state, Broker heartbeat leases, etcd-backed Controller election, exact data-plane Leader epochs, crash-safe failover truncation, and automatic clean Leader failover. It remains an educational architecture rather than a production quorum system: unclean election, transactions, and exactly-once semantics are not implemented. V5 produce can wait for the current ISR (`acks=ALL`) or return after the Leader append (`acks=LEADER`). `ALL` waits run on a dedicated executor and require `isr.size() >= min.insync.replicas`. Consumers leave with `LEAVE_GROUP` and expire on a per-member session timeout.
 
 当前架构支持分区副本、ISR 感知的物理/可见 high watermark、持久化副本状态、Broker 心跳租约、etcd Controller 选举、精确数据面 Leader epoch、崩溃安全故障转移截断和 clean Leader 自动故障转移。它仍是教学型架构，不是生产级 quorum 系统：unclean election、事务和 exactly-once 语义尚未实现。
 
@@ -128,7 +128,7 @@ sequenceDiagram
     participant L as Leader Broker / 分区 Leader Broker
     participant Log as PartitionLog / 分区日志
 
-    C->>Ctrl: JOIN_GROUP(group, member, topic) / 加入消费组
+    C->>Ctrl: JOIN_GROUP(group, member, topic, sessionTimeoutMs) / 加入消费组
     Ctrl-->>C: generation, memberId, leaderMemberId, members / 代数、成员 ID、leader 成员、成员列表
     C->>Ctrl: SYNC_GROUP(group, generation, assignment) / 同步分配
     Ctrl-->>C: assigned partitions / 已分配分区
@@ -140,9 +140,9 @@ sequenceDiagram
     L-->>C: FetchResponse / 拉取响应
 ```
 
-Consumer 订阅 Topic 时会加入 Consumer Group。组内 leader 负责根据成员列表和 Topic 分区数计算 Range Assignment，然后通过 `SYNC_GROUP` 写回 Controller。普通成员通过 `SYNC_GROUP` 获取自己的分区列表。消费后，客户端通过 `OFFSET_COMMIT` 提交进度。成员超过 10 秒未心跳会被踢出并触发新一代 rebalance。`HEARTBEAT` / `OFFSET_COMMIT` 编码带 `generationId`（commit 还带 `memberId`）；解码仍接受省略这些字段的旧 body，但旧客户端在 join 之后会因 generation 0 被协调器拒绝。
+Consumer 订阅 Topic 时会加入 Consumer Group。组内 leader 负责根据成员列表和 Topic 分区数计算 Range Assignment，然后通过 `SYNC_GROUP` 写回 Controller。普通成员通过 `SYNC_GROUP` 获取自己的分区列表。消费后，客户端通过 `OFFSET_COMMIT` 提交进度。每个成员使用 `JOIN_GROUP` 上的 `sessionTimeoutMs`（默认 10 秒）；超时未心跳会被踢出并触发新一代 rebalance。`Consumer.close()` 发送 `LEAVE_GROUP`。`HEARTBEAT` / `OFFSET_COMMIT` 编码带 `generationId`（commit 还带 `memberId`）；解码仍接受省略这些字段的旧 body，但旧客户端在 join 之后会因 generation 0 被协调器拒绝。
 
-When a consumer subscribes, it joins a consumer group. The group leader computes a range assignment and submits it through `SYNC_GROUP`. Every member receives its partition list from the coordinator. After processing records, the consumer commits offsets through `OFFSET_COMMIT`. Members that miss heartbeats for 10 seconds are evicted and the group generation advances. Encode writes `generationId` on `HEARTBEAT` and `memberId` plus `generationId` on `OFFSET_COMMIT`; decode still accepts the shorter legacy bodies, but those defaulted fields fail the coordinator check after a real join.
+When a consumer subscribes, it joins a consumer group. The group leader computes a range assignment and submits it through `SYNC_GROUP`. Every member receives its partition list from the coordinator. After processing records, the consumer commits offsets through `OFFSET_COMMIT`. Each member uses the `sessionTimeoutMs` from `JOIN_GROUP` (default 10 seconds); missed heartbeats evict that member and advance the group generation. `Consumer.close()` sends `LEAVE_GROUP`. Encode writes `generationId` on `HEARTBEAT` and `memberId` plus `generationId` on `OFFSET_COMMIT`; decode still accepts the shorter legacy bodies, but those defaulted fields fail the coordinator check after a real join.
 
 ## 5. Data Plane And Control Plane / 数据面与控制面
 
@@ -152,7 +152,7 @@ MiniMQ 可以从概念上拆成两个面：
 
 | Plane / 平面 | APIs / API | Description / 说明 |
 | --- | --- | --- |
-| Control plane / 控制面 | `CREATE_TOPIC`, `METADATA`, `JOIN_GROUP`, `SYNC_GROUP`, `HEARTBEAT`, `OFFSET_COMMIT`, `OFFSET_FETCH`, `REGISTER_BROKER` | Handles metadata, group membership, assignments, offsets, and broker registration. / 处理元数据、组成员、分配、offset 和 Broker 注册。 |
+| Control plane / 控制面 | `CREATE_TOPIC`, `METADATA`, `JOIN_GROUP`, `SYNC_GROUP`, `HEARTBEAT`, `LEAVE_GROUP`, `OFFSET_COMMIT`, `OFFSET_FETCH`, `REGISTER_BROKER` | Handles metadata, group membership, assignments, offsets, and broker registration. / 处理元数据、组成员、分配、offset 和 Broker 注册。 |
 | Data plane / 数据面 | `PRODUCE`, `FETCH` | Handles record writes and reads against partition logs. / 处理分区日志上的消息写入与读取。 |
 
 The currently elected Controller Broker serves controller-scoped APIs. Controller-aware clients discover it through the complete bootstrap list and retry a stale route once. Broker-local status, maintenance, audit, auth, and runtime-metrics APIs target exactly one Broker. Data-plane APIs are served by each partition's Leader. Controller code lives mainly in `ControllerRuntime`, `ClusterController`, and `GroupCoordinator`; data access flows through `MqRequestHandler`, `PartitionManager`, `LogManager`, the WAL/checkpoint layer, and `SegmentedPartitionLog`.

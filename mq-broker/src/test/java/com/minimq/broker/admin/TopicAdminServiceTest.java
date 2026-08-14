@@ -58,6 +58,7 @@ class TopicAdminServiceTest {
         var description = service.describe(new DescribeTopicRequest("token", "orders", 10, false));
         assertEquals(ErrorCode.NONE, description.errorCode());
         assertEquals(5, description.response().partitions().total());
+        assertEquals(1, description.response().minInSyncReplicas());
         assertEquals(replicasBefore,
                 controller.snapshot().topics.get("orders").partitions.get(0).replicaBrokerIds);
         assertEquals(4, description.response().partitions().items().get(4).partitionId());

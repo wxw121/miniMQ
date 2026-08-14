@@ -70,15 +70,19 @@ public final class DemoCli {
         String name = arg(args, "--name", "orders");
         int partitions = Integer.parseInt(arg(args, "--partitions", "3"));
         int replicationFactor = Integer.parseInt(arg(args, "--replication-factor", "1"));
+        int minInSyncReplicas = Integer.parseInt(arg(args, "--min-insync-replicas", "1"));
         try (ControllerAwareNetworkClient client =
                      new ControllerAwareNetworkClient(brokers, "demo-admin")) {
             client.connect();
             MqDecoder.DecodedResponse response = client.send(
                     ApiKeys.CREATE_TOPIC_ADMIN,
-                    new CreateTopicAdminRequest(adminToken, name, partitions, replicationFactor));
+                    new CreateTopicAdminRequest(
+                            adminToken, name, partitions, replicationFactor, minInSyncReplicas));
             client.ensureSuccess(response);
             CreateTopicAdminResponse body = (CreateTopicAdminResponse) response.body();
-            System.out.println("Created topic: " + body.topicName() + " partitions=" + partitions);
+            System.out.println("Created topic: " + body.topicName()
+                    + " partitions=" + partitions
+                    + " minInSyncReplicas=" + minInSyncReplicas);
         }
     }
 
@@ -107,7 +111,8 @@ public final class DemoCli {
         String brokers = arg(args, "--brokers", "localhost:9092");
         String topic = arg(args, "--topic", "orders");
         String group = arg(args, "--group", "demo-group");
-        try (Consumer consumer = new Consumer(brokers, group, "demo-consumer")) {
+        int sessionTimeoutMs = Integer.parseInt(arg(args, "--session-timeout-ms", "10000"));
+        try (Consumer consumer = new Consumer(brokers, group, "demo-consumer", sessionTimeoutMs)) {
             consumer.subscribe(topic);
             int polls = 0;
             while (maxPolls < 0 || polls < maxPolls) {
@@ -247,9 +252,10 @@ public final class DemoCli {
                         Integer.parseInt(arg(args, "--partition-limit", "100")),
                         hasFlag(args, "--include-deleted")),
                 "describe topic").body();
-        System.out.printf("Topic %s active=%s metadataVersion=%d retry=%s deadLetter=%s%n",
+        System.out.printf(
+                "Topic %s active=%s metadataVersion=%d retry=%s deadLetter=%s minInSyncReplicas=%d%n",
                 response.topicName(), response.active(), response.metadataVersion(),
-                response.retryTopic(), response.deadLetterTopic());
+                response.retryTopic(), response.deadLetterTopic(), response.minInSyncReplicas());
         System.out.println("partitions=" + bounded(response.partitions()));
         if (response.tombstone() != null) {
             System.out.printf("tombstoneState=%s pendingBrokers=%s%n",
@@ -549,9 +555,9 @@ public final class DemoCli {
         System.out.println("""
                 Usage:
                   java -jar mq-demo.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --etcd-endpoints http://localhost:2379 --initialize-empty-cluster --admin-token <secret>
-                  java -jar mq-demo.jar create-topic --brokers localhost:9092 --admin-token <secret> --name orders --partitions 3
+                  java -jar mq-demo.jar create-topic --brokers localhost:9092 --admin-token <secret> --name orders --partitions 3 [--min-insync-replicas 1]
                   java -jar mq-demo.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello [--acks leader|all] [--ack-timeout-ms 5000]
-                  java -jar mq-demo.jar consume --brokers localhost:9092 --topic orders --group demo-group
+                  java -jar mq-demo.jar consume --brokers localhost:9092 --topic orders --group demo-group [--session-timeout-ms 10000]
                   java -jar mq-demo.jar maintenance-report --broker localhost:9092 --admin-token <secret>
                   java -jar mq-demo.jar maintenance-run --broker localhost:9092 --admin-token <secret>
                   java -jar mq-demo.jar maintenance-metrics --broker localhost:9092 --admin-token <secret>

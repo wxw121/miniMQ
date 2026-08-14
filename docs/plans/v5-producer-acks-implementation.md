@@ -1,17 +1,17 @@
-# V5.0 Producer Acknowledgements Implementation Plan
+# V5.0 Producer Acknowledgements And Group Hardening Implementation Plan
 
 Date: 2026-08-14
-Status: Implemented. Verification recorded. Dedicated executor for `ALL` waits remains a follow-up.
+Status: Implemented. Acks-only verification recorded. Expansion (ack executor, min.insync, leave, session timeout) lands in the same 5.0.0 tree.
 
 ## Objective
 
-Implement the V5 produce-ack contract in [v5-producer-acks-design.md](../designs/v5-producer-acks-design.md): protocol fields, ISR wait, client/CLI defaults, and documentation. Do not implement transactions.
+Implement the V5 contract in [v5-producer-acks-design.md](../designs/v5-producer-acks-design.md): produce acks, dedicated ISR wait executor, `min.insync.replicas`, `LEAVE_GROUP`, and per-member session timeout. Do not implement transactions.
 
 ## Execution Rules
 
 - Keep protocol frame version 1 and original field order for existing produce bytes.
-- Error codes and API keys stay append-only. New codes are 20 and 21 only.
-- Bound every wait (`ackTimeoutMs` max 60_000).
+- Error codes and API keys stay append-only. New codes are 20 and 21. New API key is `LEAVE_GROUP=38`.
+- Bound every wait (`ackTimeoutMs` max 60_000, session timeout max 300_000).
 - Do not lower the JaCoCo line ≥ 90% gate.
 - Use `.mvn/settings.xml` for Maven commands.
 - Close brokers, clients, executors, and event loops started by tests.
@@ -28,10 +28,10 @@ Implement the V5 produce-ack contract in [v5-producer-acks-design.md](../designs
 ## Stage 2: Broker Produce Path
 
 - After append, `LEADER` returns immediately.
-- `ALL` with empty ISR returns `NOT_ENOUGH_REPLICAS`.
-- Otherwise wait, then `NONE` or `REQUEST_TIMED_OUT`.
+- `ALL` with empty ISR or `isr.size() < min.insync.replicas` returns `NOT_ENOUGH_REPLICAS`.
+- Otherwise wait on the produce-ack executor, then `NONE` or `REQUEST_TIMED_OUT`.
 - Do not roll back the append on timeout.
-- Keep the wait off the Netty event loop when a dedicated executor is available; Stage 1 may wait inline only in unit tests that use a short timeout.
+- Keep the wait off the Netty event loop.
 
 ## Stage 3: Client And CLI
 
@@ -39,7 +39,15 @@ Implement the V5 produce-ack contract in [v5-producer-acks-design.md](../designs
 - Default send path remains `LEADER`.
 - CLI `produce --acks leader|all` and `--ack-timeout-ms`.
 
-## Stage 4: Docs And Version
+## Stage 4: min.insync, leave, session timeout
+
+- Optional trailing `minInSyncReplicas` on create-topic APIs and describe-topic responses. Do not change `TopicSummary`.
+- `LEAVE_GROUP=38`; leave ignores generation; empty groups keep offsets.
+- Optional trailing `sessionTimeoutMs` on `JOIN_GROUP`; eviction and `GROUP_STATUS` alive bits use the per-member value.
+- Consumer heartbeat interval scales with session timeout; `close()` sends leave.
+- CLI `--min-insync-replicas` and `--session-timeout-ms`.
+
+## Stage 5: Docs And Version
 
 - Maven version `5.0.0`.
 - Update roadmap, README, design.md, architecture.md, docs/README.md.
@@ -47,4 +55,4 @@ Implement the V5 produce-ack contract in [v5-producer-acks-design.md](../designs
 
 ## Dependency Order
 
-Stage 2 depends on Stage 1. Stage 3 depends on Stage 1 encode. Stage 4 can start in parallel with Stage 1.
+Stage 2 depends on Stage 1. Stage 3 depends on Stage 1 encode. Stage 4 can proceed after Stage 1 protocol helpers. Stage 5 can start in parallel with Stage 1.

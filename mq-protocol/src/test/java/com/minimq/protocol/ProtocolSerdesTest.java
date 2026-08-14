@@ -36,7 +36,7 @@ class ProtocolSerdesTest {
         assertGoldenRequest(
                 ApiKeys.CREATE_TOPIC,
                 new CreateTopicRequest("orders", 3, 2),
-                "4d51010000001e0000000000070006636c69656e7400066f72646572730000000300000002");
+                "4d5101000000220000000000070006636c69656e7400066f7264657273000000030000000200000001");
         assertGoldenRequest(
                 ApiKeys.METADATA,
                 new MetadataRequest("orders"),
@@ -128,6 +128,7 @@ class ProtocolSerdesTest {
         assertEquals("orders", decodedBody.topicName());
         assertEquals(3, decodedBody.numPartitions());
         assertEquals(2, decodedBody.replicationFactor());
+        assertEquals(1, decodedBody.minInSyncReplicas());
         encoded.release();
         payload.release();
     }
@@ -188,6 +189,7 @@ class ProtocolSerdesTest {
                 new RequestCase(ApiKeys.JOIN_GROUP, new JoinGroupRequest("g1", "m1", "orders")),
                 new RequestCase(ApiKeys.SYNC_GROUP, new SyncGroupRequest("g1", 2, "m1", bytes("assignment"))),
                 new RequestCase(ApiKeys.HEARTBEAT, new HeartbeatRequest("g1", "m1", 7)),
+                new RequestCase(ApiKeys.LEAVE_GROUP, new LeaveGroupRequest("g1", "m1", 7)),
                 new RequestCase(ApiKeys.OFFSET_COMMIT, new OffsetCommitRequest("g1", "orders", 1, 42L, "m1", 7)),
                 new RequestCase(ApiKeys.OFFSET_FETCH, new OffsetFetchRequest("g1", "orders", 1)),
                 new RequestCase(ApiKeys.REPLICA_FETCH, new ReplicaFetchRequest("orders", 0, 1, 4L, 5L, 4096)),
@@ -270,6 +272,75 @@ class ProtocolSerdesTest {
                     () -> ProtocolSerdes.decodeRequestBody(ApiKeys.PRODUCE, body));
         } finally {
             body.release();
+        }
+    }
+
+    @Test
+    void decodeLegacyCreateTopicWithoutMinInSyncDefaultsToOne() {
+        ByteBuf body = Unpooled.buffer();
+        try {
+            ByteBufSerde.writeString(body, "orders");
+            body.writeInt(3);
+            body.writeInt(2);
+            CreateTopicRequest decoded = (CreateTopicRequest) ProtocolSerdes.decodeRequestBody(
+                    ApiKeys.CREATE_TOPIC, body);
+            assertEquals("orders", decoded.topicName());
+            assertEquals(3, decoded.numPartitions());
+            assertEquals(2, decoded.replicationFactor());
+            assertEquals(1, decoded.minInSyncReplicas());
+        } finally {
+            body.release();
+        }
+    }
+
+    @Test
+    void decodeLegacyJoinGroupWithoutSessionTimeoutDefaultsToTenSeconds() {
+        ByteBuf body = Unpooled.buffer();
+        try {
+            ByteBufSerde.writeString(body, "g1");
+            ByteBufSerde.writeString(body, "m1");
+            ByteBufSerde.writeString(body, "orders");
+            JoinGroupRequest decoded = (JoinGroupRequest) ProtocolSerdes.decodeRequestBody(
+                    ApiKeys.JOIN_GROUP, body);
+            assertEquals("g1", decoded.groupId());
+            assertEquals("m1", decoded.memberId());
+            assertEquals("orders", decoded.topicName());
+            assertEquals(10_000, decoded.sessionTimeoutMs());
+        } finally {
+            body.release();
+        }
+    }
+
+    @Test
+    void decodeLegacyDescribeTopicWithoutMinInSyncDefaultsToOne() {
+        DescribeTopicResponse current = new DescribeTopicResponse(
+                "orders",
+                9L,
+                true,
+                null,
+                null,
+                new V4BoundedList<>(0, false, List.of()),
+                null,
+                2);
+        var frame = ProtocolSerdes.encodeResponse(new MqResponseHeader(1, ErrorCode.NONE), current);
+        var payload = unwrapRetainedPayload(frame);
+        try {
+            payload.readInt();
+            payload.readShort();
+            ByteBuf v4Body = payload.copy();
+            try {
+                v4Body.writerIndex(v4Body.writerIndex() - Integer.BYTES);
+                DescribeTopicResponse decoded =
+                        (DescribeTopicResponse) ProtocolSerdes.decodeResponseBody(
+                                ApiKeys.DESCRIBE_TOPIC, v4Body);
+                assertEquals(1, decoded.minInSyncReplicas());
+                assertEquals("orders", decoded.topicName());
+            } finally {
+                v4Body.release();
+            }
+        } finally {
+            payload.release();
+            frame.release();
         }
     }
 
@@ -376,6 +447,7 @@ class ProtocolSerdesTest {
                 new ResponseCase(ApiKeys.JOIN_GROUP, new JoinGroupResponse(1, "m1", "m1", List.of("m1", "m2"))),
                 new ResponseCase(ApiKeys.SYNC_GROUP, new SyncGroupResponse(bytes("assignment"))),
                 new ResponseCase(ApiKeys.HEARTBEAT, new HeartbeatResponse()),
+                new ResponseCase(ApiKeys.LEAVE_GROUP, new LeaveGroupResponse()),
                 new ResponseCase(ApiKeys.OFFSET_COMMIT, new OffsetCommitResponse()),
                 new ResponseCase(ApiKeys.OFFSET_FETCH, new OffsetFetchResponse(42L)),
                 new ResponseCase(ApiKeys.REGISTER_BROKER, new RegisterBrokerResponse(7L, 5_000L)),

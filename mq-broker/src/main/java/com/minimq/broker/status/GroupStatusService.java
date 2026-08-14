@@ -19,8 +19,6 @@ import java.util.Map;
 import java.util.function.LongSupplier;
 
 public final class GroupStatusService {
-    private static final long HEARTBEAT_TIMEOUT_MS = 10_000L;
-
     private final ClusterController controller;
     private final LongSupplier clockMillis;
 
@@ -113,7 +111,7 @@ public final class GroupStatusService {
         long now = clockMillis.getAsLong();
         return new GroupMemberInfo(
                 member.memberId,
-                now - member.lastHeartbeatMs <= HEARTBEAT_TIMEOUT_MS,
+                now - member.lastHeartbeatMs <= member.effectiveSessionTimeoutMs(),
                 member.lastHeartbeatMs,
                 BrokerStatusService.bounded(assignments, partitionLimit));
     }

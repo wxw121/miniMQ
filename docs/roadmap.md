@@ -6,7 +6,7 @@ This roadmap summarizes the completed baseline, the current V4 Operator Readines
 
 ## 1. Current State
 
-MiniMQ 5.0.0 is open. V4 Operator Readiness is the completed baseline; V5 adds producer acknowledgement policies on top of existing ISR replication.
+MiniMQ 5.0.0 is open. V4 Operator Readiness is the completed baseline; V5 adds producer acknowledgements, `min.insync.replicas`, a dedicated produce-ack executor, `LEAVE_GROUP`, and per-member session timeouts.
 
 Current implemented capabilities include:
 
@@ -35,14 +35,14 @@ Current policy:
 - If the same environment blocker remains unresolved after five bounded attempts, document it in a known-issues file and continue with independent work.
 - Do not mark the real-etcd gate complete until the focused Failsafe tests run successfully.
 
-## 3. Current Major Version: V5.0 Producer Acknowledgements
+## 3. Current Major Version: V5.0 Producer Acknowledgements And Group Hardening
 
-V5.0 adds `LEADER` and `ALL` (current-ISR) produce acknowledgements. Design and plan:
+V5.0 adds `LEADER` and `ALL` (current-ISR) produce acknowledgements, plus group-membership hardening. Design and plan:
 
 - [V5.0 Producer Acknowledgements Design](designs/v5-producer-acks-design.md)
 - [V5.0 Producer Acknowledgements Implementation Plan](plans/v5-producer-acks-implementation.md)
 
-Default produce remains Leader-local, matching V4. `ALL` waits until the current ISR high watermark meets the post-append Leader LEO, or returns `REQUEST_TIMED_OUT` / `NOT_ENOUGH_REPLICAS`. Transactions and exactly-once stay out of scope.
+Default produce remains Leader-local, matching V4. `ALL` waits on a dedicated executor until the current ISR high watermark meets the post-append Leader LEO and `isr.size() >= min.insync.replicas`, or returns `REQUEST_TIMED_OUT` / `NOT_ENOUGH_REPLICAS`. Consumers leave with `LEAVE_GROUP` and expire on a per-member session timeout. Transactions and exactly-once stay out of scope.
 
 ## 3a. Previous Major Version: V4.0 Operator Readiness
 
@@ -79,24 +79,20 @@ be recreated. Retry/DLQ targets are operator-selected names rather than inferred
 
 ## 4. Future Version Notes
 
-After V5.0 acks land, later versions should start with design documents before code work.
+After V5.0 lands, later versions should start with design documents before code work.
 
 Recommended later topics:
 
-1. Configurable `min.insync.replicas`.
-2. Consumer-group leave and configurable session timeout.
-3. Optional unclean election (default off).
-4. Transactional produce and exactly-once research.
-5. Optional experimental LSM state-store module isolated from the broker default write path.
-6. Multi-tenant authentication and ACL integration beyond local scoped tokens.
+1. Optional unclean election (default off).
+2. Transactional produce and exactly-once research.
+3. Optional experimental LSM state-store module isolated from the broker default write path.
+4. Multi-tenant authentication and ACL integration beyond local scoped tokens.
 
 ## 5. Recommended Next Tasks
 
-1. Move `acks=ALL` waits off the Netty event loop onto a bounded dedicated executor.
-2. Keep resource use bounded and close all brokers, clients, event loops, executors, and Docker resources started by tests or demos.
-3. Keep resource use bounded and close all brokers, clients, event loops, executors, and Docker resources started by tests or demos.
-4. Record unresolved Docker/real-etcd blockers after five bounded attempts instead of repeatedly retrying the same blocked path.
-5. Keep README.md, docs/README.md, docs/design.md, docs/architecture.md, docs/testing.md, and test reports synchronized from source and tests.
+1. Keep resource use bounded and close all brokers, clients, event loops, executors, and Docker resources started by tests or demos.
+2. Record unresolved Docker/real-etcd blockers after five bounded attempts instead of repeatedly retrying the same blocked path.
+3. Keep README.md, docs/README.md, docs/design.md, docs/architecture.md, docs/testing.md, and test reports synchronized from source and tests.
 
 ## 6. Risk Register
 

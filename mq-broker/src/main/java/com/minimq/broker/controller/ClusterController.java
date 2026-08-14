@@ -273,7 +273,8 @@ public class ClusterController {
             return ErrorCode.CONTROLLER_NOT_READY;
         }
         if (!TopicNames.isValid(request.topicName())
-                || request.numPartitions() <= 0 || request.replicationFactor() <= 0) {
+                || request.numPartitions() <= 0 || request.replicationFactor() <= 0
+                || request.minInSyncReplicas() > request.replicationFactor()) {
             return ErrorCode.INVALID_REQUEST;
         }
         if (metadata.topics.containsKey(request.topicName())
@@ -291,6 +292,7 @@ public class ClusterController {
         ClusterMetadata next = copyMetadata(metadata);
         TopicEntry topic = new TopicEntry();
         topic.topicName = request.topicName();
+        topic.minInSyncReplicas = request.minInSyncReplicas();
         for (int i = 0; i < request.numPartitions(); i++) {
             PartitionEntry partition = new PartitionEntry();
             partition.partitionId = i;
@@ -458,7 +460,10 @@ public class ClusterController {
             return ErrorCode.INVALID_REQUEST;
         }
         return createTopic(new CreateTopicRequest(
-                request.topicName(), request.numPartitions(), request.replicationFactor()));
+                request.topicName(),
+                request.numPartitions(),
+                request.replicationFactor(),
+                request.minInSyncReplicas()));
     }
 
     /** Mutates explicit retry/DLQ links for one active source topic. */
@@ -1711,6 +1716,7 @@ public class ClusterController {
     private static TopicEntry copyTopic(TopicEntry source) {
         TopicEntry copy = new TopicEntry();
         copy.topicName = source.topicName;
+        copy.minInSyncReplicas = source.minInSyncReplicas;
         for (PartitionEntry partition : source.partitions) {
             PartitionEntry partitionCopy = new PartitionEntry();
             partitionCopy.partitionId = partition.partitionId;
@@ -1770,6 +1776,7 @@ public class ClusterController {
         copy.memberId = source.memberId;
         copy.lastHeartbeatMs = source.lastHeartbeatMs;
         copy.assignedPartitions = new ArrayList<>(source.assignedPartitions);
+        copy.sessionTimeoutMs = source.sessionTimeoutMs;
         return copy;
     }
 }

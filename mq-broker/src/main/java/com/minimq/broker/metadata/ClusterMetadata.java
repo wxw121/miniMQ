@@ -40,6 +40,12 @@ public class ClusterMetadata {
     public static class TopicEntry {
         public String topicName;
         public List<PartitionEntry> partitions = new ArrayList<>();
+        /** 0 means missing/legacy metadata; treat as {@code min.insync.replicas=1}. */
+        public int minInSyncReplicas;
+
+        public int effectiveMinInSyncReplicas() {
+            return minInSyncReplicas <= 0 ? 1 : minInSyncReplicas;
+        }
     }
 
     public static class TopicTombstone {
@@ -104,5 +110,11 @@ public class ClusterMetadata {
         public String memberId;
         public long lastHeartbeatMs;
         public List<Integer> assignedPartitions = new ArrayList<>();
+        /** 0 means missing/legacy metadata; treat as the 10s default session timeout. */
+        public int sessionTimeoutMs;
+
+        public int effectiveSessionTimeoutMs() {
+            return sessionTimeoutMs <= 0 ? 10_000 : sessionTimeoutMs;
+        }
     }
 }

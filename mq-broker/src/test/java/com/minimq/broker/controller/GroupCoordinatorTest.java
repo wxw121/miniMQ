@@ -6,6 +6,7 @@ import com.minimq.common.error.ErrorCode;
 import com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest;
 import com.minimq.protocol.message.ProtocolMessages.HeartbeatRequest;
 import com.minimq.protocol.message.ProtocolMessages.JoinGroupRequest;
+import com.minimq.protocol.message.ProtocolMessages.LeaveGroupRequest;
 import com.minimq.protocol.message.ProtocolMessages.OffsetCommitRequest;
 import com.minimq.protocol.message.ProtocolMessages.OffsetFetchRequest;
 import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
@@ -241,5 +242,48 @@ class GroupCoordinatorTest {
         var rejoin = coordinator.joinGroup(new JoinGroupRequest("g1", second.memberId(), "orders"));
         assertEquals(1, rejoin.members().size());
         assertEquals(second.memberId(), rejoin.leaderMemberId());
+    }
+
+    @Test
+    void leaveRemovesMemberAndKeepsOffsetsWhenGroupEmpties() {
+        var join = groupCoordinator.joinGroup(new JoinGroupRequest("g1", "", "orders"));
+        assertEquals(ErrorCode.NONE, groupCoordinator.offsetCommit(
+                new OffsetCommitRequest("g1", "orders", 0, 7L, join.memberId(), join.generationId())));
+        assertEquals(ErrorCode.NONE, groupCoordinator.leaveGroup(
+                new LeaveGroupRequest("g1", join.memberId(), join.generationId())));
+        assertEquals(ErrorCode.GROUP_NOT_FOUND, groupCoordinator.heartbeat(
+                new HeartbeatRequest("g1", join.memberId(), join.generationId())));
+        assertEquals(7L, groupCoordinator.offsetFetch(
+                new OffsetFetchRequest("g1", "orders", 0)).offset());
+    }
+
+    @Test
+    void leaveDuringRebalanceStillRemovesMemberAndBumpsGeneration() {
+        var first = groupCoordinator.joinGroup(new JoinGroupRequest("g1", "", "orders"));
+        var second = groupCoordinator.joinGroup(new JoinGroupRequest("g1", "", "orders"));
+        assertEquals(ErrorCode.NONE, groupCoordinator.leaveGroup(
+                new LeaveGroupRequest("g1", first.memberId(), first.generationId())));
+        var remaining = groupCoordinator.heartbeat(
+                new HeartbeatRequest("g1", second.memberId(), second.generationId()));
+        assertEquals(ErrorCode.REBALANCE_IN_PROGRESS, remaining);
+        assertEquals(ErrorCode.GROUP_NOT_FOUND, groupCoordinator.leaveGroup(
+                new LeaveGroupRequest("g1", first.memberId(), first.generationId())));
+    }
+
+    @Test
+    void perMemberSessionTimeoutEvictsOnlyTheExpiredMember() {
+        AtomicLong clock = new AtomicLong(0);
+        GroupCoordinator coordinator = new GroupCoordinator(clusterController, clock::get);
+        var shortLived = coordinator.joinGroup(
+                new JoinGroupRequest("g1", "", "orders", 1_000));
+        clock.set(100);
+        var longLived = coordinator.joinGroup(
+                new JoinGroupRequest("g1", "", "orders", 30_000));
+
+        clock.set(1_200);
+        assertEquals(ErrorCode.REBALANCE_IN_PROGRESS, coordinator.heartbeat(
+                new HeartbeatRequest("g1", longLived.memberId(), longLived.generationId())));
+        assertEquals(ErrorCode.GROUP_NOT_FOUND, coordinator.heartbeat(
+                new HeartbeatRequest("g1", shortLived.memberId(), shortLived.generationId())));
     }
 }

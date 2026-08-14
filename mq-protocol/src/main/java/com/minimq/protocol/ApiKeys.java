@@ -42,6 +42,7 @@ public final class ApiKeys {
     public static final short METADATA_V2 = 35;
     public static final short RUNTIME_METRICS_V2 = 36;
     public static final short UPDATE_REPLICA_STATE_V2 = 37;
+    public static final short LEAVE_GROUP = 38;
 
     private static final String[] NAMES = {
             "CREATE_TOPIC",
@@ -81,7 +82,8 @@ public final class ApiKeys {
             "FETCH_V2",
             "METADATA_V2",
             "RUNTIME_METRICS_V2",
-            "UPDATE_REPLICA_STATE_V2"
+            "UPDATE_REPLICA_STATE_V2",
+            "LEAVE_GROUP"
     };
 
     public static String nameOf(short apiKey) {

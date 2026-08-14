@@ -51,6 +51,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Broker 请求处理器，将网络帧解码成业务请求，并按 API 类型路由到存储或控制器。
@@ -58,6 +62,8 @@ import java.util.concurrent.CompletionStage;
 public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     private static final Logger log = LoggerFactory.getLogger(MqRequestHandler.class);
     private static final int MAX_V4_FETCH_RECORDS = 10_000;
+    private static final int PRODUCE_ACK_THREADS = 4;
+    private static final AtomicInteger PRODUCE_ACK_THREAD_INDEX = new AtomicInteger();
     private final BrokerConfig config;
     private final ClusterController clusterController;
     private final GroupCoordinator groupCoordinator;
@@ -77,6 +83,7 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     private final TopicAdminService topicAdminService;
     private final RuntimeMetricsV2Service runtimeMetricsV2Service;
     private final FailoverAuditLog auditLog;
+    private final ExecutorService produceAckExecutor;
 
     public MqRequestHandler(
             BrokerConfig config,
@@ -338,6 +345,13 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 partitionManager,
                 new LeaderEpochStateStore(config.dataDir().resolve("leader-epochs")),
                 this.auditLog);
+        this.produceAckExecutor = Executors.newFixedThreadPool(PRODUCE_ACK_THREADS, runnable -> {
+            Thread thread = new Thread(
+                    runnable,
+                    "minimq-produce-ack-" + PRODUCE_ACK_THREAD_INDEX.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        });
     }
 
     @Override
@@ -480,13 +494,17 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                     }
                     if (errorCode == ErrorCode.NONE) {
                         responseBody = handleProduce(request);
-                        errorCode = acknowledgeProduce(
+                        if (scheduleProduceAckIfNeeded(
+                                ctx,
+                                header,
                                 request.topicName(),
                                 request.partitionId(),
                                 request.acks(),
-                                request.ackTimeoutMs());
-                        if (errorCode != ErrorCode.NONE) {
-                            responseBody = null;
+                                request.ackTimeoutMs(),
+                                responseBody,
+                                throttle,
+                                startedNanos)) {
+                            return;
                         }
                     }
                 }
@@ -536,13 +554,17 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                     if (errorCode == ErrorCode.NONE) {
                         try {
                             responseBody = handleProduceV2(request);
-                            errorCode = acknowledgeProduce(
+                            if (scheduleProduceAckIfNeeded(
+                                    ctx,
+                                    header,
                                     request.topicName(),
                                     request.partitionId(),
                                     request.acks(),
-                                    request.ackTimeoutMs());
-                            if (errorCode != ErrorCode.NONE) {
-                                responseBody = null;
+                                    request.ackTimeoutMs(),
+                                    responseBody,
+                                    throttle,
+                                    startedNanos)) {
+                                return;
                             }
                         } catch (LogManager.ScheduledCapacityExceededException e) {
                             errorCode = ErrorCode.THROTTLED;
@@ -572,6 +594,13 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                     errorCode = groupCoordinator.heartbeat((HeartbeatRequest) requestBody);
                     if (errorCode == ErrorCode.NONE) {
                         responseBody = new HeartbeatResponse();
+                    }
+                }
+                case ApiKeys.LEAVE_GROUP -> {
+                    ensureController();
+                    errorCode = groupCoordinator.leaveGroup((LeaveGroupRequest) requestBody);
+                    if (errorCode == ErrorCode.NONE) {
+                        responseBody = new LeaveGroupResponse();
                     }
                 }
                 case ApiKeys.OFFSET_COMMIT -> {
@@ -1049,6 +1078,12 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     }
 
     @Override
+    public void handlerRemoved(ChannelHandlerContext ctx) throws Exception {
+        produceAckExecutor.shutdownNow();
+        super.handlerRemoved(ctx);
+    }
+
+    @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         log.error("Channel pipeline error", cause);
         ctx.close();
@@ -1079,23 +1114,73 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         return new ProduceResponse(request.topicName(), request.partitionId(), baseOffset);
     }
 
-    private ErrorCode acknowledgeProduce(String topicName, int partitionId, short acks, int ackTimeoutMs) {
+    /**
+     * Completes {@code LEADER} on the calling thread. {@code ALL} waits run on
+     * {@link #produceAckExecutor} so the Netty event loop is not blocked for the timeout.
+     *
+     * @return true when this method wrote or scheduled the produce response
+     */
+    private boolean scheduleProduceAckIfNeeded(
+            ChannelHandlerContext ctx,
+            MqRequestHeader header,
+            String topicName,
+            int partitionId,
+            short acks,
+            int ackTimeoutMs,
+            Object successBody,
+            ThrottleResult throttle,
+            long startedNanos) {
         if (ProduceAcks.fromCode(acks) == ProduceAcks.LEADER) {
-            return ErrorCode.NONE;
+            return false;
         }
         List<Integer> isrBrokerIds = clusterController.getIsrBrokerIds(topicName, partitionId);
-        if (isrBrokerIds.isEmpty()) {
-            return ErrorCode.NOT_ENOUGH_REPLICAS;
+        int minInSyncReplicas = minInSyncReplicas(topicName);
+        if (isrBrokerIds.isEmpty() || isrBrokerIds.size() < minInSyncReplicas) {
+            completeProduceAck(
+                    ctx, header, ErrorCode.NOT_ENOUGH_REPLICAS, null, throttle, startedNanos);
+            return true;
         }
         long requiredHighWatermark = partitionManager.getOrCreate(topicName, partitionId).highWatermark();
-        boolean replicated = replicaStateManager.awaitReplicationHighWatermark(
-                topicName,
-                partitionId,
-                requiredHighWatermark,
-                isrBrokerIds,
-                config.brokerId(),
-                ackTimeoutMs);
-        return replicated ? ErrorCode.NONE : ErrorCode.REQUEST_TIMED_OUT;
+        try {
+            produceAckExecutor.execute(() -> {
+                boolean replicated = replicaStateManager.awaitReplicationHighWatermark(
+                        topicName,
+                        partitionId,
+                        requiredHighWatermark,
+                        isrBrokerIds,
+                        config.brokerId(),
+                        ackTimeoutMs);
+                ErrorCode result = replicated ? ErrorCode.NONE : ErrorCode.REQUEST_TIMED_OUT;
+                Object body = result == ErrorCode.NONE ? successBody : null;
+                if (ctx.executor().inEventLoop()) {
+                    completeProduceAck(ctx, header, result, body, throttle, startedNanos);
+                } else {
+                    ctx.executor().execute(() -> completeProduceAck(
+                            ctx, header, result, body, throttle, startedNanos));
+                }
+            });
+        } catch (RejectedExecutionException rejected) {
+            completeProduceAck(
+                    ctx, header, ErrorCode.REQUEST_TIMED_OUT, null, throttle, startedNanos);
+        }
+        return true;
+    }
+
+    private void completeProduceAck(
+            ChannelHandlerContext ctx,
+            MqRequestHeader header,
+            ErrorCode errorCode,
+            Object responseBody,
+            ThrottleResult throttle,
+            long startedNanos) {
+        recordCompletion(header, errorCode, startedNanos);
+        writeResponse(ctx, header.correlationId(), errorCode, responseBody);
+        throttle.release();
+    }
+
+    private int minInSyncReplicas(String topicName) {
+        ClusterMetadata.TopicEntry topic = clusterController.getTopic(topicName);
+        return topic == null ? 1 : topic.effectiveMinInSyncReplicas();
     }
 
     private ErrorCode validateProduceV2(ProduceV2Request request) {

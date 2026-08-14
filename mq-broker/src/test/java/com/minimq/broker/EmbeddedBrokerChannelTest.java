@@ -48,6 +48,7 @@ import com.minimq.protocol.message.ProtocolMessages.IncreasePartitionsRequest;
 import com.minimq.protocol.message.ProtocolMessages.IncreasePartitionsResponse;
 import com.minimq.protocol.message.ProtocolMessages.JoinGroupRequest;
 import com.minimq.protocol.message.ProtocolMessages.JoinGroupResponse;
+import com.minimq.protocol.message.ProtocolMessages.LeaveGroupRequest;
 import com.minimq.protocol.message.ProtocolMessages.ListTopicsRequest;
 import com.minimq.protocol.message.ProtocolMessages.ListTopicsResponse;
 import com.minimq.protocol.message.ProtocolMessages.MaintenanceMetricsRequest;
@@ -723,6 +724,94 @@ class EmbeddedBrokerChannelTest {
         assertEquals(ErrorCode.NOT_ENOUGH_REPLICAS, response.header().errorCode());
         assertNull(response.body());
         assertEquals(1L, clusterController.replicaLogEndOffset("acks-empty-isr", 0, 0));
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void produceAcksAllReturnsNotEnoughReplicasWhenIsrBelowMinInSync() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir)) {
+            @Override
+            public synchronized List<Integer> getIsrBrokerIds(String topicName, int partitionId) {
+                return List.of(0);
+            }
+        };
+        clusterController.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092));
+        clusterController.registerBroker(new RegisterBrokerRequest(1, "127.0.0.1", 9093));
+        clusterController.createTopic(new CreateTopicRequest("acks-min-isr", 1, 2, 2));
+        EmbeddedChannel channel = newChannel(clusterController, true);
+
+        MqDecoder.DecodedResponse response = send(
+                channel,
+                ApiKeys.PRODUCE,
+                new ProduceRequest(
+                        "acks-min-isr",
+                        0,
+                        0L,
+                        List.of(new ProduceRecord(null, new byte[] {1})),
+                        ProduceAcks.ALL.code(),
+                        50));
+
+        assertEquals(ErrorCode.NOT_ENOUGH_REPLICAS, response.header().errorCode());
+        assertNull(response.body());
+        assertEquals(1L, clusterController.replicaLogEndOffset("acks-min-isr", 0, 0));
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void produceAcksAllDoesNotBlockEventLoopWhileWaiting() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
+        clusterController.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092));
+        clusterController.registerBroker(new RegisterBrokerRequest(1, "127.0.0.1", 9093));
+        clusterController.createTopic(new CreateTopicRequest("acks-async", 1, 2));
+        EmbeddedChannel channel = newChannel(clusterController, true);
+
+        channel.writeInbound(ProtocolSerdes.encodeRequest(
+                new MqRequestHeader(ApiKeys.PRODUCE, 11, "test"),
+                new ProduceRequest(
+                        "acks-async",
+                        0,
+                        0L,
+                        List.of(new ProduceRecord(null, new byte[] {1})),
+                        ProduceAcks.ALL.code(),
+                        300)));
+        long startedNanos = System.nanoTime();
+        MqDecoder.DecodedResponse metadata = send(
+                channel, ApiKeys.METADATA, new MetadataRequest("acks-async"));
+        long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
+        assertEquals(ErrorCode.NONE, metadata.header().errorCode());
+        assertTrue(elapsedMs < 200, "event loop blocked for " + elapsedMs + "ms");
+
+        ByteBuf produceFrame = awaitOutbound(channel);
+        try {
+            MqDecoder.DecodedResponse timedOut =
+                    MqDecoder.decodeResponse(unwrapPayload(produceFrame), ApiKeys.PRODUCE);
+            assertEquals(ErrorCode.REQUEST_TIMED_OUT, timedOut.header().errorCode());
+        } finally {
+            produceFrame.release();
+        }
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void leaveGroupRemovesMember() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
+        clusterController.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092));
+        clusterController.createTopic(new CreateTopicRequest("orders", 1));
+        EmbeddedChannel channel = newChannel(clusterController, true);
+
+        MqDecoder.DecodedResponse join = send(
+                channel, ApiKeys.JOIN_GROUP, new JoinGroupRequest("g1", "", "orders"));
+        JoinGroupResponse joined = (JoinGroupResponse) join.body();
+        assertEquals(ErrorCode.NONE, send(
+                channel,
+                ApiKeys.LEAVE_GROUP,
+                new LeaveGroupRequest("g1", joined.memberId(), joined.generationId()))
+                .header().errorCode());
+        assertEquals(ErrorCode.GROUP_NOT_FOUND, send(
+                channel,
+                ApiKeys.HEARTBEAT,
+                new HeartbeatRequest("g1", joined.memberId(), joined.generationId()))
+                .header().errorCode());
         channel.finishAndReleaseAll();
     }
 

@@ -7,9 +7,11 @@ import com.minimq.broker.metadata.ClusterMetadata.ConsumerGroupEntry;
 import com.minimq.broker.metadata.ClusterMetadata.MemberEntry;
 import com.minimq.broker.metadata.ClusterMetadata.TopicEntry;
 import com.minimq.common.error.ErrorCode;
+import com.minimq.common.group.GroupSessionTimeouts;
 import com.minimq.protocol.message.ProtocolMessages.HeartbeatRequest;
 import com.minimq.protocol.message.ProtocolMessages.JoinGroupRequest;
 import com.minimq.protocol.message.ProtocolMessages.JoinGroupResponse;
+import com.minimq.protocol.message.ProtocolMessages.LeaveGroupRequest;
 import com.minimq.protocol.message.ProtocolMessages.OffsetCommitRequest;
 import com.minimq.protocol.message.ProtocolMessages.OffsetFetchRequest;
 import com.minimq.protocol.message.ProtocolMessages.OffsetFetchResponse;
@@ -27,7 +29,7 @@ import java.util.stream.Collectors;
  * 消费组协调器，负责成员加入、分区分配同步、心跳和 offset 提交查询。
  */
 public class GroupCoordinator {
-    static final long HEARTBEAT_TIMEOUT_MS = 10_000;
+    static final long HEARTBEAT_TIMEOUT_MS = GroupSessionTimeouts.DEFAULT_MS;
 
     private final ClusterController clusterController;
     private final LongSupplier clockMillis;
@@ -61,6 +63,7 @@ public class GroupCoordinator {
             MemberEntry member = new MemberEntry();
             member.memberId = memberId;
             member.lastHeartbeatMs = now();
+            member.sessionTimeoutMs = request.sessionTimeoutMs();
             group.members.put(memberId, member);
             if (group.leaderMemberId == null
                     || group.leaderMemberId.isBlank()
@@ -111,6 +114,29 @@ public class GroupCoordinator {
             ErrorCode membership = requireActiveMember(group, request.memberId(), request.generationId());
             refreshHeartbeatIfPresent(group, request.memberId());
             return membership;
+        });
+    }
+
+    public synchronized ErrorCode leaveGroup(LeaveGroupRequest request) {
+        return clusterController.updateMetadata(metadata -> {
+            ConsumerGroupEntry group = metadata.consumerGroups.get(request.groupId());
+            if (group != null) {
+                evictStaleMembers(group, true);
+            }
+            if (group == null || !group.members.containsKey(request.memberId())) {
+                return ErrorCode.GROUP_NOT_FOUND;
+            }
+            group.members.remove(request.memberId());
+            if (group.leaderMemberId == null
+                    || group.leaderMemberId.isBlank()
+                    || !group.members.containsKey(group.leaderMemberId)) {
+                group.leaderMemberId = group.members.keySet().stream().sorted().findFirst().orElse("");
+            }
+            if (!group.members.isEmpty()) {
+                group.generationId++;
+                group.rebalancing = true;
+            }
+            return ErrorCode.NONE;
         });
     }
 
@@ -181,13 +207,13 @@ public class GroupCoordinator {
     }
 
     /**
-     * 踢出超过 {@link #HEARTBEAT_TIMEOUT_MS} 未心跳的成员。
+     * 踢出超过各自 session timeout 未心跳的成员。缺省超时仍是 {@link #HEARTBEAT_TIMEOUT_MS}。
      * join 路径传入 {@code bumpGenerationIfEvicted=false}，因为 join 本身会递增 generation。
      */
     private boolean evictStaleMembers(ConsumerGroupEntry group, boolean bumpGenerationIfEvicted) {
         long nowMs = now();
         boolean evicted = group.members.entrySet().removeIf(
-                e -> nowMs - e.getValue().lastHeartbeatMs > HEARTBEAT_TIMEOUT_MS);
+                e -> nowMs - e.getValue().lastHeartbeatMs > e.getValue().effectiveSessionTimeoutMs());
         if (!evicted) {
             return false;
         }

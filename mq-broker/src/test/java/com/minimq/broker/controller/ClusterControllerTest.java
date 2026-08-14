@@ -207,6 +207,21 @@ class ClusterControllerTest {
         assertEquals(List.of(0, 1, 2), partition.isrBrokerIds());
         assertEquals(Map.of(0, 0L, 1, 0L, 2, 0L),
                 controller.snapshot().topics.get("orders").partitions.get(0).replicaLogEndOffsets);
+        assertEquals(1, controller.snapshot().topics.get("orders").effectiveMinInSyncReplicas());
+    }
+
+    @Test
+    void createTopicRejectsMinInSyncGreaterThanReplicationFactor() {
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
+        assertEquals(
+                ErrorCode.INVALID_REQUEST,
+                controller.createTopic(new CreateTopicRequest("orders", 1, 2, 3)));
+        assertEquals(
+                ErrorCode.NONE,
+                controller.createTopic(new CreateTopicRequest("orders", 1, 2, 2)));
+        assertEquals(2, controller.getTopic("orders").minInSyncReplicas);
     }
 
     @Test

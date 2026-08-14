@@ -9,9 +9,9 @@ MiniMQ aims to be small enough to read, but realistic enough to explain the esse
 
 MiniMQ 的目标是“小到能读完，大到能讲清消息队列核心机制”。项目有意避免把关键行为藏在框架里：协议序列化是手写的，存储格式是显式的，消费组分配逻辑也直接体现在代码里。因此它适合作为学习项目、设计讨论材料以及后续贡献者继续迭代的上下文载体。
 
-The design optimizes for clarity, determinism, and testability. V4 added etcd-fenced Controller HA, exact Leader epochs, automatic Broker failure detection, physical/visible replica watermarks, scoped operator APIs, crash-safe Topic deletion, explicit retry/DLQ links, and required delayed-message delivery. V5 adds producer acknowledgement policies (`LEADER` and current-ISR `ALL`). Transactions and exactly-once semantics remain future work.
+The design optimizes for clarity, determinism, and testability. V4 added etcd-fenced Controller HA, exact Leader epochs, automatic Broker failure detection, physical/visible replica watermarks, scoped operator APIs, crash-safe Topic deletion, explicit retry/DLQ links, and required delayed-message delivery. V5 adds producer `LEADER` / `ALL` acknowledgements, `min.insync.replicas`, a dedicated produce-ack executor, `LEAVE_GROUP`, and per-member session timeouts. Transactions and exactly-once semantics remain future work.
 
-当前设计优先考虑清晰性、确定性和可测试性。V4 已增加 etcd fencing 的 Controller HA、精确 Leader epoch、Broker 自动故障检测、物理/可见副本水位、细粒度运维 API、崩溃安全 Topic 删除、显式 retry/DLQ 关联和必需的延迟投递。V5 增加 Producer 确认策略（`LEADER` 与当前 ISR 的 `ALL`）。事务与 exactly-once 语义仍属于后续工作。
+当前设计优先考虑清晰性、确定性和可测试性。V4 已增加 etcd fencing 的 Controller HA、精确 Leader epoch、Broker 自动故障检测、物理/可见副本水位、细粒度运维 API、崩溃安全 Topic 删除、显式 retry/DLQ 关联和必需的延迟投递。V5 增加 Producer `LEADER` / `ALL` 确认、`min.insync.replicas`、专用 produce-ack 线程池、`LEAVE_GROUP` 和按成员 session timeout。事务与 exactly-once 语义仍属于后续工作。
 
 ## 2. Protocol Design / 协议设计
 
@@ -66,11 +66,11 @@ If `errorCode != NONE`, response body is omitted. This rule keeps error response
 
 | ApiKey | Name / 名称 | Plane / 平面 | Purpose / 用途 |
 | ---: | --- | --- | --- |
-| 0 | `CREATE_TOPIC` | Control / 控制面 | Create a topic with N partitions and replication factor. / 创建包含 N 个分区与副本因子的 Topic。 |
+| 0 | `CREATE_TOPIC` | Control / 控制面 | Create a topic with N partitions, replication factor, and optional trailing `minInSyncReplicas`. / 创建 Topic，含分区数、副本因子和可选尾字段 `minInSyncReplicas`。 |
 | 1 | `METADATA` | Control / 控制面 | Fetch brokers and topic-partition leader, replica, and ISR metadata. / 拉取 Broker 列表和 Topic-Partition leader、副本与 ISR 元数据。 |
-| 2 | `PRODUCE` | Data / 数据面 | Append records to a topic partition. / 向 Topic 分区追加消息。 |
+| 2 | `PRODUCE` | Data / 数据面 | Append records; optional trailing `acks` / `ackTimeoutMs`. / 追加消息；可选尾字段 `acks` 与 `ackTimeoutMs`。 |
 | 3 | `FETCH` | Data / 数据面 | Read records from a topic partition starting at an offset. / 从指定 offset 开始读取 Topic 分区消息。 |
-| 4 | `JOIN_GROUP` | Control / 控制面 | Join a consumer group. / 加入消费组。 |
+| 4 | `JOIN_GROUP` | Control / 控制面 | Join a consumer group; optional trailing `sessionTimeoutMs`. / 加入消费组；可选尾字段 `sessionTimeoutMs`。 |
 | 5 | `SYNC_GROUP` | Control / 控制面 | Submit or fetch partition assignment. / 提交或拉取分区分配结果。 |
 | 6 | `HEARTBEAT` | Control / 控制面 | Refresh member liveness. / 刷新成员存活状态。 |
 | 7 | `OFFSET_COMMIT` | Control / 控制面 | Commit consumed offset. / 提交已消费 offset。 |
@@ -89,21 +89,22 @@ If `errorCode != NONE`, response body is omitted. This rule keeps error response
 | 20 | `OPS_STATUS` | Admin / 管理面 | Read one Broker's bounded operational snapshot. / 读取单个 Broker 的有界运维快照。 |
 | 21 | `GROUP_STATUS` | Control / 控制面 | Read bounded group membership, offsets, watermarks, and lag. / 读取有界消费组成员、位点、水位与 lag。 |
 | 22 | `LIST_TOPICS` | Control / 控制面 | List active Topic names with total/truncated metadata. / 列出 active Topic 名称及 total/truncated 元数据。 |
-| 23 | `DESCRIBE_TOPIC` | Control / 控制面 | Describe partitions, reliability links, and optional tombstone state. / 描述分区、可靠性关联和可选 tombstone 状态。 |
+| 23 | `DESCRIBE_TOPIC` | Control / 控制面 | Describe partitions, reliability links, optional tombstone state, and trailing `minInSyncReplicas`. / 描述分区、可靠性关联、可选 tombstone 状态和尾字段 `minInSyncReplicas`。 |
 | 24 | `DELETE_TOPIC` | Control / 控制面 | Start or observe durable Topic deletion. / 启动或观察持久化 Topic 删除。 |
 | 25 | `INCREASE_PARTITIONS` | Control / 控制面 | Increase, never decrease, a Topic's partition count. / 只增加、不减少 Topic 分区数。 |
 | 26 | `FAILOVER_AUDIT` | Admin / 管理面 | Read a Broker-local bounded failover audit ring. / 读取 Broker-local 有界故障转移审计环。 |
 | 27 | `AUTH_STATUS` | Admin / 管理面 | Report the caller credential's scopes on one Broker. / 报告调用凭据在单个 Broker 上的 scopes。 |
 | 28 | `CONFIGURE_TOPIC_RELIABILITY` | Control / 控制面 | Atomically set or clear explicit retry/DLQ links. / 原子设置或清除显式 retry/DLQ 关联。 |
 | 29 | `MARK_BROKER_OFFLINE_ADMIN` | Control / 控制面 | Authorized operator request to mark a Broker offline. / 经授权的运维 Broker 下线请求。 |
-| 30 | `CREATE_TOPIC_ADMIN` | Control / 控制面 | Scoped V4 Topic creation. / V4 scoped Topic 创建。 |
-| 31 | `PRODUCE_V2` | Data / 数据面 | Append immediate or delayed records with `deliverAtEpochMs`. / 追加带 `deliverAtEpochMs` 的即时或延迟记录。 |
+| 30 | `CREATE_TOPIC_ADMIN` | Control / 控制面 | Scoped Topic creation with optional trailing `minInSyncReplicas`. / 带 scope 的 Topic 创建，可选尾字段 `minInSyncReplicas`。 |
+| 31 | `PRODUCE_V2` | Data / 数据面 | Append immediate or delayed records with `deliverAtEpochMs` and the same optional ack fields as `PRODUCE`. / 追加带 `deliverAtEpochMs` 的即时或延迟记录，以及与 `PRODUCE` 相同的可选 ack 字段。 |
 | 32 | `REPLICA_FETCH_V2` | Internal data / 内部数据面 | Fenced replica fetch preserving delivery timestamps. / 保留投递时间且带 fencing 的副本拉取。 |
 | 33 | `TOPIC_DELETE_ACK` | Internal control / 内部控制面 | Acknowledge versioned local tombstone cleanup. / 确认指定版本的本地 tombstone 清理。 |
 | 34 | `FETCH_V2` | Data / 数据面 | Bounded fetch with physical/visible watermarks and next visibility time. / 带物理/可见水位与下次可见时间的有界拉取。 |
 | 35 | `METADATA_V2` | Control / 控制面 | Bounded active metadata, independent topic/tombstone cursors, and explicit reliability links. / 有界 active 元数据、独立 topic/tombstone 游标与显式可靠性关联。 |
 | 36 | `RUNTIME_METRICS_V2` | Admin / 管理面 | Bounded rates, payload bytes, latency, lag, and audit overwrite metrics. / 有界速率、payload 字节、延迟、lag 与审计覆盖指标。 |
 | 37 | `UPDATE_REPLICA_STATE_V2` | Internal control / 内部控制面 | Report fenced physical and visible replica progress. / 上报带 fencing 的物理与可见副本进度。 |
+| 38 | `LEAVE_GROUP` | Control / 控制面 | Remove a consumer-group member. Leave is allowed during rebalance. / 移除消费组成员；rebalance 期间也可离开。 |
 
 ### 2.5 HEARTBEAT and OFFSET_COMMIT bodies / HEARTBEAT 与 OFFSET_COMMIT 报文体
 
@@ -427,10 +428,11 @@ Consumer group coordination is simplified but captures the essential flow:
 6. Leader submits assignment through `SYNC_GROUP`. / Leader 通过 `SYNC_GROUP` 提交分配结果。
 7. Members fetch their assignment through `SYNC_GROUP`. / 成员通过 `SYNC_GROUP` 拉取自己的分配结果。
 8. Consumers commit offsets after processing. / Consumer 处理消息后提交 offset。
+9. `Consumer.close()` sends `LEAVE_GROUP`. / `Consumer.close()` 发送 `LEAVE_GROUP`。
 
-Members expire after 10,000 ms without a heartbeat. `JOIN_GROUP`, `HEARTBEAT`, `OFFSET_COMMIT`, and `SYNC_GROUP` evict stale members. Join already increments `generationId`, so eviction on that path does not add a second bump. Eviction on heartbeat, commit, or sync increments `generationId`, sets `rebalancing=true`, and re-picks the leader if the previous leader left. The timed-out caller then sees `GROUP_NOT_FOUND`; a still-present caller whose generation is now stale sees `REBALANCE_IN_PROGRESS`. A successful commit also refreshes `lastHeartbeatMs`. `GROUP_STATUS` uses the same 10-second window only to mark members alive; it does not evict.
+Each member carries its own `sessionTimeoutMs` from `JOIN_GROUP` (default 10,000, range 1,000..300,000). `JOIN_GROUP`, `HEARTBEAT`, `OFFSET_COMMIT`, `SYNC_GROUP`, and `LEAVE_GROUP` evict members whose last heartbeat is older than that member's timeout. Join already increments `generationId`, so eviction on that path does not add a second bump. Eviction on heartbeat, commit, or sync increments `generationId`, sets `rebalancing=true`, and re-picks the leader if the previous leader left. Leave removes the caller even when generation is stale so a member can exit during rebalance; if others remain, generation advances. An empty group is kept so committed offsets survive. The timed-out or already-left caller then sees `GROUP_NOT_FOUND`; a still-present caller whose generation is now stale sees `REBALANCE_IN_PROGRESS`. A successful commit also refreshes `lastHeartbeatMs`. `GROUP_STATUS` uses each member's session timeout only to mark members alive; it does not evict.
 
-成员超过 10,000ms 未心跳即过期。`JOIN_GROUP`、`HEARTBEAT`、`OFFSET_COMMIT` 和 `SYNC_GROUP` 都会踢出过期成员。join 本身会递增 `generationId`，该路径上的踢人不再额外加一代。心跳、提交或 sync 上的踢人会递增 `generationId`、置 `rebalancing=true`，并在原 leader 离开时重选。被踢的调用方得到 `GROUP_NOT_FOUND`；仍在组内但 generation 已过期的调用方得到 `REBALANCE_IN_PROGRESS`。成功的 offset 提交也会刷新 `lastHeartbeatMs`。`GROUP_STATUS` 用同一 10 秒窗口只标记存活，不执行踢人。
+每个成员在 `JOIN_GROUP` 时带上自己的 `sessionTimeoutMs`（默认 10,000，范围 1,000..300,000）。`JOIN_GROUP`、`HEARTBEAT`、`OFFSET_COMMIT`、`SYNC_GROUP` 和 `LEAVE_GROUP` 都会踢出超过该成员超时未心跳的成员。join 本身会递增 `generationId`，该路径上的踢人不再额外加一代。心跳、提交或 sync 上的踢人会递增 `generationId`、置 `rebalancing=true`，并在原 leader 离开时重选。Leave 不校验 generation，因此 rebalance 期间也能离开；若仍有其他成员则推进 generation。空组会保留以便 offset 还在。被踢或已离开的调用方得到 `GROUP_NOT_FOUND`；仍在组内但 generation 已过期的调用方得到 `REBALANCE_IN_PROGRESS`。成功的 offset 提交也会刷新 `lastHeartbeatMs`。`GROUP_STATUS` 用各成员自己的 session timeout 只标记存活，不执行踢人。
 
 `RangeAssignor` sorts members and then allocates contiguous partition ranges. For example, 3 partitions and 2 members results in member 0 receiving partitions `[0, 1]` and member 1 receiving `[2]`.
 

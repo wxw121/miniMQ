@@ -99,12 +99,13 @@ class V4ProtocolContractTest {
         expected.put("METADATA_V2", 35);
         expected.put("RUNTIME_METRICS_V2", 36);
         expected.put("UPDATE_REPLICA_STATE_V2", 37);
+        expected.put("LEAVE_GROUP", 38);
 
         Map<String, Integer> actual = publicShortConstants(ApiKeys.class);
 
         assertEquals(expected, actual);
         assertEquals(
-                IntStream.rangeClosed(0, 37).boxed().collect(Collectors.toCollection(TreeSet::new)),
+                IntStream.rangeClosed(0, 38).boxed().collect(Collectors.toCollection(TreeSet::new)),
                 new TreeSet<>(actual.values()));
     }
 
@@ -188,7 +189,13 @@ class V4ProtocolContractTest {
         assertRecordComponents(MarkBrokerOfflineAdminRequest.class,
                 "credential", "brokerId");
         assertRecordComponents(CreateTopicAdminRequest.class,
-                "credential", "topicName", "numPartitions", "replicationFactor");
+                "credential", "topicName", "numPartitions", "replicationFactor", "minInSyncReplicas");
+        assertRecordComponents(CreateTopicRequest.class,
+                "topicName", "numPartitions", "replicationFactor", "minInSyncReplicas");
+        assertRecordComponents(JoinGroupRequest.class,
+                "groupId", "memberId", "topicName", "sessionTimeoutMs");
+        assertRecordComponents(LeaveGroupRequest.class,
+                "groupId", "memberId", "generationId");
         assertRecordComponents(ProduceV2Request.class,
                 "topicName", "partitionId", "leaderEpoch", "records", "acks", "ackTimeoutMs");
         assertRecordComponents(ReplicaFetchV2Request.class,
@@ -252,7 +259,8 @@ class V4ProtocolContractTest {
                 "retryTopic",
                 "deadLetterTopic",
                 "partitions",
-                "tombstone");
+                "tombstone",
+                "minInSyncReplicas");
         assertRecordComponents(DeleteTopicResponse.class,
                 "topicName",
                 "tombstoneState",
@@ -310,6 +318,7 @@ class V4ProtocolContractTest {
                 "auditOverwrittenCount",
                 "lagMetrics");
         assertRecordComponents(UpdateReplicaStateV2Response.class);
+        assertRecordComponents(LeaveGroupResponse.class);
 
         var responseTypes = List.of(
                 OpsStatusResponse.class,
@@ -329,7 +338,8 @@ class V4ProtocolContractTest {
                 FetchV2Response.class,
                 MetadataV2Response.class,
                 RuntimeMetricsV2Response.class,
-                UpdateReplicaStateV2Response.class);
+                UpdateReplicaStateV2Response.class,
+                LeaveGroupResponse.class);
         assertEquals((long) responseTypes.size(), responseTypes.stream().distinct().count());
         assertNotSame(TopicDeleteAckResponse.class, UpdateReplicaStateV2Response.class);
     }

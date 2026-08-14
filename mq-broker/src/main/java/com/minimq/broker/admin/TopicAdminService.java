@@ -157,7 +157,8 @@ public final class TopicAdminService implements AutoCloseable {
                     retryTopic,
                     deadLetterTopic,
                     bounded(partitions, request.partitionLimit()),
-                    null));
+                    null,
+                    topic.effectiveMinInSyncReplicas()));
         }
         ClusterMetadata.TopicTombstone tombstone = snapshot.topicTombstones.get(request.topicName());
         if (tombstone == null || !request.includeDeleted()) {

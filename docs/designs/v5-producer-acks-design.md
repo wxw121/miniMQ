@@ -1,13 +1,15 @@
-# V5.0 Producer Acknowledgements Design
+# V5.0 Producer Acknowledgements And Group Hardening Design
 
 Date: 2026-08-14
-Status: Implemented in source. Full `mvn clean verify` is recorded in [test-report-2026-08-14-v5.0.0-producer-acks.md](../test-report-2026-08-14-v5.0.0-producer-acks.md). Dedicated executor for `ALL` waits is still a follow-up.
+Status: Implemented in source. Full `mvn clean verify` for the acks-only slice is in [test-report-2026-08-14-v5.0.0-producer-acks.md](../test-report-2026-08-14-v5.0.0-producer-acks.md). This document also covers the V5 expansion: dedicated ack executor, `min.insync.replicas`, `LEAVE_GROUP`, and per-member session timeout.
 
 ## Goal
 
 V4 replicated partitions and tracked ISR log-end offsets, but `PRODUCE` / `PRODUCE_V2` returned as soon as the Leader appended locally. V5 adds an explicit acknowledgement policy so a producer can wait until the current ISR has the record, without introducing transactions or exactly-once semantics.
 
-V4 已经有副本和 ISR LEO，但生产在 Leader 本地追加后立即返回。V5 增加明确的确认策略，让 Producer 可以等到当前 ISR 拥有该记录。本版本不包含事务或 exactly-once。
+The same version also hardens produce waits and consumer-group membership: `acks=ALL` runs off the Netty event loop, topics can require a minimum ISR size, members can leave, and session timeout is per member.
+
+V4 已经有副本和 ISR LEO，但生产在 Leader 本地追加后立即返回。V5 增加明确的确认策略，让 Producer 可以等到当前 ISR 拥有该记录。本版本不包含事务或 exactly-once。同一版本还把 `ALL` 等待移出 Netty event loop，并补上 `min.insync.replicas`、`LEAVE_GROUP` 和按成员 session timeout。
 
 ## Scope
 
@@ -17,11 +19,15 @@ V4 已经有副本和 ISR LEO，但生产在 Leader 本地追加后立即返回�
 4. Encode always writes the current fields.
 5. `ALL` waits until `ReplicaStateManager.replicationHighWatermark` is at least the Leader log-end offset after the append.
 6. Append-only error codes `NOT_ENOUGH_REPLICAS=20` and `REQUEST_TIMED_OUT=21`.
+7. Dedicated produce-ack executor so `ALL` waits do not block the Netty event loop.
+8. Topic-level `min.insync.replicas` (default 1, must be `1..replicationFactor`) on `CREATE_TOPIC` / `CREATE_TOPIC_ADMIN`, exposed as an optional trailing field on `DESCRIBE_TOPIC`.
+9. `LEAVE_GROUP` (key 38). Leave is allowed during rebalance. Empty groups keep committed offsets.
+10. Optional trailing `sessionTimeoutMs` on `JOIN_GROUP` (default 10000, range 1000..300000). Eviction uses that member's timeout. `Consumer.close()` sends leave.
 
 ## Non-Goals
 
 - `acks=0` (no response). MiniMQ stays request/response.
-- `min.insync.replicas`. `ALL` waits for the current ISR, whatever its size.
+- Changing `TopicSummary` / `METADATA_V2` layout. Followers in etcd mode get `min.insync.replicas` from the metadata document; legacy `METADATA_V2` sync keeps a previously observed value or defaults to 1.
 - Transactions, idempotent producers, or exactly-once.
 - Unclean election.
 - Changing FETCH visibility or consumer offset rules.
@@ -35,7 +41,7 @@ V4 已经有副本和 ISR LEO，但生产在 Leader 本地追加后立即返回�
 
 `ackTimeoutMs` is `1..60000`, default `5000`. Other `acks` values are `INVALID_REQUEST`.
 
-`ALL` with an empty ISR returns `NOT_ENOUGH_REPLICAS` and does not wait. A single-broker ISR is equivalent to `LEADER`.
+`ALL` with an empty ISR, or with `isr.size() < min.insync.replicas`, returns `NOT_ENOUGH_REPLICAS` and does not wait. A single-broker ISR that meets `min.insync.replicas` is equivalent to `LEADER` after the local append is visible.
 
 A timeout or `NOT_ENOUGH_REPLICAS` does **not** roll back the local append. The record may already be on the Leader. The client sees the error and may retry; the retry is a second record unless the application deduplicates.
 
@@ -62,18 +68,19 @@ Missing trailing fields default to `acks=1`, `ackTimeoutMs=5000`. A body that in
 
 A V4 client that omits the fields keeps Leader-ack behavior. A V5 client talking to a V4 Broker is unsupported for `ALL` (the V4 Broker rejects trailing bytes). Mixed V4/V5 Broker clusters remain unsupported, same as V3/V4.
 
+`CREATE_TOPIC` and `CREATE_TOPIC_ADMIN` append optional `minInSyncReplicas` (i32, default 1). `JOIN_GROUP` appends optional `sessionTimeoutMs` (i32, default 10000). `DESCRIBE_TOPIC` responses append optional `minInSyncReplicas` (i32, default 1). `LEAVE_GROUP` is a new key (38) with `groupId`, `memberId`, `generationId` and an empty success body.
+
 ## Broker Behavior
 
 After a successful local append and the existing local LEO / replica-state report:
 
-1. `LEADER` returns `ProduceResponse` / `ProduceV2Response` immediately.
-2. `ALL` reads `ClusterController.getIsrBrokerIds`. Empty ISR → `NOT_ENOUGH_REPLICAS`.
-3. Otherwise wait on `ReplicaStateManager` until `replicationHighWatermark(topic, partition, leaderLeo, isr, leaderId) >= leaderLeo` or `ackTimeoutMs` elapses.
-4. Timeout → `REQUEST_TIMED_OUT` with no response body.
+1. `LEADER` returns `ProduceResponse` / `ProduceV2Response` immediately on the request thread.
+2. `ALL` reads `ClusterController.getIsrBrokerIds` and the topic's `min.insync.replicas`. Empty ISR or `isr.size() < minInSync` → `NOT_ENOUGH_REPLICAS`.
+3. Otherwise the wait is submitted to a per-handler bounded produce-ack executor. The Netty event loop is not blocked for `ackTimeoutMs`.
+4. The waiter uses `ReplicaStateManager` until `replicationHighWatermark(topic, partition, leaderLeo, isr, leaderId) >= leaderLeo` or `ackTimeoutMs` elapses.
+5. Timeout → `REQUEST_TIMED_OUT` with no response body. Shutdown/rejection of the executor is treated the same way.
 
 `leaderLeo` is the partition `highWatermark()` after the append (next offset). That is the same value already reported as the Leader LEO today.
-
-The wait must not block a Netty event-loop thread for the full timeout. Stage 1 may wait inline only in unit tests that use a short timeout; a dedicated executor is the next hardening step. Tests use a short timeout and an injectable or directly updated `ReplicaStateManager`.
 
 `ReplicaStateManager.replicationHighWatermark` must not drop the election-time LEO on the first post-election write computation. Clearing that marker would treat later unreported ISR followers as caught up, so `acks=ALL` would return success before the record is on the ISR. The marker is cleared only after every current follower has reported a LEO.
 
@@ -82,6 +89,8 @@ The wait must not block a Netty event-loop thread for the full timeout. Stage 1 
 `Producer.send(record)` keeps `LEADER` + 5000 ms. Overloads accept `ProduceAcks` and an optional timeout. The same fields are written on `PRODUCE_V2` retry/DLQ paths when the caller asked for `ALL`.
 
 CLI `produce` gains `--acks leader|all` and optional `--ack-timeout-ms`.
+CLI `create-topic` gains `--min-insync-replicas`.
+CLI `consume` gains `--session-timeout-ms`. Heartbeat interval is `max(100, sessionTimeoutMs / 3)`.
 
 ## Compatibility
 
@@ -89,15 +98,15 @@ CLI `produce` gains `--acks leader|all` and optional `--ack-timeout-ms`.
 | --- | --- | --- |
 | V4 produce (no trailing fields) | V5 | Decodes as `LEADER`, same as today |
 | V5 `LEADER` | V5 | Current encode, no wait |
-| V5 `ALL` | V5 | Waits for current ISR |
+| V5 `ALL` | V5 | Waits for current ISR that meets `min.insync.replicas` |
 | V5 `ALL` | V4 | V4 rejects trailing bytes (`INVALID_REQUEST`) |
+| V4 join (no session timeout) | V5 | Decodes as 10000 ms |
+| V4 create-topic (no min ISR) | V5 | Decodes as `min.insync.replicas=1` |
 
-Keys 0-19 keep original field order. `PRODUCE` follows the same optional-trailing pattern as `HEARTBEAT` / `OFFSET_COMMIT`.
+Keys 0-19 keep original field order. New fields follow the same optional-trailing pattern as `HEARTBEAT` / `OFFSET_COMMIT`. `LEAVE_GROUP=38` is append-only after `UPDATE_REPLICA_STATE_V2=37`.
 
 ## Follow-ups (not V5.0)
 
-- Move `acks=ALL` waits off the Netty event loop onto a bounded dedicated executor.
-- Configurable `min.insync.replicas`.
-- Consumer-group leave and configurable session timeout.
 - Optional unclean election.
 - Transactional produce / exactly-once research.
+- Optional experimental LSM state-store module.

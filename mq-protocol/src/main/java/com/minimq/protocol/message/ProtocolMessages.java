@@ -1,6 +1,8 @@
 package com.minimq.protocol.message;
 
+import com.minimq.common.acks.MinInSyncReplicas;
 import com.minimq.common.acks.ProduceAcks;
+import com.minimq.common.group.GroupSessionTimeouts;
 import com.minimq.common.validation.TopicNames;
 import com.minimq.protocol.MqFrame;
 
@@ -55,9 +57,15 @@ public final class ProtocolMessages {
         }
     }
 
-    public record CreateTopicRequest(String topicName, int numPartitions, int replicationFactor) {
+    public record CreateTopicRequest(
+            String topicName, int numPartitions, int replicationFactor, int minInSyncReplicas) {
         public CreateTopicRequest {
             requireNewTopicName(topicName, "topicName");
+            MinInSyncReplicas.requireRange(minInSyncReplicas);
+        }
+
+        public CreateTopicRequest(String topicName, int numPartitions, int replicationFactor) {
+            this(topicName, numPartitions, replicationFactor, MinInSyncReplicas.DEFAULT);
         }
 
         public CreateTopicRequest(String topicName, int numPartitions) {
@@ -202,9 +210,15 @@ public final class ProtocolMessages {
             List<FetchedRecord> records) {
     }
 
-    public record JoinGroupRequest(String groupId, String memberId, String topicName) {
+    public record JoinGroupRequest(
+            String groupId, String memberId, String topicName, int sessionTimeoutMs) {
         public JoinGroupRequest {
             requireTopicName(topicName, "topicName");
+            GroupSessionTimeouts.requireValid(sessionTimeoutMs);
+        }
+
+        public JoinGroupRequest(String groupId, String memberId, String topicName) {
+            this(groupId, memberId, topicName, GroupSessionTimeouts.DEFAULT_MS);
         }
     }
 
@@ -235,6 +249,18 @@ public final class ProtocolMessages {
     }
 
     public record HeartbeatResponse() {
+    }
+
+    public record LeaveGroupRequest(String groupId, String memberId, int generationId) {
+        public LeaveGroupRequest {
+            if (memberId == null) {
+                throw new IllegalArgumentException("memberId must not be null");
+            }
+            requireNonNegative(generationId, "generationId");
+        }
+    }
+
+    public record LeaveGroupResponse() {
     }
 
     public record OffsetCommitRequest(
@@ -584,12 +610,22 @@ public final class ProtocolMessages {
     }
 
     public record CreateTopicAdminRequest(
-            String credential, String topicName, int numPartitions, int replicationFactor) {
+            String credential,
+            String topicName,
+            int numPartitions,
+            int replicationFactor,
+            int minInSyncReplicas) {
         public CreateTopicAdminRequest {
             requireNonEmpty(credential, "credential");
             requireNewTopicName(topicName, "topicName");
             requireRange(numPartitions, 1, 10_000, "numPartitions");
             requireRange(replicationFactor, 1, 10_000, "replicationFactor");
+            MinInSyncReplicas.requireRange(minInSyncReplicas);
+        }
+
+        public CreateTopicAdminRequest(
+                String credential, String topicName, int numPartitions, int replicationFactor) {
+            this(credential, topicName, numPartitions, replicationFactor, MinInSyncReplicas.DEFAULT);
         }
     }
 
@@ -909,7 +945,30 @@ public final class ProtocolMessages {
             String retryTopic,
             String deadLetterTopic,
             V4BoundedList<TopicPartitionInfo> partitions,
-            TopicTombstoneInfo tombstone) {
+            TopicTombstoneInfo tombstone,
+            int minInSyncReplicas) {
+        public DescribeTopicResponse {
+            MinInSyncReplicas.requireRange(minInSyncReplicas);
+        }
+
+        public DescribeTopicResponse(
+                String topicName,
+                long metadataVersion,
+                boolean active,
+                String retryTopic,
+                String deadLetterTopic,
+                V4BoundedList<TopicPartitionInfo> partitions,
+                TopicTombstoneInfo tombstone) {
+            this(
+                    topicName,
+                    metadataVersion,
+                    active,
+                    retryTopic,
+                    deadLetterTopic,
+                    partitions,
+                    tombstone,
+                    MinInSyncReplicas.DEFAULT);
+        }
     }
 
     public record DeleteTopicResponse(
