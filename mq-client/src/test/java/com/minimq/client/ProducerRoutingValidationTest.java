@@ -1,8 +1,10 @@
 package com.minimq.client;
 
+import com.minimq.client.exception.MiniMqConnectionException;
 import com.minimq.client.exception.MiniMqMetadataException;
 import com.minimq.client.model.ProduceResult;
 import com.minimq.client.model.ProducerRecord;
+import com.minimq.common.acks.ProduceAcks;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.protocol.codec.MqDecoder;
 import com.minimq.protocol.message.MqResponseHeader;
@@ -127,6 +129,61 @@ class ProducerRoutingValidationTest {
         }
     }
 
+    @Test
+    void sendAcksOverloadsDelegateToTimedSend() throws Exception {
+        try (MetadataOnlyProducer producer = new MetadataOnlyProducer()) {
+            producer.enqueueMetadata(metadata(
+                    List.of(new BrokerMetadata(0, "127.0.0.1", 19092)),
+                    List.of(new PartitionMetadata(0, 0), new PartitionMetadata(1, 0))));
+            producer.enqueueProduceResponse(successResponse(1));
+            producer.enqueueProduceResponse(successResponse(10));
+            producer.enqueueProduceResponse(successResponse(20));
+
+            assertEquals(1, producer.send(record(0), ProduceAcks.LEADER).offset());
+            List<ProduceResult> batched = producer.send(
+                    List.of(record(0), record(1)), ProduceAcks.LEADER);
+            assertEquals(List.of(10L, 20L), batched.stream().map(ProduceResult::offset).toList());
+            assertEquals(3, producer.produceRequests());
+        }
+    }
+
+    @Test
+    void sendBatchRetriesOnceAfterConnectionFailure() throws Exception {
+        try (MetadataOnlyProducer producer = new MetadataOnlyProducer()) {
+            MetadataResponse topicMetadata = metadata(
+                    List.of(new BrokerMetadata(0, "127.0.0.1", 19092)),
+                    List.of(new PartitionMetadata(0, 0)));
+            producer.enqueueMetadata(topicMetadata);
+            producer.enqueueProduceFailure(new MiniMqConnectionException("disconnected", null));
+            producer.enqueueMetadata(topicMetadata);
+            producer.enqueueProduceResponse(successResponse(8));
+
+            List<ProduceResult> results = producer.send(List.of(record(0), record(0)));
+
+            assertEquals(List.of(8L, 9L), results.stream().map(ProduceResult::offset).toList());
+            assertEquals(2, producer.produceRequests());
+        }
+    }
+
+    @Test
+    void sendBatchRetriesOnceAfterStaleLeader() throws Exception {
+        try (MetadataOnlyProducer producer = new MetadataOnlyProducer()) {
+            MetadataResponse topicMetadata = metadata(
+                    List.of(new BrokerMetadata(0, "127.0.0.1", 19092)),
+                    List.of(new PartitionMetadata(0, 0)));
+            producer.enqueueMetadata(topicMetadata);
+            producer.enqueueProduceResponse(new MqDecoder.DecodedResponse(
+                    new MqResponseHeader(2, ErrorCode.NOT_LEADER), null));
+            producer.enqueueMetadata(topicMetadata);
+            producer.enqueueProduceResponse(successResponse(8));
+
+            List<ProduceResult> results = producer.send(List.of(record(0), record(0)));
+
+            assertEquals(List.of(8L, 9L), results.stream().map(ProduceResult::offset).toList());
+            assertEquals(2, producer.produceRequests());
+        }
+    }
+
     private static void assertRouteFailure(
             MetadataResponse metadata,
             ProducerRecord record,
@@ -169,6 +226,7 @@ class ProducerRoutingValidationTest {
     private static final class MetadataOnlyProducer extends Producer {
         private final Queue<MetadataResponse> metadataResponses = new ArrayDeque<>();
         private final Queue<MqDecoder.DecodedResponse> produceResponses = new ArrayDeque<>();
+        private final Queue<RuntimeException> produceFailures = new ArrayDeque<>();
         private int metadataFetches;
         private int produceRequests;
         private ProduceRequest lastRequest;
@@ -183,6 +241,10 @@ class ProducerRoutingValidationTest {
 
         private void enqueueProduceResponse(MqDecoder.DecodedResponse response) {
             produceResponses.add(response);
+        }
+
+        private void enqueueProduceFailure(RuntimeException failure) {
+            produceFailures.add(failure);
         }
 
         private int metadataFetches() {
@@ -209,6 +271,9 @@ class ProducerRoutingValidationTest {
                 ProduceRequest request) {
             produceRequests++;
             lastRequest = request;
+            if (!produceFailures.isEmpty()) {
+                throw produceFailures.remove();
+            }
             return produceResponses.remove();
         }
     }
