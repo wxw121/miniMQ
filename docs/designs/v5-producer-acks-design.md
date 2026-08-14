@@ -1,7 +1,7 @@
 # V5.0 Producer Acknowledgements And Group Hardening Design
 
 Date: 2026-08-14
-Status: Implemented in source. Full `mvn clean verify` for the acks-only slice is in [test-report-2026-08-14-v5.0.0-producer-acks.md](../test-report-2026-08-14-v5.0.0-producer-acks.md). This document also covers the V5 expansion: dedicated ack executor, `min.insync.replicas`, `LEAVE_GROUP`, and per-member session timeout.
+Status: Implemented in source. Latest full `mvn clean verify` is [test-report-2026-08-14-v5.0.0-acks-minisr-leave.md](../test-report-2026-08-14-v5.0.0-acks-minisr-leave.md) (781 tests). The earlier acks-only slice remains in [test-report-2026-08-14-v5.0.0-producer-acks.md](../test-report-2026-08-14-v5.0.0-producer-acks.md).
 
 ## Goal
 

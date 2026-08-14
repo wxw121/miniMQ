@@ -1,7 +1,7 @@
 # V5.0 Producer Acknowledgements And Group Hardening Implementation Plan
 
 Date: 2026-08-14
-Status: Implemented. Acks-only verification recorded. Expansion (ack executor, min.insync, leave, session timeout) lands in the same 5.0.0 tree.
+Status: Implemented and verified. Latest evidence: [test-report-2026-08-14-v5.0.0-acks-minisr-leave.md](../test-report-2026-08-14-v5.0.0-acks-minisr-leave.md) (781 tests, line ≥ 90%). The acks-only slice remains in [test-report-2026-08-14-v5.0.0-producer-acks.md](../test-report-2026-08-14-v5.0.0-producer-acks.md).
 
 ## Objective
 
@@ -51,7 +51,7 @@ Implement the V5 contract in [v5-producer-acks-design.md](../designs/v5-producer
 
 - Maven version `5.0.0`.
 - Update roadmap, README, design.md, architecture.md, docs/README.md.
-- Record verification in a dated test report when `mvn clean verify` is run.
+- Record verification in a dated test report when `mvn clean verify` is run. Latest: [test-report-2026-08-14-v5.0.0-acks-minisr-leave.md](../test-report-2026-08-14-v5.0.0-acks-minisr-leave.md).
 
 ## Dependency Order
 
