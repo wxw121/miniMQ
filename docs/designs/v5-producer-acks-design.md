@@ -1,7 +1,7 @@
 # V5.0 Producer Acknowledgements And Group Hardening Design
 
 Date: 2026-08-14
-Status: Implemented in source. Latest full `mvn clean verify` is [test-report-2026-08-14-v5.0.0-reassign-preferred.md](../test-report-2026-08-14-v5.0.0-reassign-preferred.md) (785 tests). The previous same-day acks + min.insync + leave pass remains in [test-report-2026-08-14-v5.0.0-acks-minisr-leave.md](../test-report-2026-08-14-v5.0.0-acks-minisr-leave.md). The acks-only slice remains in [test-report-2026-08-14-v5.0.0-producer-acks.md](../test-report-2026-08-14-v5.0.0-producer-acks.md).
+Status: Implemented in source. Latest full `mvn clean verify` is [test-report-2026-08-14-v5.0.0-review-fixes.md](../test-report-2026-08-14-v5.0.0-review-fixes.md) (792 tests). The previous same-day reassign + preferred-leader pass remains in [test-report-2026-08-14-v5.0.0-reassign-preferred.md](../test-report-2026-08-14-v5.0.0-reassign-preferred.md). The acks + min.insync + leave pass remains in [test-report-2026-08-14-v5.0.0-acks-minisr-leave.md](../test-report-2026-08-14-v5.0.0-acks-minisr-leave.md). The acks-only slice remains in [test-report-2026-08-14-v5.0.0-producer-acks.md](../test-report-2026-08-14-v5.0.0-producer-acks.md).
 
 ## Goal
 

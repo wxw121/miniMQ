@@ -1,7 +1,7 @@
 # V5.0 Producer Acknowledgements And Group Hardening Implementation Plan
 
 Date: 2026-08-14
-Status: Implemented and verified. Latest evidence: [test-report-2026-08-14-v5.0.0-reassign-preferred.md](../test-report-2026-08-14-v5.0.0-reassign-preferred.md) (785 tests, line ≥ 90%). The previous acks + min.insync + leave pass remains in [test-report-2026-08-14-v5.0.0-acks-minisr-leave.md](../test-report-2026-08-14-v5.0.0-acks-minisr-leave.md). The acks-only slice remains in [test-report-2026-08-14-v5.0.0-producer-acks.md](../test-report-2026-08-14-v5.0.0-producer-acks.md).
+Status: Implemented and verified. Latest evidence: [test-report-2026-08-14-v5.0.0-review-fixes.md](../test-report-2026-08-14-v5.0.0-review-fixes.md) (792 tests, line ≥ 90%). The previous reassign + preferred-leader pass remains in [test-report-2026-08-14-v5.0.0-reassign-preferred.md](../test-report-2026-08-14-v5.0.0-reassign-preferred.md). The acks + min.insync + leave pass remains in [test-report-2026-08-14-v5.0.0-acks-minisr-leave.md](../test-report-2026-08-14-v5.0.0-acks-minisr-leave.md). The acks-only slice remains in [test-report-2026-08-14-v5.0.0-producer-acks.md](../test-report-2026-08-14-v5.0.0-producer-acks.md).
 
 ## Objective
 
@@ -58,7 +58,7 @@ Implement the V5 contract in [v5-producer-acks-design.md](../designs/v5-producer
 
 - Maven version `5.0.0`.
 - Update roadmap, README, design.md, architecture.md, docs/README.md.
-- Record verification in a dated test report when `mvn clean verify` is run. Latest: [test-report-2026-08-14-v5.0.0-reassign-preferred.md](../test-report-2026-08-14-v5.0.0-reassign-preferred.md).
+- Record verification in a dated test report when `mvn clean verify` is run. Latest: [test-report-2026-08-14-v5.0.0-review-fixes.md](../test-report-2026-08-14-v5.0.0-review-fixes.md).
 
 ## Dependency Order
 

@@ -6,7 +6,7 @@ This roadmap summarizes the completed baseline, the current V4 Operator Readines
 
 ## 1. Current State
 
-MiniMQ 5.0.0 is open. V4 Operator Readiness is the completed baseline; V5 adds producer acknowledgements, `min.insync.replicas`, a dedicated produce-ack executor, `LEAVE_GROUP`, per-member session timeouts, topic config changes, partition reassignment, and preferred-leader election. Latest evidence: [test-report-2026-08-14-v5.0.0-reassign-preferred.md](test-report-2026-08-14-v5.0.0-reassign-preferred.md) (785 tests, 91.52% overall line coverage).
+MiniMQ 5.0.0 is open. V4 Operator Readiness is the completed baseline; V5 adds producer acknowledgements, `min.insync.replicas`, a broker-scoped produce-ack executor, `LEAVE_GROUP`, per-member session timeouts, topic config changes, partition reassignment, and preferred-leader election. Latest evidence: [test-report-2026-08-14-v5.0.0-review-fixes.md](test-report-2026-08-14-v5.0.0-review-fixes.md) (792 tests, 91.59% overall line coverage).
 
 Current implemented capabilities include:
 
