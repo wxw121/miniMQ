@@ -54,41 +54,41 @@ Latest release-gate command / 最新发布门禁命令：
 mvn clean verify -gs .mvn/settings.xml -s .mvn/settings.xml
 ```
 
-Latest V5.0.0 result / 最新 V5.0.0 结果（2026-08-14, OpenJDK 21, Linux）：
+Latest produce-concurrency result / 最新生产并发结果（2026-08-14, OpenJDK 21, Linux）：
 
 | Metric / 指标 | Value / 数值 |
 | --- | ---: |
-| Tests run / 测试总数 | 792 |
+| Tests run / 测试总数 | 810 |
 | Failures / 失败数 | 0 |
 | Errors / 错误数 | 0 |
 | Skipped / 跳过数 | 6 (`@DisabledOnOs(LINUX)` Windows script/ownership cases) |
-| Overall line coverage / 总体行覆盖率 | 91.59% (`11905 / 12998`) |
-| Overall instruction coverage / 总体指令覆盖率 | 92.42% (`54334 / 58793`) |
-| Overall branch coverage / 总体分支覆盖率 | 79.22% (`4457 / 5626`) |
-| Overall method coverage / 总体方法覆盖率 | 95.17% (`1933 / 2031`) |
-| Overall class coverage / 总体类覆盖率 | 99.69% (`321 / 322`) |
+| Overall line coverage / 总体行覆盖率 | 91.82% (`12114 / 13193`) |
+| Overall instruction coverage / 总体指令覆盖率 | 92.69% (`55180 / 59534`) |
+| Overall branch coverage / 总体分支覆盖率 | 79.40% (`4532 / 5708`) |
+| Overall method coverage / 总体方法覆盖率 | 95.51% (`1959 / 2051`) |
+| Overall class coverage / 总体类覆盖率 | 99.69% (`323 / 324`) |
 
-Evidence / 验证证据：`docs/test-report-2026-08-14-v5.0.0-review-fixes.md`. The earlier same-day reassign + preferred-leader pass (`785` tests) remains in `docs/test-report-2026-08-14-v5.0.0-reassign-preferred.md`. The acks + min.insync + leave pass (`781` tests) remains in `docs/test-report-2026-08-14-v5.0.0-acks-minisr-leave.md`. The acks-only pass (`767` tests) remains in `docs/test-report-2026-08-14-v5.0.0-producer-acks.md`. The V4.0.0 timeout/wire closeout (`754` tests) remains in `docs/test-report-2026-08-13-v4.0.0-timeout-and-wire.md`. Docker/etcd Failsafe suites were not run on machines without Docker.
+Evidence / 验证证据：`docs/test-report-2026-08-14-produce-concurrency.md`. The same-day V5 review-fix pass (`792` tests) remains in `docs/test-report-2026-08-14-v5.0.0-review-fixes.md`. The earlier same-day reassign + preferred-leader pass (`785` tests) remains in `docs/test-report-2026-08-14-v5.0.0-reassign-preferred.md`. The acks + min.insync + leave pass (`781` tests) remains in `docs/test-report-2026-08-14-v5.0.0-acks-minisr-leave.md`. The acks-only pass (`767` tests) remains in `docs/test-report-2026-08-14-v5.0.0-producer-acks.md`. The V4.0.0 timeout/wire closeout (`754` tests) remains in `docs/test-report-2026-08-13-v4.0.0-timeout-and-wire.md`. Docker/etcd Failsafe suites were not run on machines without Docker.
 
-验证证据见 `docs/test-report-2026-08-14-v5.0.0-review-fixes.md`。同日较早 reassign + preferred Leader 全量（785 tests）仍在 `docs/test-report-2026-08-14-v5.0.0-reassign-preferred.md`。acks + min.insync + leave 全量（781 tests）仍在 `docs/test-report-2026-08-14-v5.0.0-acks-minisr-leave.md`。仅 acks 全量（767 tests）仍在 `docs/test-report-2026-08-14-v5.0.0-producer-acks.md`。V4.0.0 超时与协议兼容收口（754 tests）仍保留在 `docs/test-report-2026-08-13-v4.0.0-timeout-and-wire.md`。无 Docker 的机器未跑 etcd Failsafe。
+验证证据见 `docs/test-report-2026-08-14-produce-concurrency.md`。同日 V5 review-fix 全量（792 tests）仍在 `docs/test-report-2026-08-14-v5.0.0-review-fixes.md`。同日较早 reassign + preferred Leader 全量（785 tests）仍在 `docs/test-report-2026-08-14-v5.0.0-reassign-preferred.md`。acks + min.insync + leave 全量（781 tests）仍在 `docs/test-report-2026-08-14-v5.0.0-acks-minisr-leave.md`。仅 acks 全量（767 tests）仍在 `docs/test-report-2026-08-14-v5.0.0-producer-acks.md`。V4.0.0 超时与协议兼容收口（754 tests）仍保留在 `docs/test-report-2026-08-13-v4.0.0-timeout-and-wire.md`。无 Docker 的机器未跑 etcd Failsafe。
 
 ## 5. Coverage By Module / 模块覆盖率
 
 | Module / 模块 | Instruction / 指令 | Branch / 分支 | Line / 行 | Method / 方法 | Class / 类 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `mq-broker` | 91.64% | 77.30% | 90.84% | 94.78% | 100.00% |
-| `mq-client` | 90.99% | 76.50% | 90.31% | 93.85% | 100.00% |
+| `mq-broker` | 91.64% | 77.33% | 90.85% | 94.78% | 100.00% |
+| `mq-client` | 92.16% | 77.54% | 91.08% | 95.88% | 100.00% |
 | `mq-common` | 97.84% | 92.90% | 97.73% | 97.22% | 100.00% |
 | `mq-demo` | 95.25% | 78.80% | 93.37% | 94.42% | 100.00% |
 | `mq-protocol` | 94.75% | 81.74% | 94.73% | 94.10% | 100.00% |
-| `mq-storage` | 90.93% | 81.69% | 90.10% | 97.57% | 98.00% |
+| `mq-storage` | 91.93% | 82.11% | 91.03% | 98.32% | 98.00% |
 
 ```mermaid
 xychart-beta
     title "Line Coverage By Module / 模块行覆盖率"
     x-axis ["broker/代理", "client/客户端", "common/公共", "demo/演示", "protocol/协议", "storage/存储"]
     y-axis "Line % / 行覆盖率 %" 0 --> 100
-    bar [90.84, 90.31, 97.73, 93.37, 94.73, 90.10]
+    bar [90.85, 91.08, 97.73, 93.37, 94.73, 91.03]
 ```
 
 ```mermaid
@@ -96,15 +96,15 @@ xychart-beta
     title "Overall Coverage / 总体覆盖率"
     x-axis ["Instruction/指令", "Branch/分支", "Line/行", "Method/方法", "Class/类"]
     y-axis "Coverage % / 覆盖率 %" 0 --> 100
-    bar [92.42, 79.22, 91.59, 95.17, 99.69]
+    bar [92.69, 79.40, 91.82, 95.51, 99.69]
 ```
 
 
 ## 6. Key Flow Test Evidence / 关键流程测试结果截图
 
-The [2026-08-14 review-fix V5 report](test-report-2026-08-14-v5.0.0-review-fixes.md) is the source of truth for the latest verified Surefire and JaCoCo numbers. Browser operator-console results remain in the [2026-08-13 full-verification report](test-report-2026-08-13-v4.0.0-full-verification.md). The screenshots below remain historical visual aids for the core flows, so a new reader can inspect the main testing shape without opening every `target` report directory.
+The [2026-08-14 produce-concurrency report](test-report-2026-08-14-produce-concurrency.md) is the source of truth for the latest verified Surefire and JaCoCo numbers. The same-day V5 review-fix pass remains in [test-report-2026-08-14-v5.0.0-review-fixes.md](test-report-2026-08-14-v5.0.0-review-fixes.md). Browser operator-console results remain in the [2026-08-13 full-verification report](test-report-2026-08-13-v4.0.0-full-verification.md). The screenshots below remain historical visual aids for the core flows, so a new reader can inspect the main testing shape without opening every `target` report directory.
 
-最新 Surefire / JaCoCo 数字以 [2026-08-14 review-fix V5 报告](test-report-2026-08-14-v5.0.0-review-fixes.md) 为准。操作台浏览器验收仍见 [2026-08-13 全量报告](test-report-2026-08-13-v4.0.0-full-verification.md)。下面截图保留为核心流程的历史可视化辅助，新读者无需逐个打开 `target` 报告目录，也能快速看到关键测试形态。
+最新 Surefire / JaCoCo 数字以 [2026-08-14 生产并发报告](test-report-2026-08-14-produce-concurrency.md) 为准。同日 V5 review-fix 全量仍见 [test-report-2026-08-14-v5.0.0-review-fixes.md](test-report-2026-08-14-v5.0.0-review-fixes.md)。操作台浏览器验收仍见 [2026-08-13 全量报告](test-report-2026-08-13-v4.0.0-full-verification.md)。下面截图保留为核心流程的历史可视化辅助，新读者无需逐个打开 `target` 报告目录，也能快速看到关键测试形态。
 
 ### 6.1 Full Build Verification / 完整构建验证
 
