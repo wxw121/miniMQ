@@ -38,6 +38,30 @@ class ProducerIntegrationTest {
     }
 
     @Test
+    void sequentialSendsWithoutReadingOffsetShareOneBrokerRoundTrip() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("producer-auto-batch");
+        try (BrokerTestHarness broker = BrokerTestHarness.startController(dataDir);
+             NetworkClient admin = new NetworkClient("admin");
+             Producer producer = new Producer(broker.bootstrapServers(), "producer-auto-batch-it")) {
+            admin.connect("localhost", broker.port());
+            admin.ensureSuccess(admin.send(
+                    ApiKeys.CREATE_TOPIC, new CreateTopicRequest("orders", 1)));
+            producer.start();
+
+            var first = producer.send(new ProducerRecord(
+                    "orders", null, "k".getBytes(StandardCharsets.UTF_8), "m0".getBytes(StandardCharsets.UTF_8)));
+            var second = producer.send(new ProducerRecord(
+                    "orders", null, "k".getBytes(StandardCharsets.UTF_8), "m1".getBytes(StandardCharsets.UTF_8)));
+            var third = producer.send(new ProducerRecord(
+                    "orders", null, "k".getBytes(StandardCharsets.UTF_8), "m2".getBytes(StandardCharsets.UTF_8)));
+
+            assertEquals(0, first.offset());
+            assertEquals(1, second.offset());
+            assertEquals(2, third.offset());
+        }
+    }
+
+    @Test
     void sendBatchAssignsContiguousOffsetsOnOnePartition() throws Exception {
         Path dataDir = BrokerTestHarness.newDataDir("producer-batch");
         try (BrokerTestHarness broker = BrokerTestHarness.startController(dataDir);

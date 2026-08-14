@@ -246,23 +246,23 @@ V2.0 引入显式 `FlushPolicy`：
 
 | Policy / 策略 | Behavior / 行为 | Use case / 使用场景 |
 | --- | --- | --- |
-| `ALWAYS` | Force WAL and partition log on every append. / 每次 append 都刷 WAL 与分区日志。 | Default safety baseline. / 默认安全基线。 |
-| `EVERY_N_APPENDS` | Force after N successful appends. / 每 N 次成功 append 后刷盘。 | Lower latency with bounded loss window. / 降低延迟，同时控制丢失窗口。 |
+| `ALWAYS` | Force WAL and partition log on every append. / 每次 append 都刷 WAL 与分区日志。 | Maximum durability; opt in with `--flush-policy always`. / 最高持久性，通过 `--flush-policy always` 显式开启。 |
+| `EVERY_N_APPENDS` | Force after N successful appends. / 每 N 次成功 append 后刷盘。 | Default (`N=100`): lower fsync cost with a bounded loss window. / 默认（`N=100`）：降低 fsync 成本，丢失窗口有上界。 |
 | `INTERVAL_MS` | Background or append-triggered force after a time interval. / 到达时间间隔后由后台或 append 触发刷盘。 | Throughput-oriented local testing. / 偏吞吐的本地测试。 |
 | `MANUAL_ON_CLOSE` | Flush only on explicit flush or close. / 仅在显式 flush 或 close 时刷盘。 | Tests and demos where durability is not the focus. / 不以持久性为重点的测试和演示。 |
 
-The default remains `ALWAYS` until replication and stronger recovery tests exist. This preserves V1.3's conservative durability behavior while making future performance work explicit.
+The default is `EVERY_N_APPENDS` with `N=100`. Broker close and explicit checkpoint still force a full flush. Durability-sensitive deployments can set `--flush-policy always`.
 
-默认策略保持 `ALWAYS`，直到副本机制和更强恢复测试完成。这保留 V1.3 的保守持久性行为，同时把后续性能优化显式化。
+默认策略为 `EVERY_N_APPENDS`（`N=100`）。Broker 关闭与显式 checkpoint 仍会完整刷盘。对持久性更敏感的部署可设置 `--flush-policy always`。
 
-Broker CLI flags expose the V2.0 policy without changing existing defaults:
+Broker CLI flags expose the V2.0 policy:
 
-Broker CLI 参数暴露 V2.0 策略，同时不改变现有默认行为：
+Broker CLI 参数暴露 V2.0 策略：
 
 | Flag / 参数 | Meaning / 含义 |
 | --- | --- |
-| `--flush-policy always` | Default: force WAL and partition logs after every append. / 默认：每次 append 后刷 WAL 与分区日志。 |
-| `--flush-policy every-n-appends --flush-every-n-appends N` | Force after every `N` successful appends. / 每 `N` 次成功 append 后刷盘。 |
+| `--flush-policy always` | Force WAL and partition logs after every append. / 每次 append 后刷 WAL 与分区日志。 |
+| `--flush-policy every-n-appends --flush-every-n-appends N` | Default: force after every `N` successful appends (`N=100` when omitted). / 默认：每 `N` 次成功 append 后刷盘（省略时 `N=100`）。 |
 | `--flush-policy interval-ms --flush-interval-ms N` | Force when at least `N` milliseconds have elapsed since the last flush. / 距上次刷盘至少经过 `N` 毫秒后刷盘。 |
 | `--flush-policy manual-on-close` | Do not flush during append; explicit checkpoint or broker shutdown still flushes before saving checkpoint. / append 期间不主动刷盘；显式 checkpoint 或 Broker 关闭仍会在保存 checkpoint 前刷盘。 |
 | `--checkpoint-every-n-appends N` | Save a recovery checkpoint after every `N` successful appends; `0` disables append-count checkpointing. / 每 `N` 次成功 append 后保存恢复 checkpoint；`0` 表示关闭按次数 checkpoint。 |
@@ -658,7 +658,7 @@ The local scripts own one run directory through `.minimq-run-directory`, record 
 | Segmented local log per partition / 每分区本地分段日志 | Supports sparse indexing, faster recovery boundaries, whole-segment retention, sealed-segment compaction, dry-run reports, and maintenance metrics. / 支持稀疏索引、更清晰的恢复边界、整段保留删除、sealed segment 压缩、dry-run 报告和维护指标。 | External operator APIs still need to render maintenance reports and metrics. / 仍需要外部运维 API 输出维护报告与指标。 |
 | JSON metadata store / JSON 元数据存储 | Human-readable and easy for demos. / 人类可读，适合演示。 | Not a scalable metadata log. / 不是可扩展的元数据日志。 |
 | etcd-fenced Controller role / etcd fencing 的 Controller 角色 | Automatic takeover with epoch and revision fencing. / 使用 epoch 与 revision fencing 自动接管。 | Production Brokers require reachable etcd; SDK clients do not. / 生产 Broker 依赖可达 etcd，但 SDK 不依赖。 |
-| Synchronous send with optional partition batches / 同步发送并支持按分区批量 | Easy to use and test; one Produce request can carry many records. / 易用且易测，一次 Produce 可携带多条记录。 | Still no client-side linger accumulator. / 仍无客户端 linger 攒批器。 |
+| Synchronous send with client-side linger batches / 同步可读 offset，客户端按分区 linger 攒批 | Sequential `send(record)` calls that do not immediately read `offset()` share one Produce per partition (`batchSize=50`, `lingerMs=5`). / 连续 `send(record)` 且不立刻读 `offset()` 时，同一分区共享一次 Produce（`batchSize=50`，`lingerMs=5`）。 | `send().offset()` still forces a one-record round-trip. / `send().offset()` 仍会变成单条往返。 |
 | Sendfile FETCH path / sendfile FETCH 路径 | Removes payload copies on the Broker network write path. / 去掉 Broker 网络写路径上的 payload 复制。 | TLS and unsupported pipelines still use heap fallback. / TLS 与不支持的 pipeline 仍走 heap 回退。 |
 
 ## 14. Professional Terms / 专业名词解释

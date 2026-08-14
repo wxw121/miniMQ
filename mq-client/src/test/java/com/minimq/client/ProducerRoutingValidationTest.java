@@ -121,6 +121,122 @@ class ProducerRoutingValidationTest {
     }
 
     @Test
+    void sequentialSendsShareOneProduceRequestUntilOffsetIsRead() throws Exception {
+        try (MetadataOnlyProducer producer = new MetadataOnlyProducer(new ProducerConfig(50, 60_000))) {
+            producer.enqueueMetadata(metadata(
+                    List.of(new BrokerMetadata(0, "127.0.0.1", 19092)),
+                    List.of(new PartitionMetadata(0, 0))));
+            producer.enqueueProduceResponse(successResponse(4));
+
+            ProduceResult first = producer.send(record(0));
+            ProduceResult second = producer.send(record(0));
+            ProduceResult third = producer.send(record(0));
+
+            assertEquals(0, producer.produceRequests());
+            assertEquals(List.of(4L, 5L, 6L), List.of(first.offset(), second.offset(), third.offset()));
+            assertEquals(1, producer.produceRequests());
+            assertEquals(3, producer.lastRequest().records().size());
+        }
+    }
+
+    @Test
+    void batchSizeDispatchesWithoutReadingOffset() throws Exception {
+        try (MetadataOnlyProducer producer = new MetadataOnlyProducer(new ProducerConfig(2, 60_000))) {
+            producer.enqueueMetadata(metadata(
+                    List.of(new BrokerMetadata(0, "127.0.0.1", 19092)),
+                    List.of(new PartitionMetadata(0, 0))));
+            producer.enqueueProduceResponse(successResponse(10));
+
+            ProduceResult first = producer.send(record(0));
+            ProduceResult second = producer.send(record(0));
+
+            assertEquals(1, producer.produceRequests());
+            assertEquals(2, producer.lastRequest().records().size());
+            assertEquals(List.of(10L, 11L), List.of(first.offset(), second.offset()));
+        }
+    }
+
+    @Test
+    void lingerFlushesPendingBatch() throws Exception {
+        try (MetadataOnlyProducer producer = new MetadataOnlyProducer(new ProducerConfig(50, 15))) {
+            producer.enqueueMetadata(metadata(
+                    List.of(new BrokerMetadata(0, "127.0.0.1", 19092)),
+                    List.of(new PartitionMetadata(0, 0))));
+            producer.enqueueProduceResponse(successResponse(9));
+
+            ProduceResult result = producer.send(record(0));
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+            while (producer.produceRequests() == 0 && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+
+            assertEquals(1, producer.produceRequests());
+            assertEquals(9, result.offset());
+        }
+    }
+
+    @Test
+    void sendListFlushesPendingRecordsFirst() throws Exception {
+        try (MetadataOnlyProducer producer = new MetadataOnlyProducer(new ProducerConfig(50, 60_000))) {
+            producer.enqueueMetadata(metadata(
+                    List.of(new BrokerMetadata(0, "127.0.0.1", 19092)),
+                    List.of(new PartitionMetadata(0, 0))));
+            producer.enqueueProduceResponse(successResponse(1));
+            producer.enqueueProduceResponse(successResponse(10));
+
+            ProduceResult pending = producer.send(record(0));
+            List<ProduceResult> batched = producer.send(List.of(record(0), record(0)));
+
+            assertEquals(1L, pending.offset());
+            assertEquals(List.of(10L, 11L), batched.stream().map(ProduceResult::offset).toList());
+            assertEquals(2, producer.produceRequests());
+        }
+    }
+
+    @Test
+    void differentAcksFlushThePreviousBatch() throws Exception {
+        try (MetadataOnlyProducer producer = new MetadataOnlyProducer(new ProducerConfig(50, 60_000))) {
+            producer.enqueueMetadata(metadata(
+                    List.of(new BrokerMetadata(0, "127.0.0.1", 19092)),
+                    List.of(new PartitionMetadata(0, 0))));
+            producer.enqueueProduceResponse(successResponse(1));
+            producer.enqueueProduceResponse(successResponse(8));
+
+            ProduceResult leader = producer.send(record(0), ProduceAcks.LEADER);
+            ProduceResult all = producer.send(record(0), ProduceAcks.ALL);
+
+            assertEquals(1, producer.produceRequests());
+            assertEquals(1L, leader.offset());
+            assertEquals(8L, all.offset());
+            assertEquals(2, producer.produceRequests());
+        }
+    }
+
+    @Test
+    void closedProducerRejectsSend() throws Exception {
+        MetadataOnlyProducer producer = new MetadataOnlyProducer();
+        producer.close();
+        IllegalStateException ex = assertThrows(IllegalStateException.class, () -> producer.send(record(0)));
+        assertEquals("Producer is closed", ex.getMessage());
+    }
+
+    @Test
+    void pendingOffsetSurfacesProduceFailure() throws Exception {
+        try (MetadataOnlyProducer producer = new MetadataOnlyProducer(new ProducerConfig(50, 60_000))) {
+            producer.enqueueMetadata(metadata(
+                    List.of(new BrokerMetadata(0, "127.0.0.1", 19092)),
+                    List.of(new PartitionMetadata(0, 0))));
+            producer.enqueueProduceFailure(new MiniMqConnectionException("disconnected", null));
+
+            ProduceResult result = producer.send(record(0));
+            MiniMqConnectionException ex = assertThrows(
+                    MiniMqConnectionException.class,
+                    result::offset);
+            assertEquals("disconnected", ex.getMessage());
+        }
+    }
+
+    @Test
     void sendBatchRejectsEmptyAndNullRecords() throws Exception {
         try (MetadataOnlyProducer producer = new MetadataOnlyProducer()) {
             assertThrows(IllegalArgumentException.class, () -> producer.send(List.of()));
@@ -232,7 +348,11 @@ class ProducerRoutingValidationTest {
         private ProduceRequest lastRequest;
 
         private MetadataOnlyProducer() {
-            super("127.0.0.1:19092", "producer-routing-test");
+            this(new ProducerConfig(ProducerConfig.DEFAULT_BATCH_SIZE, 0L));
+        }
+
+        private MetadataOnlyProducer(ProducerConfig producerConfig) {
+            super("127.0.0.1:19092", "producer-routing-test", NetworkClient::new, producerConfig);
         }
 
         private void enqueueMetadata(MetadataResponse metadata) {
@@ -251,22 +371,14 @@ class ProducerRoutingValidationTest {
             return metadataFetches;
         }
 
-        private int produceRequests() {
-            return produceRequests;
-        }
-
-        private ProduceRequest lastRequest() {
-            return lastRequest;
-        }
-
         @Override
-        protected MetadataResponse fetchMetadata(String topicName) {
+        protected synchronized MetadataResponse fetchMetadata(String topicName) {
             metadataFetches++;
             return metadataResponses.remove();
         }
 
         @Override
-        protected MqDecoder.DecodedResponse sendProduce(
+        protected synchronized MqDecoder.DecodedResponse sendProduce(
                 BrokerMetadata leader,
                 ProduceRequest request) {
             produceRequests++;
@@ -275,6 +387,14 @@ class ProducerRoutingValidationTest {
                 throw produceFailures.remove();
             }
             return produceResponses.remove();
+        }
+
+        private synchronized int produceRequests() {
+            return produceRequests;
+        }
+
+        private synchronized ProduceRequest lastRequest() {
+            return lastRequest;
         }
     }
 }

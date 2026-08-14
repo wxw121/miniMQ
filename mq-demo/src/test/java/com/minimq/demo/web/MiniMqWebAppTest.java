@@ -1191,7 +1191,7 @@ class MiniMqWebAppTest {
         assertEquals("auto", normalized.normalizedMode());
         assertEquals("127.0.0.1:9092", normalized.bootstrapServers());
         assertEquals("web-orders", normalized.topic());
-        assertEquals(1, normalized.partitions());
+        assertEquals(4, normalized.partitions());
         assertEquals("web-key", normalized.key());
         assertEquals("hello-minimq", normalized.message());
         assertEquals("web-group", normalized.groupId());

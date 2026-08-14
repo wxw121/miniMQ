@@ -54,6 +54,7 @@ public final class MiniMqWebApp implements AutoCloseable {
     static final long MAX_CONSUME_WAIT_MS = 5_000L;
     static final int MIN_OPERATOR_LIMIT = 1;
     static final int MAX_OPERATOR_LIMIT = 1_000;
+    static final int DEFAULT_TOPIC_PARTITIONS = 4;
     private static final Duration MAX_TOPIC_DELETE_REQUEST_TIMEOUT = Duration.ofMinutes(10);
 
     private static final ObjectMapper JSON = new ObjectMapper(JsonFactory.builder()
@@ -444,7 +445,7 @@ public final class MiniMqWebApp implements AutoCloseable {
                 new CreateTopicAdminRequest(
                         adminCredential,
                         required(request.topic, "topic"),
-                        orDefault(request.partitions, 1),
+                        orDefault(request.partitions, DEFAULT_TOPIC_PARTITIONS),
                         orDefault(request.replicationFactor, 1)),
                 "create topic");
     }
@@ -1173,7 +1174,7 @@ public final class MiniMqWebApp implements AutoCloseable {
                 topic = "web-orders";
             }
             if (partitions <= 0) {
-                partitions = 1;
+                partitions = DEFAULT_TOPIC_PARTITIONS;
             }
             if (key == null) {
                 key = "web-key";
