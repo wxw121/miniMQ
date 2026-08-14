@@ -292,7 +292,14 @@ class EmbeddedBrokerChannelTest {
             assertNotNull(discovery.body());
             assertEquals(1, throttler.inFlight());
 
-            var tombstone = controller.getTopicTombstone("orders");
+            ClusterMetadata.TopicTombstone tombstone = null;
+            long tombstoneDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (tombstone == null && System.nanoTime() < tombstoneDeadline) {
+                tombstone = controller.getTopicTombstone("orders");
+                if (tombstone == null) {
+                    LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));
+                }
+            }
             var broker = controller.getBroker(0);
             assertNotNull(tombstone);
             assertNotNull(broker);
