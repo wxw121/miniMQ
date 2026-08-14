@@ -42,10 +42,10 @@ mvn -q -gs .mvn/settings.xml -s .mvn/settings.xml verify
 
 Expected baseline / 预期基线：the command should finish with zero failures and satisfy the
 JaCoCo 90% per-module line coverage gate. Use [testing.md](testing.md) and the
-[V4.0.0 closeout report](test-report-2026-07-22-v4.0.0-operator-readiness.md) as the source of truth
-for exact test counts and coverage; do not rely on older V2/V3 counts when reviewing the V4 working tree.
+[latest verify report](test-report-2026-08-14-batch-flush-defaults.md) as the source of truth
+for exact test counts and coverage; do not rely on older V2/V3/V4 counts when reviewing the current 5.0.0 tree.
 
-预期基线：命令应以 0 failures / 0 errors 结束，并满足 JaCoCo 每模块 90% 行覆盖率门槛。精确测试数与覆盖率以 [testing.md](testing.md) 和 [V4.0.0 收口报告](test-report-2026-07-22-v4.0.0-operator-readiness.md) 为准；审查 V4 工作树时不要沿用旧 V2/V3 数字。
+预期基线：命令应以 0 failures / 0 errors 结束，并满足 JaCoCo 每模块 90% 行覆盖率门槛。精确测试数与覆盖率以 [testing.md](testing.md) 和 [最新全量报告](test-report-2026-08-14-batch-flush-defaults.md) 为准；审查当前 5.0.0 工作树时不要沿用旧 V2/V3/V4 数字。
 
 ### 2.2 Slow Integration Tests / 集成测试较慢
 
@@ -135,6 +135,6 @@ When changing protocol, storage, metadata, CLI, or test behavior, update the cor
 | --- | --- |
 | Protocol fields / 协议字段 | [design.md](design.md), [testing.md](testing.md) |
 | Topic or routing / Topic 或路由 | [architecture.md](architecture.md), [design.md](design.md) |
-| Test count or coverage / 测试数或覆盖率 | [testing.md](testing.md), [test-report-2026-07-22-v4.0.0-operator-readiness.md](test-report-2026-07-22-v4.0.0-operator-readiness.md) |
+| Test count or coverage / 测试数或覆盖率 | [testing.md](testing.md), [test-report-2026-08-14-batch-flush-defaults.md](test-report-2026-08-14-batch-flush-defaults.md) |
 | CLI behavior / CLI 行为 | Root [README.md](../README.md), [docs/README.md](README.md) |
 | Roadmap items / 路线图事项 | [roadmap.md](roadmap.md) |

@@ -1,7 +1,7 @@
 # V4.0 Operator Readiness Implementation Plan
 
 Date: 2026-07-22
-Status: Implemented. The local full-reactor release gate passed on 2026-07-29; the real-etcd gate remains environment-blocked because the Docker daemon is unavailable. See `docs/test-report-2026-07-22-v4.0.0-operator-readiness.md`.
+Status: Historical V4 implementation checklist. The local full-reactor V4 gate passed on 2026-07-29; the real-etcd gate remains environment-blocked. Current 5.0.0 tree evidence is [test-report-2026-08-14-batch-flush-defaults.md](../test-report-2026-08-14-batch-flush-defaults.md). Do not treat this plan's API keys 0-37 / error codes 0-19 ceiling as live.
 
 ## Objective
 

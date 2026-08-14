@@ -211,9 +211,9 @@ flowchart LR
 
 ## 7. Deployment Shape / 部署形态
 
-MiniMQ 4.0 is launched with etcd endpoints on every Broker. Brokers campaign for one lease-bound Controller role; only the first node of a new cluster uses `--initialize-empty-cluster` (or `--initialize-cluster-from-local` for an explicit 2.x import).
+MiniMQ 5.0.0 is launched with etcd endpoints on every Broker. Brokers campaign for one lease-bound Controller role; only the first node of a new cluster uses `--initialize-empty-cluster` (or `--initialize-cluster-from-local` for an explicit 2.x import).
 
-MiniMQ 4.0 的每个 Broker 都配置 etcd endpoints，并竞选唯一的 lease-bound Controller。全新集群只有首节点使用 `--initialize-empty-cluster`；显式导入 2.x 本地元数据时改用 `--initialize-cluster-from-local`。
+MiniMQ 5.0.0 的每个 Broker 都配置 etcd endpoints，并竞选唯一的 lease-bound Controller。全新集群只有首节点使用 `--initialize-empty-cluster`；显式导入 2.x 本地元数据时改用 `--initialize-cluster-from-local`。
 
 | Broker / 节点 | Example role / 示例角色 | Example port / 示例端口 | Data dir / 数据目录 |
 | --- | --- | ---: | --- |

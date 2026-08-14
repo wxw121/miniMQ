@@ -9,9 +9,9 @@ MiniMQ aims to be small enough to read, but realistic enough to explain the esse
 
 MiniMQ 的目标是“小到能读完，大到能讲清消息队列核心机制”。项目有意避免把关键行为藏在框架里：协议序列化是手写的，存储格式是显式的，消费组分配逻辑也直接体现在代码里。因此它适合作为学习项目、设计讨论材料以及后续贡献者继续迭代的上下文载体。
 
-The design optimizes for clarity, determinism, and testability. V4 added etcd-fenced Controller HA, exact Leader epochs, automatic Broker failure detection, physical/visible replica watermarks, scoped operator APIs, crash-safe Topic deletion, explicit retry/DLQ links, and required delayed-message delivery. V5 adds producer `LEADER` / `ALL` acknowledgements, `min.insync.replicas`, a dedicated produce-ack executor, `LEAVE_GROUP`, per-member session timeouts, topic config changes, partition reassignment, and preferred-leader election. Transactions and exactly-once semantics remain future work.
+The design optimizes for clarity, determinism, and testability. V4 added etcd-fenced Controller HA, exact Leader epochs, automatic Broker failure detection, physical/visible replica watermarks, scoped operator APIs, crash-safe Topic deletion, explicit retry/DLQ links, and required delayed-message delivery. V5 adds producer `LEADER` / `ALL` acknowledgements, `min.insync.replicas`, a dedicated produce-ack executor, `LEAVE_GROUP`, per-member session timeouts, topic config changes, partition reassignment, and preferred-leader election. Client `send(record)` linger-batches by partition (`batchSize=50`, `lingerMs=5`). Storage flush defaults to `EVERY_N_APPENDS` with `N=100`. Transactions and exactly-once semantics remain future work.
 
-当前设计优先考虑清晰性、确定性和可测试性。V4 已增加 etcd fencing 的 Controller HA、精确 Leader epoch、Broker 自动故障检测、物理/可见副本水位、细粒度运维 API、崩溃安全 Topic 删除、显式 retry/DLQ 关联和必需的延迟投递。V5 增加 Producer `LEADER` / `ALL` 确认、`min.insync.replicas`、专用 produce-ack 线程池、`LEAVE_GROUP`、按成员 session timeout、Topic 配置变更、分区重分配和 preferred Leader 选举。事务与 exactly-once 语义仍属于后续工作。
+当前设计优先考虑清晰性、确定性和可测试性。V4 已增加 etcd fencing 的 Controller HA、精确 Leader epoch、Broker 自动故障检测、物理/可见副本水位、细粒度运维 API、崩溃安全 Topic 删除、显式 retry/DLQ 关联和必需的延迟投递。V5 增加 Producer `LEADER` / `ALL` 确认、`min.insync.replicas`、专用 produce-ack 线程池、`LEAVE_GROUP`、按成员 session timeout、Topic 配置变更、分区重分配和 preferred Leader 选举。客户端 `send(record)` 按分区 linger 攒批（`batchSize=50`，`lingerMs=5`）。存储刷盘默认 `EVERY_N_APPENDS`（`N=100`）。事务与 exactly-once 语义仍属于后续工作。
 
 ## 2. Protocol Design / 协议设计
 
@@ -449,17 +449,21 @@ Each member carries its own `sessionTimeoutMs` from `JOIN_GROUP` (default 10,000
 
 `Producer` and `Consumer` use the complete bootstrap list to discover the current Controller, and lazily create partition-Leader clients. They cache metadata for at most 30 seconds and invalidate it on routing errors before one bounded refresh/retry. Producer reliability-link metadata uses the same 30-second bound; a routing error invalidates both route and link state and resolves the link once more.
 
+`send(record)` enqueues by partition and returns immediately. Sequential sends that do not read `offset()` share one Produce per partition (`ProducerConfig` defaults `batchSize=50`, `lingerMs=5`) until `offset()`, `flush()`, linger expiry, or `close()`. `send().offset()` remains a one-record round-trip. `sendDelayed`, retry, and DLQ helpers stay immediate. `send(List)` flushes pending records for those partitions first. Default produce acks are `LEADER`; `ALL` waits for the current ISR on the broker.
+
 `Producer` 与 `Consumer` 使用完整 bootstrap 列表发现当前 Controller，并懒加载分区 Leader 客户端。元数据最多缓存 30 秒；路由错误会先使缓存失效，再执行一次有界刷新/重试。Producer 的 reliability-link 元数据同样最多缓存 30 秒；路由错误会同时失效路由和 link，并重新解析一次。
+
+`send(record)` 按分区入队并立即返回。连续发送且不读 `offset()` 时，同一分区共享一次 Produce（`ProducerConfig` 默认 `batchSize=50`、`lingerMs=5`），直到 `offset()`、`flush()`、linger 到期或 `close()`。`send().offset()` 仍是单条往返。`sendDelayed`、retry 与 DLQ helper 仍立即发出。`send(List)` 会先刷出这些分区上的 pending。默认 acks 为 `LEADER`；`ALL` 在 Broker 上等待当前 ISR。
 
 V1.3 adds the client-resilience boundary for stale metadata. `NetworkClient` supports configurable synchronous request timeout and converts common failures into typed client exceptions. `Producer` and `Consumer` cache metadata per topic, invalidate the cache when a data-plane request receives `NOT_LEADER` or `BROKER_FENCED`, or cached metadata can no longer route the topic/partition, refresh metadata once, and retry once. The retry budget is fixed at initial request plus one refresh retry. If the second attempt still fails, the surfaced `MiniMqServerException` includes operation context such as API, topic, partition, routed Broker, and attempt count.
 
-V1.3 补齐了过期元数据相关的客户端韧性边界。`NetworkClient` 支持同步请求超时配置，并把常见失败转换为类型化客户端异常。`Producer` 和 `Consumer` 按 Topic 缓存元数据；当数据面请求遇到 `NOT_LEADER`，或缓存元数据已经无法路由 topic/partition 时，会失效缓存、刷新元数据并重试一次。重试预算固定为初始请求 + 一次刷新重试；如果第二次仍失败，抛出的 `MiniMqServerException` 会包含 API、topic、partition、attempt 等用户可见上下文。
+V1.3 补齐了过期元数据相关的客户端韧性边界。`NetworkClient` 支持同步请求超时配置，并把常见失败转换为类型化客户端异常。`Producer` 和 `Consumer` 按 Topic 缓存元数据；当数据面请求遇到 `NOT_LEADER` 或 `BROKER_FENCED`，或缓存元数据已经无法路由 topic/partition 时，会失效缓存、刷新元数据并重试一次。重试预算固定为初始请求 + 一次刷新重试；如果第二次仍失败，抛出的 `MiniMqServerException` 会包含 API、topic、partition、attempt 等用户可见上下文。
 
 ### 8.1 Web Runtime Reuse / Web Runtime 复用
 
-The Web demo backend is intentionally closer to a real application than to a one-shot CLI command. It keeps a small runtime cache keyed by `bootstrapServers + topic + groupId`. Each real-flow runtime owns a controller-aware admin client, one `Producer`, one `Consumer`, topic-readiness state, and consumer-subscription state. Operator endpoints use the same controller-aware bootstrap behavior for controller operations and require one explicit Broker for Broker-local operations. Credentials stay on the server, and error text is redacted and capped at 256 characters. The cache uses an access-ordered LRU policy and keeps at most 4 active runtimes.
+The Web demo backend is intentionally closer to a real application than to a one-shot CLI command. It keeps a small runtime cache keyed by `bootstrapServers + topic + groupId`. Each real-flow runtime owns a controller-aware admin client, one `Producer`, one `Consumer`, topic-readiness state, and consumer-subscription state. Operator endpoints use the same controller-aware bootstrap behavior for controller operations and require one explicit Broker for Broker-local operations. Credentials stay on the server, and error text is redacted and capped at 256 characters. The cache uses an access-ordered LRU policy and keeps at most 4 active runtimes. Web / `FlowRequest` default topic partitions are 4; CLI `create-topic --partitions` still defaults to 3.
 
-Web 演示后端更接近真实应用，而不是一次性 CLI 命令。它按 `bootstrapServers + topic + groupId` 维护一个小型 runtime 缓存。每个真实流程 runtime 拥有一个 controller-aware 管理客户端、一个 `Producer`、一个 `Consumer`、Topic 就绪状态和 Consumer 订阅状态。Controller 操作使用相同的 bootstrap 自动发现，Broker-local 操作要求单个明确 Broker。凭据只保留在服务端，错误文本经过脱敏且最多 256 字符。缓存采用按访问顺序排列的 LRU 策略，最多保留 4 个活跃 runtime。
+Web 演示后端更接近真实应用，而不是一次性 CLI 命令。它按 `bootstrapServers + topic + groupId` 维护一个小型 runtime 缓存。每个真实流程 runtime 拥有一个 controller-aware 管理客户端、一个 `Producer`、一个 `Consumer`、Topic 就绪状态和 Consumer 订阅状态。Controller 操作使用相同的 bootstrap 自动发现，Broker-local 操作要求单个明确 Broker。凭据只保留在服务端，错误文本经过脱敏且最多 256 字符。缓存采用按访问顺序排列的 LRU 策略，最多保留 4 个活跃 runtime。Web / `FlowRequest` 默认分区数为 4；CLI `create-topic --partitions` 默认仍是 3。
 
 Why this is needed / 为什么需要这样设计：
 
@@ -651,6 +655,12 @@ Delayed records are required V4 behavior. WAL type 8 stores the ordinary key/val
 The local scripts own one run directory through `.minimq-run-directory`, record PID plus process start time, bound readiness and shutdown waits, and preserve unowned or surviving processes. Recursive cleanup is refused without the valid ownership marker. The failover demo waits until all three replicas are in ISR before stopping the initial Leader, then captures status/audit evidence and always performs owned-process cleanup.
 
 本地脚本通过 `.minimq-run-directory` 声明运行目录所有权，记录 PID 与进程启动时间，对 readiness/shutdown 设置上限，并保留非自身进程或未退出进程。没有有效 ownership marker 时拒绝递归清理。Failover demo 会等 3 个副本全部进入 ISR 后才停止初始 Leader，随后采集状态/审计证据，并始终清理自己拥有的进程。
+
+### 12.1 V5 Produce Acks, Groups, And Defaults / V5 生产确认、消费组与默认值
+
+V5 keeps frame version 1 and appends API keys 38-41 plus error codes `NOT_ENOUGH_REPLICAS=20` and `REQUEST_TIMED_OUT=21`. Produce trailing `acks` / `ackTimeoutMs` default to `LEADER` / 5000 ms. `ALL` waits on a dedicated executor until the current ISR high watermark meets the post-append Leader LEO and `isr.size() >= min.insync.replicas`. Members leave with `LEAVE_GROUP` and expire on per-member `sessionTimeoutMs`. Later 5.0.0 defaults (not new wire keys) add client linger auto-batch and `FlushPolicy.everyNAppends(100)`. Full contract: [v5-producer-acks-design.md](designs/v5-producer-acks-design.md).
+
+V5 保持 frame version 1，追加 API 38-41 以及错误码 `NOT_ENOUGH_REPLICAS=20`、`REQUEST_TIMED_OUT=21`。Produce 尾字段 `acks` / `ackTimeoutMs` 默认 `LEADER` / 5000 ms。`ALL` 在专用线程池上等待当前 ISR 高水位达到追加后的 Leader LEO，且 `isr.size() >= min.insync.replicas`。成员通过 `LEAVE_GROUP` 离开，并按各自的 `sessionTimeoutMs` 过期。之后的 5.0.0 默认值（不是新协议 key）增加客户端 linger 攒批和 `FlushPolicy.everyNAppends(100)`。完整契约见 [v5-producer-acks-design.md](designs/v5-producer-acks-design.md)。
 
 ## 13. Design Tradeoffs / 设计取舍
 

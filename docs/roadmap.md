@@ -1,8 +1,8 @@
 ﻿# MiniMQ Roadmap
 
-This roadmap summarizes the completed baseline, the current V4 Operator Readiness implementation, and deferred future work.
+This roadmap summarizes the completed V4 Operator Readiness baseline, the current V5.0.0 working tree, and deferred future work.
 
-本路线图说明当前完成状态、V4 Operator Readiness 实现快照，以及后续延后事项。
+本路线图说明已完成的 V4 Operator Readiness 基线、当前 V5.0.0 工作树，以及后续延后事项。
 
 ## 1. Current State
 
