@@ -142,6 +142,8 @@ public class LogManager implements AutoCloseable {
         try {
             PartitionLog log = getOrCreate(topic, partitionId);
             long offset;
+            boolean walFlushNeeded;
+            long appends;
             synchronized (log) {
                 ensureActivePartition(topic, partitionId, log);
                 offset = log.highWatermark();
@@ -150,9 +152,10 @@ public class LogManager implements AutoCloseable {
                 log.appendAt(offset, key, value);
                 recordScheduledDelivery(topic, partitionId, offset, persistedDeliverAtEpochMs, now);
                 reservationConsumed = reserved;
+                appends = successfulAppends.incrementAndGet();
+                walFlushNeeded = flushPartitionIfNeeded(log, appends);
             }
-            long appends = successfulAppends.incrementAndGet();
-            flushAfterAppendIfNeeded(log, appends);
+            flushWalIfNeeded(walFlushNeeded);
             checkpointAfterAppendIfNeeded(appends);
             maintenanceAfterAppendIfNeeded(appends);
             return offset;
@@ -183,6 +186,8 @@ public class LogManager implements AutoCloseable {
         try {
             PartitionLog log = getOrCreate(topic, partitionId);
             long baseOffset;
+            boolean walFlushNeeded;
+            long appends;
             synchronized (log) {
                 ensureActivePartition(topic, partitionId, log);
                 baseOffset = log.highWatermark();
@@ -206,9 +211,10 @@ public class LogManager implements AutoCloseable {
                     }
                     successfulAppends.incrementAndGet();
                 }
+                appends = successfulAppends.get();
+                walFlushNeeded = flushPartitionIfNeeded(log, appends);
             }
-            long appends = successfulAppends.get();
-            flushAfterAppendIfNeeded(log, appends);
+            flushWalIfNeeded(walFlushNeeded);
             checkpointAfterAppendIfNeeded(appends);
             maintenanceAfterAppendIfNeeded(appends);
             return baseOffset;
@@ -244,6 +250,8 @@ public class LogManager implements AutoCloseable {
         boolean reservationConsumed = false;
         try {
             PartitionLog log = getOrCreate(topic, partitionId);
+            boolean walFlushNeeded;
+            long appends;
             synchronized (log) {
                 ensureActivePartition(topic, partitionId, log);
                 writeAheadLog.append(WalRecord.dataAppend(
@@ -251,9 +259,10 @@ public class LogManager implements AutoCloseable {
                 log.appendAt(offset, key, value);
                 recordScheduledDelivery(topic, partitionId, offset, persistedDeliverAtEpochMs, now);
                 reservationConsumed = reserved;
+                appends = successfulAppends.incrementAndGet();
+                walFlushNeeded = flushPartitionIfNeeded(log, appends);
             }
-            long appends = successfulAppends.incrementAndGet();
-            flushAfterAppendIfNeeded(log, appends);
+            flushWalIfNeeded(walFlushNeeded);
             checkpointAfterAppendIfNeeded(appends);
             maintenanceAfterAppendIfNeeded(appends);
         } catch (RuntimeException | Error failure) {
@@ -706,12 +715,21 @@ public class LogManager implements AutoCloseable {
         cleanupMigratedLegacyFiles();
     }
 
-    private void flushAfterAppendIfNeeded(PartitionLog log, long appends) {
-        if (config.flushPolicy().shouldFlush(appends, clock.millis(), lastFlushEpochMs)) {
-            log.flush();
-            writeAheadLog.flush();
-            lastFlushEpochMs = clock.millis();
+    /** Caller must hold {@code log}. Returns whether the WAL still needs a matching flush. */
+    private boolean flushPartitionIfNeeded(PartitionLog log, long appends) {
+        if (!config.flushPolicy().shouldFlush(appends, clock.millis(), lastFlushEpochMs)) {
+            return false;
         }
+        log.flush();
+        return true;
+    }
+
+    private void flushWalIfNeeded(boolean needed) {
+        if (!needed) {
+            return;
+        }
+        writeAheadLog.flush();
+        lastFlushEpochMs = clock.millis();
     }
 
     private void recordScheduledDelivery(

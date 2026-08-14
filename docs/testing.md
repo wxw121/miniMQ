@@ -138,7 +138,7 @@ The [2026-08-14 review-fix V5 report](test-report-2026-08-14-v5.0.0-review-fixes
 | `mq-storage` | `CheckpointStoreTest` | Unit / 单元测试 | Recovery checkpoint safe write, load, corrupt-checkpoint fallback, and temp-file cleanup. / 恢复 checkpoint 安全写入、加载、损坏 checkpoint 回退与临时文件清理。 |
 | `mq-storage` | `LogManagerRecoveryTest` | Unit / 单元测试 | WAL replay without checkpoint, replay when partition logs fall behind checkpoint, and duplicate replay idempotence. / 无 checkpoint WAL 重放、分区日志落后 checkpoint 时重放，以及重复重放幂等。 |
 | `mq-storage` | `FlushPolicyTest` | Unit / 单元测试 | Flush policy decisions and invalid storage config. / 刷盘策略判断与非法存储配置。 |
-| `mq-storage` | `LogManagerFlushPolicyTest` | Unit / 单元测试 | Append-count checkpoint cadence, explicit checkpoint refresh, concurrent append offsets, and close behavior. / 按 append 次数触发 checkpoint、显式 checkpoint 刷新、并发 append offset 与关闭行为。 |
+| `mq-storage` | `LogManagerFlushPolicyTest` | Unit / 单元测试 | Append-count checkpoint cadence, explicit checkpoint refresh, concurrent same-partition and distinct-partition appends, `appendBatch`, and close behavior. / 按 append 次数触发 checkpoint、显式 checkpoint 刷新、同分区与跨分区并发 append、`appendBatch` 与关闭行为。 |
 | `mq-storage` | `SegmentedLogConfigTest` | Unit / 单元测试 | Segment size and sparse-index interval validation. / Segment 大小与稀疏索引间隔校验。 |
 | `mq-storage` | `PartitionLogRecordCodecTest` | Unit / 单元测试 | Shared partition-record framing, metadata-only scanning, invalid offsets/lengths, incomplete payloads, and `FileRegionSlice` validation. / 共享分区记录帧格式、仅元数据扫描、非法 offset/长度、不完整 payload 与 `FileRegionSlice` 校验。 |
 | `mq-storage` | `SparseOffsetIndexTest` | Unit / 单元测试 | Sparse index lookup, reload, replacement, invalid entries, closed behavior, and corrupt index rejection. / 稀疏索引查找、重载、替换、非法条目、关闭行为与损坏索引拒绝。 |
@@ -167,14 +167,16 @@ The [2026-08-14 review-fix V5 report](test-report-2026-08-14-v5.0.0-review-fixes
 | `mq-broker` | `GroupCoordinatorTest` | Unit / 单元测试 | Join/sync assignment, heartbeat, offset commit/fetch, and 10s member timeout eviction. / 加组、同步分配、心跳、offset 提交/拉取，以及 10 秒成员超时踢人。 |
 | `mq-broker` | `MaintenanceAdminServiceTest` | Unit / 单元测试 | Constant-time token authorization, single-run admission, dedicated executor threading, rejection recovery, and idempotent shutdown. / 常量时间令牌鉴权、单次执行准入、专用执行器线程、拒绝恢复与幂等关闭。 |
 | `mq-broker` | `EmbeddedBrokerChannelTest` | Component / 组件测试 | Authorized async maintenance report/run routing, error mapping, correlation IDs, metrics, and enabled segment actions through Netty `EmbeddedChannel`. / 通过 Netty `EmbeddedChannel` 验证鉴权后的异步维护报告/执行路由、错误映射、关联 ID、指标与已启用的 segment 动作。 |
-| `mq-broker` | `FetchResponseWriterTest` | Component / 组件测试 | AUTO/HEAP selection, DefaultFileRegion outbound messages, unsupported fallbacks, and transfer-timeout lease release. / AUTO/HEAP 选择、DefaultFileRegion 出站消息、不支持回退，以及传输超时释放读租约。 |
+| `mq-broker` | `FetchResponseWriterTest` | Component / 组件测试 | AUTO/HEAP selection, DefaultFileRegion outbound messages, sendfile metrics at queue time, unsupported fallbacks, and transfer-timeout lease release. / AUTO/HEAP 选择、DefaultFileRegion 出站消息、sendfile 入队即计数、不支持回退，以及传输超时释放读租约。 |
 | `mq-broker` | `ProduceFetchIntegrationTest` | Integration / 集成测试 | Real broker produce/fetch and not-leader behavior. / 真实 Broker 生产、拉取与非 leader 行为。 |
 | `mq-broker` | `ZeroCopyFetchIntegrationTest` | Integration / 集成测试 | Real loopback TCP AUTO sendfile FETCH, HEAP equivalence, and transfer metrics. / 真实回环 TCP AUTO sendfile FETCH、HEAP 等价与传输指标。 |
 | `mq-broker` | `TcpSmokeTest` | Smoke / 冒烟测试 | Basic TCP request/response without noisy stdout. / 无冗余 stdout 的基础 TCP 请求/响应。 |
 | `mq-broker` | `BrokerShutdownTest` | Integration / 集成测试 | Broker stop/start resource cleanup on the same port. / Broker 在同一端口停止、重启与资源释放。 |
 | `mq-client` | `ClientValidationTest` | Unit / 单元测试 | Bootstrap validation and unconnected close. / bootstrap 校验与未连接关闭。 |
 | `mq-client` | `NetworkClientRetryTest` | Unit / 单元测试 | Connect retry attempt budget and fixed backoff validation. / 连接重试次数预算与固定退避参数校验。 |
-| `mq-client` | `ProducerIntegrationTest` | Integration / 集成测试 | Producer offsets increase across sends. / Producer 多次发送后 offset 递增。 |
+| `mq-client` | `SharedIoEventLoopsTest` | Unit / 单元测试 | Process-wide Netty event-loop refcount acquire/release. / 进程级 Netty event loop 引用计数申请与释放。 |
+| `mq-client` | `ProducerIntegrationTest` | Integration / 集成测试 | Producer offsets increase across sends, including concurrent partition batches. / Producer 多次发送后 offset 递增，含跨分区并发批量。 |
+| `mq-client` | `ProducerRoutingValidationTest` | Unit / 单元测试 | Partition routing and `send(List)` grouping into one Produce request per partition. / 分区路由与 `send(List)` 按分区聚合为一次 Produce。 |
 | `mq-client` | `ConsumerIntegrationTest` | Integration / 集成测试 | Consumer poll and commit behavior. / Consumer poll 与提交行为。 |
 | `mq-demo` | `DemoCliTest` | Component/Integration / 组件/集成测试 | Single-broker/token validation, unauthorized responses, maintenance/runtime metrics CLI output, and real TCP enabled retention/compaction output alongside create/produce/consume. / 单 Broker/令牌校验、未授权响应、维护/运行时指标 CLI 输出，以及真实 TCP 下启用 retention/compaction 的输出和创建/生产/消费链路。 |
 | `mq-demo` | `FetchBenchmarkTest` | Unit / 单元测试 | Benchmark argument parsing, network transport selector parsing, output rendering, and latency percentile summarization. / 基准参数解析、网络传输选择解析、输出渲染与延迟百分位汇总。 |

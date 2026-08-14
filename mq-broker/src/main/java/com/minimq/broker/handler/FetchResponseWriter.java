@@ -172,6 +172,10 @@ final class FetchResponseWriter {
                 lastFuture = flushFuture;
             }
 
+            // Count the sendfile path when the write is queued so FETCH callers that
+            // already observed the response do not race the completion listener.
+            metrics.recordSendfile(plan.recordBytes());
+
             ScheduledFuture<?> timeout = ctx.executor().schedule(() -> {
                 if (!cleanup.finished()) {
                     metrics.recordTimeout();
@@ -183,7 +187,6 @@ final class FetchResponseWriter {
             lastFuture.addListener(future -> {
                 timeout.cancel(false);
                 if (future.isSuccess()) {
-                    metrics.recordSendfile(plan.recordBytes());
                     fetchBytesRecorder.accept(payloadBytes);
                 } else {
                     metrics.recordFailure();

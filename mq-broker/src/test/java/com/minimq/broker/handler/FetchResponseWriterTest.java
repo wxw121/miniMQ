@@ -353,6 +353,42 @@ class FetchResponseWriterTest {
         }
     }
     @Test
+    void sendfileMetricsRecordedWhenTransferIsQueued(@TempDir Path dir) throws Exception {
+        try (SegmentedPartitionLog log = new SegmentedPartitionLog(dir, new SegmentedLogConfig(1_024, 1))) {
+            log.append("k".getBytes(), "value".getBytes());
+            FetchTransferMetrics metrics = new FetchTransferMetrics();
+            FetchResponseWriter writer = new FetchResponseWriter(
+                    FetchTransferMode.AUTO, 30_000, metrics, channel -> true);
+
+            AtomicReference<ChannelPromise> heldPromise = new AtomicReference<>();
+            EmbeddedChannel channel = new EmbeddedChannel(new ChannelOutboundHandlerAdapter() {
+                @Override
+                public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
+                    if (msg instanceof DefaultFileRegion) {
+                        heldPromise.set(promise);
+                        return;
+                    }
+                    ctx.write(msg, promise);
+                }
+            });
+            ChannelHandlerContext ctx = captureContext(channel);
+            try {
+                assertTrue(writer.write(ctx, new MqResponseHeader(1, ErrorCode.NONE),
+                        new FetchRequest("orders", 0, 0, 1_024), log, log.highWatermark()));
+                assertEquals(1, metrics.snapshot().sendfileResponses());
+                assertTrue(metrics.snapshot().sendfileBytes() > 0);
+                assertEquals(0, metrics.snapshot().heapResponses());
+            } finally {
+                ChannelPromise promise = heldPromise.get();
+                if (promise != null && !promise.isDone()) {
+                    promise.tryFailure(new RuntimeException("cancelled"));
+                }
+                channel.finishAndReleaseAll();
+            }
+        }
+    }
+
+    @Test
     void timeoutReleasesReaderLeaseAndClosesChannel(@TempDir Path dir) throws Exception {
         try (SegmentedPartitionLog log = new SegmentedPartitionLog(dir, new SegmentedLogConfig(1_024, 1))) {
             log.append("k".getBytes(), "value".getBytes());

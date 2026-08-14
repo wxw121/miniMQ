@@ -60,9 +60,9 @@ class ZeroCopyFetchIntegrationTest {
             }
 
             FetchTransferMetricsSnapshot metrics = broker.fetchTransferMetrics();
-            assertEquals(1, metrics.sendfileResponses());
-            assertTrue(metrics.sendfileBytes() > 0);
-            assertEquals(0, metrics.heapResponses());
+            assertEquals(1, metrics.sendfileResponses(), metrics.toString());
+            assertTrue(metrics.sendfileBytes() > 0, metrics.toString());
+            assertEquals(0, metrics.heapResponses(), metrics.toString());
         }
     }
 
@@ -125,8 +125,8 @@ class ZeroCopyFetchIntegrationTest {
             assertEquals(0L, fetch.records().get(0).offset());
 
             FetchTransferMetricsSnapshot metrics = broker.fetchTransferMetrics();
-            assertEquals(1, metrics.sendfileResponses());
-            assertTrue(metrics.sendfileBytes() > 0);
+            assertEquals(1, metrics.sendfileResponses(), metrics.toString());
+            assertTrue(metrics.sendfileBytes() > 0, metrics.toString());
         }
     }
 
@@ -149,11 +149,11 @@ class ZeroCopyFetchIntegrationTest {
             assertEquals(ErrorCode.NONE, response.header().errorCode());
             FetchTransferMetricsSnapshot metrics = broker.fetchTransferMetrics();
             if (mode == FetchTransferMode.AUTO) {
-                assertEquals(1, metrics.sendfileResponses());
-                assertEquals(0, metrics.heapResponses());
+                assertEquals(1, metrics.sendfileResponses(), metrics.toString());
+                assertEquals(0, metrics.heapResponses(), metrics.toString());
             } else {
-                assertEquals(0, metrics.sendfileResponses());
-                assertEquals(1, metrics.heapModeFallbacks());
+                assertEquals(0, metrics.sendfileResponses(), metrics.toString());
+                assertEquals(1, metrics.heapModeFallbacks(), metrics.toString());
             }
             return (FetchResponse) response.body();
         }
