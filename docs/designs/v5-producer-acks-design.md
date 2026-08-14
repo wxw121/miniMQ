@@ -1,7 +1,7 @@
 # V5.0 Producer Acknowledgements Design
 
 Date: 2026-08-14
-Status: In progress. This is the decision-complete V5 contract for produce acknowledgements.
+Status: Implemented in source. Full `mvn clean verify` is recorded in [test-report-2026-08-14-v5.0.0-producer-acks.md](../test-report-2026-08-14-v5.0.0-producer-acks.md). Dedicated executor for `ALL` waits is still a follow-up.
 
 ## Goal
 

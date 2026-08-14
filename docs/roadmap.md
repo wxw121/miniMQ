@@ -92,8 +92,8 @@ Recommended later topics:
 
 ## 5. Recommended Next Tasks
 
-1. Finish V5 produce-ack verification (`mvn clean verify`) and record a dated 5.0.0 test report.
-2. Move `acks=ALL` waits off the Netty event loop onto a bounded dedicated executor.
+1. Move `acks=ALL` waits off the Netty event loop onto a bounded dedicated executor.
+2. Keep resource use bounded and close all brokers, clients, event loops, executors, and Docker resources started by tests or demos.
 3. Keep resource use bounded and close all brokers, clients, event loops, executors, and Docker resources started by tests or demos.
 4. Record unresolved Docker/real-etcd blockers after five bounded attempts instead of repeatedly retrying the same blocked path.
 5. Keep README.md, docs/README.md, docs/design.md, docs/architecture.md, docs/testing.md, and test reports synchronized from source and tests.

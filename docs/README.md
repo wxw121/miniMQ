@@ -40,7 +40,7 @@ The current V4 layer is implemented in source: operator APIs expose status, grou
 | 7j | [V3.3-V3.5 Production Hardening Test Report](test-report-2026-07-21-v3.3-v3.5-production-hardening.md) | See runtime metrics export, resilience matrix, benchmark transport selector, and bounded verification evidence. |
 | 7k | [V5.0 Producer Acknowledgements Design](designs/v5-producer-acks-design.md) | Understand `LEADER` / `ALL` produce acks, trailing wire fields, and ISR wait rules. |
 | 7l | [V4.0.0 Operator Readiness Test Report](test-report-2026-07-22-v4.0.0-operator-readiness.md) | See the 2026-07-29 full-reactor test counts, coverage, review regressions, and Docker-gated etcd status. |
-| 7m | [V4.0.0 Full Verification Test Report](test-report-2026-08-13-v4.0.0-full-verification.md) | See the 2026-08-13 full `mvn clean verify`, JaCoCo gate, review-fix regressions, and Web operator console browser results. |
+| 7n | [V5.0 Producer Acknowledgements Test Report](test-report-2026-08-14-v5.0.0-producer-acks.md) | See the 2026-08-14 full `mvn clean verify` for `LEADER` / `ALL` acks (767 tests, line ≥ 90%). |
 | 8 | [Troubleshooting Guide](troubleshooting.md) / [故障排查指南](troubleshooting.md) | Resolve common Maven, port, Windows, test report, and GitHub/SSH issues. / 排查 Maven、端口、Windows、测试报告、GitHub/SSH 常见问题。 |
 
 ## 3. Current Snapshot / 当前快照
@@ -58,7 +58,7 @@ The current V4 layer is implemented in source: operator APIs expose status, grou
 | Coverage / 覆盖率 | JaCoCo |
 | Latest milestone tag | Not cut for the current working tree; Maven project version is 5.0.0 |
 | Latest release | V5.0.0 in progress: producer `LEADER` / `ALL` acknowledgements on top of the completed V4 operator-readiness tree |
-| Latest evidence | [V4.0.0 full verification](test-report-2026-08-13-v4.0.0-full-verification.md): 718 tests, 0 failures/errors, 6 Linux-skipped Windows cases, 91.32% overall line coverage, every module above 90%, and a passing Web operator console browser run. Docker/etcd ITs remain unrun. |
+| Latest evidence | [V5.0.0 producer acks](test-report-2026-08-14-v5.0.0-producer-acks.md): 767 tests, 0 failures/errors, 6 Linux-skipped Windows cases, 91.28% overall line coverage, every module above 90%. Docker/etcd ITs remain unrun. |
 
 ## 4. Module Map / 模块地图
 

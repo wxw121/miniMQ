@@ -1,7 +1,7 @@
 # V5.0 Producer Acknowledgements Implementation Plan
 
 Date: 2026-08-14
-Status: In progress.
+Status: Implemented. Verification recorded. Dedicated executor for `ALL` waits remains a follow-up.
 
 ## Objective
 
