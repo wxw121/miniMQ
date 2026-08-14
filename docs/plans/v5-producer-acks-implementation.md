@@ -1,7 +1,7 @@
 # V5.0 Producer Acknowledgements And Group Hardening Implementation Plan
 
 Date: 2026-08-14
-Status: Implemented and verified. Latest evidence: [test-report-2026-08-14-v5.0.0-review-fixes.md](../test-report-2026-08-14-v5.0.0-review-fixes.md) (792 tests, line ≥ 90%). The previous reassign + preferred-leader pass remains in [test-report-2026-08-14-v5.0.0-reassign-preferred.md](../test-report-2026-08-14-v5.0.0-reassign-preferred.md). The acks + min.insync + leave pass remains in [test-report-2026-08-14-v5.0.0-acks-minisr-leave.md](../test-report-2026-08-14-v5.0.0-acks-minisr-leave.md). The acks-only slice remains in [test-report-2026-08-14-v5.0.0-producer-acks.md](../test-report-2026-08-14-v5.0.0-producer-acks.md).
+Status: Implemented and verified. V5 contract closeout: [test-report-2026-08-14-v5.0.0-review-fixes.md](../test-report-2026-08-14-v5.0.0-review-fixes.md) (792 tests, line ≥ 90%). Tree-wide latest: [test-report-2026-08-14-batch-flush-defaults.md](../test-report-2026-08-14-batch-flush-defaults.md) (823 tests). The produce-concurrency pass remains in [test-report-2026-08-14-produce-concurrency.md](../test-report-2026-08-14-produce-concurrency.md). The previous reassign + preferred-leader pass remains in [test-report-2026-08-14-v5.0.0-reassign-preferred.md](../test-report-2026-08-14-v5.0.0-reassign-preferred.md). The acks + min.insync + leave pass remains in [test-report-2026-08-14-v5.0.0-acks-minisr-leave.md](../test-report-2026-08-14-v5.0.0-acks-minisr-leave.md). The acks-only slice remains in [test-report-2026-08-14-v5.0.0-producer-acks.md](../test-report-2026-08-14-v5.0.0-producer-acks.md).
 
 ## Objective
 

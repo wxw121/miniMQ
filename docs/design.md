@@ -174,9 +174,9 @@ V2.1.0 通过加载 `catalog.json` 恢复分段分区，按 offset 顺序打开�
 
 ### 4.2 Write Safety / 写入安全
 
-The implementation uses a `writeFully(ByteBuffer)` loop because `FileChannel.write` does not guarantee that the whole buffer is written in one call. After each append, `channel.force(false)` flushes file contents to storage.
+The implementation uses a `writeFully(ByteBuffer)` loop because `FileChannel.write` does not guarantee that the whole buffer is written in one call. Durability flush of WAL and partition logs follows `FlushPolicy` (default `EVERY_N_APPENDS` with `N=100`); see §4.3. Close and explicit checkpoint still force a full flush.
 
-实现中使用 `writeFully(ByteBuffer)` 循环写满，因为 `FileChannel.write` 不保证一次写完整个 buffer。每次 append 后调用 `channel.force(false)` 刷盘。
+实现中使用 `writeFully(ByteBuffer)` 循环写满，因为 `FileChannel.write` 不保证一次写完整个 buffer。WAL 与分区日志的持久化刷盘遵循 `FlushPolicy`（默认 `EVERY_N_APPENDS`，`N=100`），见 §4.3。关闭与显式 checkpoint 仍会完整刷盘。
 
 ### 4.3 V2.0 WAL, Checkpoint, And Flush Policy / V2.0 WAL、Checkpoint 与刷盘策略
 
@@ -501,6 +501,8 @@ MiniMQ 在响应头里使用 `ErrorCode`：
 | 17 | `FORBIDDEN` | Credential is authenticated but lacks the required scope. / 凭据有效但缺少所需 scope。 |
 | 18 | `UNKNOWN_BROKER` | Referenced Broker does not exist. / 引用的 Broker 不存在。 |
 | 19 | `STALE_TOMBSTONE` | Topic-deletion acknowledgement uses a stale version. / Topic 删除确认使用过期版本。 |
+| 20 | `NOT_ENOUGH_REPLICAS` | ISR is empty or below `min.insync.replicas` for `acks=ALL`. / `acks=ALL` 时 ISR 为空或低于 `min.insync.replicas`。 |
+| 21 | `REQUEST_TIMED_OUT` | Produce ack wait or another bounded wait expired. / 生产确认等待或其他有界等待超时。 |
 
 Malformed request bodies are handled inside `MqRequestHandler` so that, when the request header is valid, the broker can return `INVALID_REQUEST` with the original `correlationId`.
 
@@ -656,8 +658,7 @@ The local scripts own one run directory through `.minimq-run-directory`, record 
 | --- | --- | --- |
 | Custom binary protocol / 自定义二进制协议 | Easy to inspect low-level messaging behavior. / 便于观察底层消息行为。 | More validation and compatibility work than JSON/HTTP. / 比 JSON/HTTP 需要更多校验和兼容性工作。 |
 | Segmented local log per partition / 每分区本地分段日志 | Supports sparse indexing, faster recovery boundaries, whole-segment retention, sealed-segment compaction, dry-run reports, and maintenance metrics. / 支持稀疏索引、更清晰的恢复边界、整段保留删除、sealed segment 压缩、dry-run 报告和维护指标。 | External operator APIs still need to render maintenance reports and metrics. / 仍需要外部运维 API 输出维护报告与指标。 |
-| JSON metadata store / JSON 元数据存储 | Human-readable and easy for demos. / 人类可读，适合演示。 | Not a scalable metadata log. / 不是可扩展的元数据日志。 |
-| etcd-fenced Controller role / etcd fencing 的 Controller 角色 | Automatic takeover with epoch and revision fencing. / 使用 epoch 与 revision fencing 自动接管。 | Production Brokers require reachable etcd; SDK clients do not. / 生产 Broker 依赖可达 etcd，但 SDK 不依赖。 |
+| etcd-fenced Controller metadata / etcd fencing 的 Controller 元数据 | Automatic takeover with epoch and revision fencing; local JSON is only the explicit 2.x import source. / 使用 epoch 与 revision fencing 自动接管；本地 JSON 仅作显式 2.x 导入源。 | Production Brokers require reachable etcd; SDK clients do not. / 生产 Broker 依赖可达 etcd，但 SDK 不依赖。 |
 | Synchronous send with client-side linger batches / 同步可读 offset，客户端按分区 linger 攒批 | Sequential `send(record)` calls that do not immediately read `offset()` share one Produce per partition (`batchSize=50`, `lingerMs=5`). / 连续 `send(record)` 且不立刻读 `offset()` 时，同一分区共享一次 Produce（`batchSize=50`，`lingerMs=5`）。 | `send().offset()` still forces a one-record round-trip. / `send().offset()` 仍会变成单条往返。 |
 | Sendfile FETCH path / sendfile FETCH 路径 | Removes payload copies on the Broker network write path. / 去掉 Broker 网络写路径上的 payload 复制。 | TLS and unsupported pipelines still use heap fallback. / TLS 与不支持的 pipeline 仍走 heap 回退。 |
 

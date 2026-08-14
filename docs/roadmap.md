@@ -6,14 +6,14 @@ This roadmap summarizes the completed baseline, the current V4 Operator Readines
 
 ## 1. Current State
 
-MiniMQ 5.0.0 is open. V4 Operator Readiness is the completed baseline; V5 adds producer acknowledgements, `min.insync.replicas`, a broker-scoped produce-ack executor, `LEAVE_GROUP`, per-member session timeouts, topic config changes, partition reassignment, and preferred-leader election. Latest evidence: [test-report-2026-08-14-v5.0.0-review-fixes.md](test-report-2026-08-14-v5.0.0-review-fixes.md) (792 tests, 91.59% overall line coverage).
+MiniMQ 5.0.0 is open. V4 Operator Readiness is the completed baseline; V5 adds producer acknowledgements, `min.insync.replicas`, a broker-scoped produce-ack executor, `LEAVE_GROUP`, per-member session timeouts, topic config changes, partition reassignment, and preferred-leader election. Client linger/auto-batch (`batchSize=50`, `lingerMs=5`) and default storage flush `everyNAppends(100)` are also in source. Latest evidence: [test-report-2026-08-14-batch-flush-defaults.md](test-report-2026-08-14-batch-flush-defaults.md) (823 tests, 91.78% overall line coverage).
 
 Current implemented capabilities include:
 
 - Java 17 Maven multi-module project with `mq-common`, `mq-storage`, `mq-protocol`, `mq-broker`, `mq-client`, and `mq-demo`.
 - Custom Netty binary protocol and protocol serdes tests.
-- WAL-backed segmented append-only log, sparse index, retention, compaction, checkpoints, recovery, zero-copy fetch, delayed-message scheduling, and visible-prefix fetch semantics.
-- Producer and Consumer SDKs with metadata refresh and leader-aware retry behavior.
+- WAL-backed segmented append-only log, sparse index, retention, compaction, checkpoints, recovery, zero-copy fetch, delayed-message scheduling, visible-prefix fetch semantics, and default flush `everyNAppends(100)`.
+- Producer and Consumer SDKs with metadata refresh, leader-aware retry, per-partition linger auto-batch (`batchSize=50`, `lingerMs=5`), and `send(List)`.
 - Consumer group assignment, offset commit/fetch, and group coordination basics.
 - Broker replication, ISR tracking, leader epoch fencing, automatic failover, broker leases, and frozen-partition handling.
 - etcd-backed Controller election and metadata persistence for the HA path.

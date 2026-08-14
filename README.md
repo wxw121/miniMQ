@@ -23,6 +23,8 @@ Kafka 风格的 Java 分布式消息队列。
 - **Consumer Group** + Offset 提交
 - **V4 Operator Readiness** 运维状态、Consumer lag、Topic admin、failover audit、retry/DLQ、delayed delivery
 - **V5 Producer acks** `LEADER`（默认）或 `ALL`（等待当前 ISR）；`min.insync.replicas`；`LEAVE_GROUP`；topic 配置变更、分区重分配与 preferred Leader
+- **Client auto-batch** `send(record)` 按分区入队（默认 `batchSize=50`，`lingerMs=5`）；读取 `offset()` / `flush()` / linger / `close()` 时发出 Produce
+- **Default flush** `FlushPolicy.everyNAppends(100)`；`--flush-policy always` 仍可显式开启每次 fsync
 
 ## 模块
 
@@ -162,6 +164,7 @@ MiniMQ 提供一个 Brutalism 风格的前端测试面板，用于从浏览器�
 | Web 端口 | `18082` | 浏览器访问端口。 |
 | Broker 端口 | `19092` | Web API 真实消息流连接的 MiniMQ Broker 端口。 |
 | 数据目录 | `.run/data-live` | 本地 Broker 数据目录。 |
+| Topic 分区数 | `4` | Web / `FlowRequest` 默认分区数。CLI `create-topic --partitions` 默认仍是 `3`。 |
 
 如果已经完成打包，可以跳过构建：
 
@@ -237,4 +240,5 @@ Additional V4 API keys:
 - V2 系列：分区副本 / ISR、Controller failover、Log Segment、retention、compaction、zero-copy FETCH。
 - V3 系列：etcd Controller HA、Leader epoch fencing、runtime metrics、resilience hardening、network transport selector。
 - V4 当前实现：operator readiness、topic admin、failover audit、bounded metrics V2、retry/DLQ links、delayed messages、FETCH_V2 bounded wait。
+- V5 当前实现：`LEADER`/`ALL` produce acks、`min.insync.replicas`、`LEAVE_GROUP`、分区重分配、preferred Leader、客户端 linger 攒批、默认 every-n 刷盘。
 
