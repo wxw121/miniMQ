@@ -172,9 +172,6 @@ public class LogManager implements AutoCloseable {
         long now = clock.millis();
         int futureRecordCount = 0;
         for (AppendRecord record : records) {
-            if (record.deliverAtEpochMs() < 0) {
-                throw new IllegalArgumentException("delivery time must be non-negative");
-            }
             if (record.deliverAtEpochMs() > now) {
                 futureRecordCount++;
             }

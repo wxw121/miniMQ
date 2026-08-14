@@ -129,4 +129,51 @@ class LogManagerFlushPolicyTest {
         assertThrows(IllegalStateException.class,
                 () -> manager.append("orders", 0, "k1".getBytes(), "v1".getBytes()));
     }
+
+    @Test
+    void appendBatchWritesContiguousOffsetsAndRejectsEmptyOrInvalidInput(@TempDir Path dir) {
+        LogManager manager = new LogManager(dir, new LogManagerConfig(FlushPolicy.always(), 0));
+        try {
+            assertEquals(-1L, manager.appendBatch("orders", 0, List.of()));
+            assertEquals(-1L, manager.appendBatch("orders", 0, null));
+
+            long base = manager.appendBatch("orders", 0, List.of(
+                    new LogManager.AppendRecord("k0".getBytes(), "v0".getBytes(), 0L),
+                    new LogManager.AppendRecord("k1".getBytes(), "v1".getBytes(), 0L),
+                    new LogManager.AppendRecord(
+                            "k2".getBytes(),
+                            "v2".getBytes(),
+                            System.currentTimeMillis() + 86_400_000L)));
+            assertEquals(0L, base);
+            assertEquals(3L, manager.getOrCreate("orders", 0).highWatermark());
+
+            manager.replicateAt("orders", 0, 3L, "k3".getBytes(), "v3".getBytes());
+            assertEquals(4L, manager.getOrCreate("orders", 0).highWatermark());
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void futureAppendReleasesReservationWhenTopicIsAlreadyDeleted(@TempDir Path dir) {
+        LogManager manager = new LogManager(
+                dir,
+                new LogManagerConfig(
+                        FlushPolicy.always(),
+                        0,
+                        SegmentedLogConfig.defaults(),
+                        LogMaintenanceConfig.disabled(),
+                        1));
+        try {
+            long deliverAt = System.currentTimeMillis() + 86_400_000L;
+            manager.deleteTopic("gone", 1L);
+            assertThrows(IllegalStateException.class,
+                    () -> manager.append("gone", 0, "k".getBytes(), "v".getBytes(), deliverAt));
+            long offset = manager.append("kept", 0, "k".getBytes(), "v".getBytes(), deliverAt);
+            assertEquals(0L, offset);
+            assertEquals(1, manager.scheduledRecordCount());
+        } finally {
+            manager.close();
+        }
+    }
 }
