@@ -62,6 +62,31 @@ class ProducerIntegrationTest {
     }
 
     @Test
+    void lingerDeliversRecordsWithoutExplicitFlush() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("producer-linger");
+        try (BrokerTestHarness broker = BrokerTestHarness.startController(dataDir);
+             NetworkClient admin = new NetworkClient("admin");
+             Producer producer = new Producer(broker.bootstrapServers(), "producer-linger-it");
+             Consumer consumer = new Consumer(broker.bootstrapServers(), "linger-group", "linger-consumer")) {
+            admin.connect("localhost", broker.port());
+            admin.ensureSuccess(admin.send(
+                    ApiKeys.CREATE_TOPIC, new CreateTopicRequest("orders", 1)));
+            producer.start();
+
+            producer.send(new ProducerRecord(
+                    "orders", null, "k".getBytes(StandardCharsets.UTF_8), "m0".getBytes(StandardCharsets.UTF_8)));
+            producer.send(new ProducerRecord(
+                    "orders", null, "k".getBytes(StandardCharsets.UTF_8), "m1".getBytes(StandardCharsets.UTF_8)));
+            producer.send(new ProducerRecord(
+                    "orders", null, "k".getBytes(StandardCharsets.UTF_8), "m2".getBytes(StandardCharsets.UTF_8)));
+
+            consumer.subscribe("orders");
+            List<com.minimq.client.model.ConsumerRecord> records = consumer.poll(java.time.Duration.ofSeconds(2));
+            assertEquals(3, records.size());
+        }
+    }
+
+    @Test
     void sendBatchAssignsContiguousOffsetsOnOnePartition() throws Exception {
         Path dataDir = BrokerTestHarness.newDataDir("producer-batch");
         try (BrokerTestHarness broker = BrokerTestHarness.startController(dataDir);

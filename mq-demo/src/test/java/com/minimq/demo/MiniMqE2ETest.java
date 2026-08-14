@@ -62,6 +62,7 @@ class MiniMqE2ETest {
                             ("msg-" + i).getBytes(StandardCharsets.UTF_8)));
                     usedPartitions.add(result.partitionId());
                 }
+                producer.flush();
                 assertTrue(usedPartitions.size() >= 1, "messages should land in at least one partition");
 
                 List<ConsumerRecord> all = new ArrayList<>();

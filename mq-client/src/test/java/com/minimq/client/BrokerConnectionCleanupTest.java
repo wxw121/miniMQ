@@ -77,7 +77,8 @@ class BrokerConnectionCleanupTest {
             producer.start();
 
             RuntimeException thrown = assertThrows(RuntimeException.class, () -> producer.send(
-                    new ProducerRecord("producer-cleanup", null, new byte[] {1}, new byte[] {2})));
+                    new ProducerRecord("producer-cleanup", null, new byte[] {1}, new byte[] {2}))
+                    .offset());
 
             assertSame(connectFailure, thrown);
             assertTrue(closed.get());

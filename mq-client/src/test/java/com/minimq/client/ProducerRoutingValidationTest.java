@@ -226,6 +226,10 @@ class ProducerRoutingValidationTest {
             producer.enqueueMetadata(metadata(
                     List.of(new BrokerMetadata(0, "127.0.0.1", 19092)),
                     List.of(new PartitionMetadata(0, 0))));
+            producer.enqueueMetadata(metadata(
+                    List.of(new BrokerMetadata(0, "127.0.0.1", 19092)),
+                    List.of(new PartitionMetadata(0, 0))));
+            producer.enqueueProduceFailure(new MiniMqConnectionException("disconnected", null));
             producer.enqueueProduceFailure(new MiniMqConnectionException("disconnected", null));
 
             ProduceResult result = producer.send(record(0));
