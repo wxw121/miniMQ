@@ -15,6 +15,7 @@ import com.minimq.broker.replication.ReplicaStateManager;
 import com.minimq.broker.resilience.RequestThrottler;
 import com.minimq.broker.resilience.ThrottleResult;
 import com.minimq.broker.support.BrokerTestHarness;
+import com.minimq.common.acks.ProduceAcks;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.protocol.ApiKeys;
 import com.minimq.protocol.MqFrame;
@@ -45,8 +46,14 @@ import com.minimq.protocol.message.ProtocolMessages.GroupStatusResponse;
 import com.minimq.protocol.message.ProtocolMessages.HeartbeatRequest;
 import com.minimq.protocol.message.ProtocolMessages.IncreasePartitionsRequest;
 import com.minimq.protocol.message.ProtocolMessages.IncreasePartitionsResponse;
+import com.minimq.protocol.message.ProtocolMessages.AlterTopicConfigRequest;
+import com.minimq.protocol.message.ProtocolMessages.AlterTopicConfigResponse;
+import com.minimq.protocol.message.ProtocolMessages.ReassignPartitionsRequest;
+import com.minimq.protocol.message.ProtocolMessages.ElectPreferredLeadersRequest;
+import com.minimq.protocol.message.ProtocolMessages.PartitionReplicaAssignment;
 import com.minimq.protocol.message.ProtocolMessages.JoinGroupRequest;
 import com.minimq.protocol.message.ProtocolMessages.JoinGroupResponse;
+import com.minimq.protocol.message.ProtocolMessages.LeaveGroupRequest;
 import com.minimq.protocol.message.ProtocolMessages.ListTopicsRequest;
 import com.minimq.protocol.message.ProtocolMessages.ListTopicsResponse;
 import com.minimq.protocol.message.ProtocolMessages.MaintenanceMetricsRequest;
@@ -109,6 +116,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
@@ -291,7 +299,14 @@ class EmbeddedBrokerChannelTest {
             assertNotNull(discovery.body());
             assertEquals(1, throttler.inFlight());
 
-            var tombstone = controller.getTopicTombstone("orders");
+            ClusterMetadata.TopicTombstone tombstone = null;
+            long tombstoneDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (tombstone == null && System.nanoTime() < tombstoneDeadline) {
+                tombstone = controller.getTopicTombstone("orders");
+                if (tombstone == null) {
+                    LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));
+                }
+            }
             var broker = controller.getBroker(0);
             assertNotNull(tombstone);
             assertNotNull(broker);
@@ -568,7 +583,7 @@ class EmbeddedBrokerChannelTest {
                         new ProduceRecord("k1".getBytes(), "v1".getBytes()),
                         new ProduceRecord("k2".getBytes(), "v2".getBytes()))));
         assertEquals(ErrorCode.NONE, produceResponse.header().errorCode());
-        assertEquals(1, ((ProduceResponse) produceResponse.body()).baseOffset());
+        assertEquals(0, ((ProduceResponse) produceResponse.body()).baseOffset());
         assertEquals(2L, clusterController.replicaLogEndOffset("orders", 0, 0));
 
         MqDecoder.DecodedResponse fetchResponse = send(channel, ApiKeys.FETCH,
@@ -590,9 +605,10 @@ class EmbeddedBrokerChannelTest {
         assertNotNull(((SyncGroupResponse) syncResponse.body()).assignment());
 
         assertEquals(ErrorCode.NONE, send(channel, ApiKeys.HEARTBEAT,
-                new HeartbeatRequest("g1", join.memberId())).header().errorCode());
+                new HeartbeatRequest("g1", join.memberId(), join.generationId())).header().errorCode());
         assertEquals(ErrorCode.NONE, send(channel, ApiKeys.OFFSET_COMMIT,
-                new OffsetCommitRequest("g1", "orders", 0, 2)).header().errorCode());
+                new OffsetCommitRequest(
+                        "g1", "orders", 0, 2, join.memberId(), join.generationId())).header().errorCode());
 
         MqDecoder.DecodedResponse offsetFetchResponse = send(channel, ApiKeys.OFFSET_FETCH,
                 new OffsetFetchRequest("g1", "orders", 0));
@@ -622,6 +638,326 @@ class EmbeddedBrokerChannelTest {
         assertEquals(1, ((ReplicaFetchResponse) response.body()).records().size());
         assertEquals(0L, clusterController.replicaLogEndOffset("orders", 0, 1));
         channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void produceAcksAllSucceedsOnSingleBrokerIsr() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
+        clusterController.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092));
+        clusterController.createTopic(new CreateTopicRequest("acks-single", 1));
+        EmbeddedChannel channel = newChannel(clusterController, true);
+
+        MqDecoder.DecodedResponse response = send(
+                channel,
+                ApiKeys.PRODUCE,
+                new ProduceRequest(
+                        "acks-single",
+                        0,
+                        0L,
+                        List.of(new ProduceRecord(null, new byte[] {1})),
+                        ProduceAcks.ALL.code(),
+                        50));
+
+        assertEquals(ErrorCode.NONE, response.header().errorCode());
+        assertEquals(0L, ((ProduceResponse) response.body()).baseOffset());
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void sharedProduceAckExecutorSurvivesChannelClose() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
+        clusterController.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092));
+        clusterController.createTopic(new CreateTopicRequest("acks-shared", 1));
+        ExecutorService shared = MqRequestHandler.newProduceAckExecutor();
+        try {
+            EmbeddedChannel first = newChannelWithProduceAckExecutor(
+                    clusterController, shared, tempDir.resolve("shared-first"));
+            MqDecoder.DecodedResponse firstResponse = send(
+                    first,
+                    ApiKeys.PRODUCE,
+                    new ProduceRequest(
+                            "acks-shared",
+                            0,
+                            0L,
+                            List.of(new ProduceRecord(null, new byte[] {1})),
+                            ProduceAcks.ALL.code(),
+                            50));
+            assertEquals(ErrorCode.NONE, firstResponse.header().errorCode());
+            first.finishAndReleaseAll();
+            assertFalse(shared.isShutdown());
+
+            EmbeddedChannel second = newChannelWithProduceAckExecutor(
+                    clusterController, shared, tempDir.resolve("shared-second"));
+            MqDecoder.DecodedResponse secondResponse = send(
+                    second,
+                    ApiKeys.PRODUCE,
+                    new ProduceRequest(
+                            "acks-shared",
+                            0,
+                            0L,
+                            List.of(new ProduceRecord(null, new byte[] {2})),
+                            ProduceAcks.ALL.code(),
+                            50));
+            assertEquals(ErrorCode.NONE, secondResponse.header().errorCode());
+            second.finishAndReleaseAll();
+            assertFalse(shared.isShutdown());
+        } finally {
+            shared.shutdownNow();
+        }
+    }
+
+    @Test
+    void produceAcksAllTimesOutWhenFollowerStaysBehindAndKeepsLocalAppend() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
+        clusterController.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092));
+        clusterController.registerBroker(new RegisterBrokerRequest(1, "127.0.0.1", 9093));
+        clusterController.createTopic(new CreateTopicRequest("acks-timeout", 1, 2));
+        EmbeddedChannel channel = newChannel(clusterController, true);
+
+        MqDecoder.DecodedResponse timedOut = send(
+                channel,
+                ApiKeys.PRODUCE,
+                new ProduceRequest(
+                        "acks-timeout",
+                        0,
+                        0L,
+                        List.of(new ProduceRecord(null, new byte[] {1})),
+                        ProduceAcks.ALL.code(),
+                        40));
+        assertEquals(ErrorCode.REQUEST_TIMED_OUT, timedOut.header().errorCode());
+        assertNull(timedOut.body());
+        assertEquals(1L, clusterController.replicaLogEndOffset("acks-timeout", 0, 0));
+
+        MqDecoder.DecodedResponse timedOutV2 = send(
+                channel,
+                ApiKeys.PRODUCE_V2,
+                new ProduceV2Request(
+                        "acks-timeout",
+                        0,
+                        0L,
+                        new V4BoundedList<>(
+                                1,
+                                false,
+                                List.of(new ScheduledProduceRecord(null, new byte[] {2}, 0L))),
+                        ProduceAcks.ALL.code(),
+                        40));
+        assertEquals(ErrorCode.REQUEST_TIMED_OUT, timedOutV2.header().errorCode());
+        assertNull(timedOutV2.body());
+        assertEquals(2L, clusterController.replicaLogEndOffset("acks-timeout", 0, 0));
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void produceAcksAllReturnsNotEnoughReplicasWhenIsrIsEmpty() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir)) {
+            @Override
+            public synchronized List<Integer> getIsrBrokerIds(String topicName, int partitionId) {
+                return List.of();
+            }
+        };
+        clusterController.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092));
+        clusterController.createTopic(new CreateTopicRequest("acks-empty-isr", 1));
+        EmbeddedChannel channel = newChannel(clusterController, true);
+
+        MqDecoder.DecodedResponse response = send(
+                channel,
+                ApiKeys.PRODUCE,
+                new ProduceRequest(
+                        "acks-empty-isr",
+                        0,
+                        0L,
+                        List.of(new ProduceRecord(null, new byte[] {1})),
+                        ProduceAcks.ALL.code(),
+                        50));
+
+        assertEquals(ErrorCode.NOT_ENOUGH_REPLICAS, response.header().errorCode());
+        assertNull(response.body());
+        assertEquals(1L, clusterController.replicaLogEndOffset("acks-empty-isr", 0, 0));
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void produceAcksAllReturnsNotEnoughReplicasWhenIsrBelowMinInSync() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir)) {
+            @Override
+            public synchronized List<Integer> getIsrBrokerIds(String topicName, int partitionId) {
+                return List.of(0);
+            }
+        };
+        clusterController.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092));
+        clusterController.registerBroker(new RegisterBrokerRequest(1, "127.0.0.1", 9093));
+        clusterController.createTopic(new CreateTopicRequest("acks-min-isr", 1, 2, 2));
+        EmbeddedChannel channel = newChannel(clusterController, true);
+
+        MqDecoder.DecodedResponse response = send(
+                channel,
+                ApiKeys.PRODUCE,
+                new ProduceRequest(
+                        "acks-min-isr",
+                        0,
+                        0L,
+                        List.of(new ProduceRecord(null, new byte[] {1})),
+                        ProduceAcks.ALL.code(),
+                        50));
+
+        assertEquals(ErrorCode.NOT_ENOUGH_REPLICAS, response.header().errorCode());
+        assertNull(response.body());
+        assertEquals(1L, clusterController.replicaLogEndOffset("acks-min-isr", 0, 0));
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void produceAcksAllDoesNotBlockEventLoopWhileWaiting() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
+        clusterController.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092));
+        clusterController.registerBroker(new RegisterBrokerRequest(1, "127.0.0.1", 9093));
+        clusterController.createTopic(new CreateTopicRequest("acks-async", 1, 2));
+        EmbeddedChannel channel = newChannel(clusterController, true);
+
+        channel.writeInbound(ProtocolSerdes.encodeRequest(
+                new MqRequestHeader(ApiKeys.PRODUCE, 11, "test"),
+                new ProduceRequest(
+                        "acks-async",
+                        0,
+                        0L,
+                        List.of(new ProduceRecord(null, new byte[] {1})),
+                        ProduceAcks.ALL.code(),
+                        300)));
+        long startedNanos = System.nanoTime();
+        MqDecoder.DecodedResponse metadata = send(
+                channel, ApiKeys.METADATA, new MetadataRequest("acks-async"));
+        long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
+        assertEquals(ErrorCode.NONE, metadata.header().errorCode());
+        assertTrue(elapsedMs < 200, "event loop blocked for " + elapsedMs + "ms");
+
+        ByteBuf produceFrame = awaitOutbound(channel);
+        try {
+            MqDecoder.DecodedResponse timedOut =
+                    MqDecoder.decodeResponse(unwrapPayload(produceFrame), ApiKeys.PRODUCE);
+            assertEquals(ErrorCode.REQUEST_TIMED_OUT, timedOut.header().errorCode());
+        } finally {
+            produceFrame.release();
+        }
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void leaveGroupRemovesMember() {
+        ClusterController clusterController = new ClusterController(new MetadataStore(tempDir));
+        clusterController.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092));
+        clusterController.createTopic(new CreateTopicRequest("orders", 1));
+        EmbeddedChannel channel = newChannel(clusterController, true);
+
+        MqDecoder.DecodedResponse join = send(
+                channel, ApiKeys.JOIN_GROUP, new JoinGroupRequest("g1", "", "orders"));
+        JoinGroupResponse joined = (JoinGroupResponse) join.body();
+        assertEquals(ErrorCode.NONE, send(
+                channel,
+                ApiKeys.LEAVE_GROUP,
+                new LeaveGroupRequest("g1", joined.memberId(), joined.generationId()))
+                .header().errorCode());
+        assertEquals(ErrorCode.GROUP_NOT_FOUND, send(
+                channel,
+                ApiKeys.HEARTBEAT,
+                new HeartbeatRequest("g1", joined.memberId(), joined.generationId()))
+                .header().errorCode());
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void produceAcksAllSucceedsWhenFollowerCatchesUp() throws Exception {
+        Path dataDir = tempDir.resolve("acks-all-catch-up");
+        BrokerConfig config = defaultConfig(dataDir, true);
+        ClusterController controller = new ClusterController(new MetadataStore(dataDir.resolve("metadata")));
+        assertEquals(ErrorCode.NONE,
+                controller.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092)).errorCode());
+        assertEquals(ErrorCode.NONE,
+                controller.registerBroker(new RegisterBrokerRequest(1, "127.0.0.1", 9093)).errorCode());
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("acks-catch-up", 1, 2)));
+        PartitionManager partitionManager = new PartitionManager(new LogManager(dataDir.resolve("log")));
+        ReplicaStateManager replicaStateManager = new ReplicaStateManager();
+        EmbeddedChannel channel = newChannel(
+                config,
+                controller,
+                partitionManager,
+                replicaStateManager,
+                ControllerRole.legacy(config),
+                new BrokerRuntimeMetrics());
+        Thread catchUp = new Thread(() -> {
+            for (int i = 0; i < 80; i++) {
+                replicaStateManager.updateReplicaLeo("acks-catch-up", 0, 1, 100);
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));
+            }
+        }, "acks-all-catch-up");
+        catchUp.setDaemon(true);
+        catchUp.start();
+        try {
+            MqDecoder.DecodedResponse response = send(
+                    channel,
+                    ApiKeys.PRODUCE,
+                    new ProduceRequest(
+                            "acks-catch-up",
+                            0,
+                            0L,
+                            List.of(new ProduceRecord(null, new byte[] {1})),
+                            ProduceAcks.ALL.code(),
+                            500));
+            assertEquals(ErrorCode.NONE, response.header().errorCode());
+            assertEquals(0L, ((ProduceResponse) response.body()).baseOffset());
+        } finally {
+            catchUp.join(1_000);
+            channel.finishAndReleaseAll();
+            partitionManager.close();
+        }
+    }
+
+    @Test
+    void produceAcksAllReturnsNotLeaderWhenLeadershipMovesDuringWait() throws Exception {
+        Path dataDir = tempDir.resolve("acks-all-leader-move");
+        BrokerConfig config = defaultConfig(dataDir, true);
+        ClusterController controller = new ClusterController(new MetadataStore(dataDir.resolve("metadata")));
+        assertEquals(ErrorCode.NONE,
+                controller.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092)).errorCode());
+        assertEquals(ErrorCode.NONE,
+                controller.registerBroker(new RegisterBrokerRequest(1, "127.0.0.1", 9093)).errorCode());
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("acks-leader-move", 1, 2)));
+        PartitionManager partitionManager = new PartitionManager(new LogManager(dataDir.resolve("log")));
+        ReplicaStateManager replicaStateManager = new ReplicaStateManager();
+        EmbeddedChannel channel = newChannel(
+                config,
+                controller,
+                partitionManager,
+                replicaStateManager,
+                ControllerRole.legacy(config),
+                new BrokerRuntimeMetrics());
+        Thread moveLeader = new Thread(() -> {
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(30));
+            controller.updateMetadata(metadata -> {
+                metadata.topics.get("acks-leader-move").partitions.get(0).leaderBrokerId = 1;
+                return null;
+            });
+            replicaStateManager.noteLeadership("acks-leader-move", 0, 1, 1L);
+        }, "acks-all-leader-move");
+        moveLeader.setDaemon(true);
+        moveLeader.start();
+        try {
+            MqDecoder.DecodedResponse response = send(
+                    channel,
+                    ApiKeys.PRODUCE,
+                    new ProduceRequest(
+                            "acks-leader-move",
+                            0,
+                            0L,
+                            List.of(new ProduceRecord(null, new byte[] {1})),
+                            ProduceAcks.ALL.code(),
+                            500));
+            assertEquals(ErrorCode.NOT_LEADER, response.header().errorCode());
+            assertNull(response.body());
+        } finally {
+            moveLeader.join(1_000);
+            channel.finishAndReleaseAll();
+            partitionManager.close();
+        }
     }
 
     @Test
@@ -1164,6 +1500,31 @@ class EmbeddedBrokerChannelTest {
         assertEquals(2, increased.previousPartitionCount());
         assertEquals(3, increased.newPartitionCount());
 
+        assertEquals(ErrorCode.NONE, clusterController.registerBroker(
+                new RegisterBrokerRequest(1, "127.0.0.1", 9093)).errorCode());
+        assertEquals(ErrorCode.NONE, clusterController.registerBroker(
+                new RegisterBrokerRequest(2, "127.0.0.1", 9094)).errorCode());
+        MqDecoder.DecodedResponse alter = send(
+                channel,
+                ApiKeys.ALTER_TOPIC_CONFIG,
+                new AlterTopicConfigRequest(BrokerTestHarness.ADMIN_TOKEN, "orders", 1));
+        assertEquals(ErrorCode.NONE, alter.header().errorCode());
+        assertEquals(1, ((AlterTopicConfigResponse) alter.body()).minInSyncReplicas());
+        MqDecoder.DecodedResponse reassign = send(
+                channel,
+                ApiKeys.REASSIGN_PARTITIONS,
+                new ReassignPartitionsRequest(
+                        BrokerTestHarness.ADMIN_TOKEN,
+                        "orders",
+                        List.of(new PartitionReplicaAssignment(0, List.of(0, 1)))));
+        assertEquals(ErrorCode.NONE, reassign.header().errorCode());
+        MqDecoder.DecodedResponse elect = send(
+                channel,
+                ApiKeys.ELECT_PREFERRED_LEADERS,
+                new ElectPreferredLeadersRequest(
+                        BrokerTestHarness.ADMIN_TOKEN, "orders", List.of()));
+        assertEquals(ErrorCode.NONE, elect.header().errorCode());
+
         MqDecoder.DecodedResponse ops = send(
                 channel,
                 ApiKeys.OPS_STATUS,
@@ -1191,6 +1552,58 @@ class EmbeddedBrokerChannelTest {
         assertEquals(1, groupBody.members().total());
 
         channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void fetchV1PublishesVisibleHighWatermarkWhenRecordsAreDelayed() {
+        Path dataDir = tempDir.resolve("fetch-v1-visible-hw");
+        BrokerConfig config = defaultConfig(dataDir, true);
+        ClusterController controller = new ClusterController(new MetadataStore(dataDir.resolve("metadata")));
+        assertEquals(ErrorCode.NONE,
+                controller.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", 9092)).errorCode());
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("orders", 1)));
+        PartitionManager partitionManager = new PartitionManager(new LogManager(dataDir.resolve("log")));
+        EmbeddedChannel channel = newChannel(
+                config,
+                controller,
+                partitionManager,
+                new ReplicaStateManager(),
+                ControllerRole.legacy(config),
+                new BrokerRuntimeMetrics());
+
+        try {
+            long deliverAtEpochMs = System.currentTimeMillis() + 60_000L;
+            MqDecoder.DecodedResponse produced = send(
+                    channel,
+                    ApiKeys.PRODUCE_V2,
+                    new ProduceV2Request(
+                            "orders",
+                            0,
+                            0L,
+                            new V4BoundedList<>(
+                                    2,
+                                    false,
+                                    List.of(
+                                            new ScheduledProduceRecord(
+                                                    "ready".getBytes(), "now".getBytes(), 0L),
+                                            new ScheduledProduceRecord(
+                                                    "later".getBytes(), "wait".getBytes(), deliverAtEpochMs)))));
+            assertEquals(ErrorCode.NONE, produced.header().errorCode());
+
+            MqDecoder.DecodedResponse decoded = send(
+                    channel,
+                    ApiKeys.FETCH,
+                    new FetchRequest("orders", 0, 0, 1_024));
+            FetchResponse response = (FetchResponse) decoded.body();
+
+            assertEquals(ErrorCode.NONE, decoded.header().errorCode());
+            assertEquals(1L, response.highWatermark());
+            assertEquals(1, response.records().size());
+            assertEquals(0L, response.records().get(0).offset());
+        } finally {
+            channel.finishAndReleaseAll();
+            partitionManager.close();
+        }
     }
 
     @Test
@@ -1418,9 +1831,11 @@ class EmbeddedBrokerChannelTest {
         assertEquals(ErrorCode.NONE, clusterController.updateReplicaStateV2(
                 "orders", 1, 0, 1L, 0L, 0L, 20L, 11L, 10_000L));
         GroupCoordinator coordinator = new GroupCoordinator(clusterController);
-        coordinator.joinGroup(new JoinGroupRequest("g1", "member-a", "orders"));
-        coordinator.offsetCommit(new OffsetCommitRequest("g1", "orders", 0, 4L));
-        coordinator.offsetCommit(new OffsetCommitRequest("g1", "orders", 1, 12L));
+        var join = coordinator.joinGroup(new JoinGroupRequest("g1", "member-a", "orders"));
+        coordinator.offsetCommit(new OffsetCommitRequest(
+                "g1", "orders", 0, 4L, join.memberId(), join.generationId()));
+        coordinator.offsetCommit(new OffsetCommitRequest(
+                "g1", "orders", 1, 12L, join.memberId(), join.generationId()));
         EmbeddedChannel channel = newChannel(clusterController, true);
 
         MqDecoder.DecodedResponse response = send(
@@ -1619,6 +2034,39 @@ class EmbeddedBrokerChannelTest {
                         controllerRole,
                         runtimeMetrics,
                         new RequestThrottler(0)),
+                new MqEncoder());
+    }
+
+    private EmbeddedChannel newChannelWithProduceAckExecutor(
+            ClusterController clusterController,
+            ExecutorService produceAckExecutor,
+            Path dataDir) {
+        BrokerConfig config = withLegacyApis(defaultConfig(0, dataDir, true));
+        BrokerAvailabilityGuard guard = new BrokerAvailabilityGuard();
+        guard.activate();
+        GroupCoordinator groupCoordinator = new GroupCoordinator(clusterController);
+        LogManager logManager = new LogManager(config.dataDir());
+        PartitionManager partitionManager = new PartitionManager(logManager);
+        return new EmbeddedChannel(
+                new MqDecoder(),
+                new MqRequestHandler(
+                        config,
+                        clusterController,
+                        groupCoordinator,
+                        partitionManager,
+                        new ReplicaStateManager(),
+                        new FetchTransferMetrics(),
+                        new ReplicaStateReporter(config, clusterController, guard),
+                        guard,
+                        maintenanceServiceFor(config, partitionManager),
+                        ControllerRole.legacy(config),
+                        OperatorAuthorizer.fromConfig(config),
+                        new BrokerRuntimeMetrics(),
+                        new RequestThrottler(0),
+                        null,
+                        null,
+                        null,
+                        produceAckExecutor),
                 new MqEncoder());
     }
 

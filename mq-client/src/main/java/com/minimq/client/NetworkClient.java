@@ -13,7 +13,6 @@ import com.minimq.protocol.message.MqResponseHeader;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.*;
-import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 
@@ -23,6 +22,7 @@ import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -35,7 +35,8 @@ public class NetworkClient implements AutoCloseable {
     private final RetryPolicy retryPolicy;
     private final Duration requestTimeout;
     private final AtomicInteger correlationId = new AtomicInteger(1);
-    private final EventLoopGroup group = new NioEventLoopGroup(1);
+    private final EventLoopGroup group = SharedIoEventLoops.acquire();
+    private final AtomicBoolean ioReleased = new AtomicBoolean();
     private final Map<Integer, PendingResponseSlot> pending = new ConcurrentHashMap<>();
     private final AtomicInteger connectionAttempts = new AtomicInteger();
     private Channel channel;
@@ -190,7 +191,7 @@ public class NetworkClient implements AutoCloseable {
             }
         } finally {
             clearPendingResponses();
-            group.shutdownGracefully().sync();
+            releaseIo();
         }
     }
 
@@ -201,9 +202,7 @@ public class NetworkClient implements AutoCloseable {
             }
         } finally {
             clearPendingResponses();
-            group.shutdownGracefully(
-                            0L, CANDIDATE_ABORT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-                    .await(CANDIDATE_ABORT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            releaseIo(0L, CANDIDATE_ABORT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
         }
     }
 
@@ -224,13 +223,26 @@ public class NetworkClient implements AutoCloseable {
         } finally {
             clearPendingResponses();
             long remainingNanos = Math.max(0L, deadlineNanos - System.nanoTime());
-            io.netty.util.concurrent.Future<?> shutdown = group.shutdownGracefully(
-                    0L, remainingNanos, TimeUnit.NANOSECONDS);
-            remainingNanos = deadlineNanos - System.nanoTime();
-            if (remainingNanos > 0L) {
-                shutdown.await(remainingNanos, TimeUnit.NANOSECONDS);
-            }
+            releaseIo(0L, remainingNanos, TimeUnit.NANOSECONDS);
         }
+    }
+
+    EventLoopGroup eventLoopGroup() {
+        return group;
+    }
+
+    private void releaseIo() throws InterruptedException {
+        if (!ioReleased.compareAndSet(false, true)) {
+            return;
+        }
+        SharedIoEventLoops.release(group);
+    }
+
+    private void releaseIo(long quietPeriod, long timeout, TimeUnit unit) throws InterruptedException {
+        if (!ioReleased.compareAndSet(false, true)) {
+            return;
+        }
+        SharedIoEventLoops.release(group, quietPeriod, timeout, unit);
     }
 
     private void clearPendingResponses() {

@@ -39,6 +39,13 @@ class V4ProtocolContractTest {
                 () -> new CreateTopicAdminRequest("token", "con.events", 1, 1));
         assertThrows(IllegalArgumentException.class,
                 () -> new CreateTopicAdminRequest("token", "orders.", 1, 1));
+        assertThrows(IllegalArgumentException.class,
+                () -> new AlterTopicConfigRequest("token", "../orders", 1));
+        assertThrows(IllegalArgumentException.class,
+                () -> new ReassignPartitionsRequest(
+                        "token", "orders", List.of(new PartitionReplicaAssignment(0, List.of(0, 0)))));
+        assertThrows(IllegalArgumentException.class,
+                () -> new ElectPreferredLeadersRequest("token", "orders", List.of(0, 0)));
         assertDoesNotThrow(() -> new CreateTopicAdminRequest(
                 "token", "orders.retry-v2_1", 1, 1));
     }
@@ -99,12 +106,16 @@ class V4ProtocolContractTest {
         expected.put("METADATA_V2", 35);
         expected.put("RUNTIME_METRICS_V2", 36);
         expected.put("UPDATE_REPLICA_STATE_V2", 37);
+        expected.put("LEAVE_GROUP", 38);
+        expected.put("ALTER_TOPIC_CONFIG", 39);
+        expected.put("REASSIGN_PARTITIONS", 40);
+        expected.put("ELECT_PREFERRED_LEADERS", 41);
 
         Map<String, Integer> actual = publicShortConstants(ApiKeys.class);
 
         assertEquals(expected, actual);
         assertEquals(
-                IntStream.rangeClosed(0, 37).boxed().collect(Collectors.toCollection(TreeSet::new)),
+                IntStream.rangeClosed(0, 41).boxed().collect(Collectors.toCollection(TreeSet::new)),
                 new TreeSet<>(actual.values()));
     }
 
@@ -145,17 +156,21 @@ class V4ProtocolContractTest {
         expected.put("FORBIDDEN", 17);
         expected.put("UNKNOWN_BROKER", 18);
         expected.put("STALE_TOMBSTONE", 19);
+        expected.put("NOT_ENOUGH_REPLICAS", 20);
+        expected.put("REQUEST_TIMED_OUT", 21);
 
         Map<String, Integer> actual = Arrays.stream(ErrorCode.values())
                 .collect(Collectors.toMap(Enum::name, code -> (int) code.code, (a, b) -> a, TreeMap::new));
 
         assertEquals(expected, actual);
         assertEquals(
-                IntStream.rangeClosed(0, 19).boxed().collect(Collectors.toCollection(TreeSet::new)),
+                IntStream.rangeClosed(0, 21).boxed().collect(Collectors.toCollection(TreeSet::new)),
                 new TreeSet<>(actual.values()));
         assertEquals(ErrorCode.FORBIDDEN, ErrorCode.fromCode((short) 17));
         assertEquals(ErrorCode.UNKNOWN_BROKER, ErrorCode.fromCode((short) 18));
         assertEquals(ErrorCode.STALE_TOMBSTONE, ErrorCode.fromCode((short) 19));
+        assertEquals(ErrorCode.NOT_ENOUGH_REPLICAS, ErrorCode.fromCode((short) 20));
+        assertEquals(ErrorCode.REQUEST_TIMED_OUT, ErrorCode.fromCode((short) 21));
     }
 
     @Test
@@ -170,6 +185,14 @@ class V4ProtocolContractTest {
         assertRecordComponents(DeleteTopicRequest.class, "credential", "topicName");
         assertRecordComponents(IncreasePartitionsRequest.class,
                 "credential", "topicName", "targetPartitionCount");
+        assertRecordComponents(AlterTopicConfigRequest.class,
+                "credential", "topicName", "minInSyncReplicas");
+        assertRecordComponents(PartitionReplicaAssignment.class,
+                "partitionId", "replicaBrokerIds");
+        assertRecordComponents(ReassignPartitionsRequest.class,
+                "credential", "topicName", "assignments");
+        assertRecordComponents(ElectPreferredLeadersRequest.class,
+                "credential", "topicName", "partitionIds");
         assertRecordComponents(FailoverAuditRequest.class, "credential", "limit");
         assertRecordComponents(AuthStatusRequest.class, "credential");
         assertRecordComponents(ConfigureTopicReliabilityRequest.class,
@@ -184,9 +207,15 @@ class V4ProtocolContractTest {
         assertRecordComponents(MarkBrokerOfflineAdminRequest.class,
                 "credential", "brokerId");
         assertRecordComponents(CreateTopicAdminRequest.class,
-                "credential", "topicName", "numPartitions", "replicationFactor");
+                "credential", "topicName", "numPartitions", "replicationFactor", "minInSyncReplicas");
+        assertRecordComponents(CreateTopicRequest.class,
+                "topicName", "numPartitions", "replicationFactor", "minInSyncReplicas");
+        assertRecordComponents(JoinGroupRequest.class,
+                "groupId", "memberId", "topicName", "sessionTimeoutMs");
+        assertRecordComponents(LeaveGroupRequest.class,
+                "groupId", "memberId", "generationId");
         assertRecordComponents(ProduceV2Request.class,
-                "topicName", "partitionId", "leaderEpoch", "records");
+                "topicName", "partitionId", "leaderEpoch", "records", "acks", "ackTimeoutMs");
         assertRecordComponents(ReplicaFetchV2Request.class,
                 "clusterCredential",
                 "topicName",
@@ -248,7 +277,8 @@ class V4ProtocolContractTest {
                 "retryTopic",
                 "deadLetterTopic",
                 "partitions",
-                "tombstone");
+                "tombstone",
+                "minInSyncReplicas");
         assertRecordComponents(DeleteTopicResponse.class,
                 "topicName",
                 "tombstoneState",
@@ -259,6 +289,12 @@ class V4ProtocolContractTest {
                 "pendingBrokerIds");
         assertRecordComponents(IncreasePartitionsResponse.class,
                 "topicName", "previousPartitionCount", "newPartitionCount", "metadataVersion");
+        assertRecordComponents(AlterTopicConfigResponse.class,
+                "topicName", "minInSyncReplicas", "metadataVersion");
+        assertRecordComponents(ReassignPartitionsResponse.class,
+                "topicName", "metadataVersion", "changedPartitionIds");
+        assertRecordComponents(ElectPreferredLeadersResponse.class,
+                "topicName", "metadataVersion", "electedPartitionIds");
         assertRecordComponents(FailoverAuditResponse.class,
                 "brokerId", "brokerStartedAtEpochMs", "overwrittenCount", "events");
         assertRecordComponents(AuthStatusResponse.class, "targetBrokerId", "scopes");
@@ -306,6 +342,7 @@ class V4ProtocolContractTest {
                 "auditOverwrittenCount",
                 "lagMetrics");
         assertRecordComponents(UpdateReplicaStateV2Response.class);
+        assertRecordComponents(LeaveGroupResponse.class);
 
         var responseTypes = List.of(
                 OpsStatusResponse.class,
@@ -314,6 +351,9 @@ class V4ProtocolContractTest {
                 DescribeTopicResponse.class,
                 DeleteTopicResponse.class,
                 IncreasePartitionsResponse.class,
+                AlterTopicConfigResponse.class,
+                ReassignPartitionsResponse.class,
+                ElectPreferredLeadersResponse.class,
                 FailoverAuditResponse.class,
                 AuthStatusResponse.class,
                 ConfigureTopicReliabilityResponse.class,
@@ -325,7 +365,8 @@ class V4ProtocolContractTest {
                 FetchV2Response.class,
                 MetadataV2Response.class,
                 RuntimeMetricsV2Response.class,
-                UpdateReplicaStateV2Response.class);
+                UpdateReplicaStateV2Response.class,
+                LeaveGroupResponse.class);
         assertEquals((long) responseTypes.size(), responseTypes.stream().distinct().count());
         assertNotSame(TopicDeleteAckResponse.class, UpdateReplicaStateV2Response.class);
     }
@@ -333,6 +374,7 @@ class V4ProtocolContractTest {
     @Test
     void v4ReusableItemRecordsFreezeCanonicalFieldOrder() {
         assertRecordComponents(V4BoundedList.class, "total", "truncated", "items");
+        assertRecordComponents(PartitionReplicaAssignment.class, "partitionId", "replicaBrokerIds");
         assertRecordComponents(OpsBrokerInfo.class,
                 "brokerId", "host", "port", "state", "brokerEpoch", "leaseDeadlineEpochMs");
         assertRecordComponents(OpsPartitionInfo.class,

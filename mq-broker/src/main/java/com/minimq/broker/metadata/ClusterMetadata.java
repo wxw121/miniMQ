@@ -40,6 +40,12 @@ public class ClusterMetadata {
     public static class TopicEntry {
         public String topicName;
         public List<PartitionEntry> partitions = new ArrayList<>();
+        /** 0 means missing/legacy metadata; treat as {@code min.insync.replicas=1}. */
+        public int minInSyncReplicas;
+
+        public int effectiveMinInSyncReplicas() {
+            return minInSyncReplicas <= 0 ? 1 : minInSyncReplicas;
+        }
     }
 
     public static class TopicTombstone {
@@ -60,6 +66,13 @@ public class ClusterMetadata {
         public Map<Integer, ReplicaProgressEntry> replicaProgress = new HashMap<>();
         public WatermarkSnapshot lastCompleteWatermark = new WatermarkSnapshot();
         public boolean frozen;
+        /**
+         * True when {@link #frozen} was set because Leader activation timed out.
+         * Restore must keep {@link #leaderReady} false so truncation runs again.
+         * No-ISR lease-expiry freeze leaves this false: the original ready Leader
+         * may return with the same data directory and become ready immediately.
+         */
+        public boolean activationRequired;
         public long leaderEpoch;
         public long leaderEpochStartOffset;
         public boolean leaderReady = true;
@@ -97,5 +110,11 @@ public class ClusterMetadata {
         public String memberId;
         public long lastHeartbeatMs;
         public List<Integer> assignedPartitions = new ArrayList<>();
+        /** 0 means missing/legacy metadata; treat as the 10s default session timeout. */
+        public int sessionTimeoutMs;
+
+        public int effectiveSessionTimeoutMs() {
+            return sessionTimeoutMs <= 0 ? 10_000 : sessionTimeoutMs;
+        }
     }
 }

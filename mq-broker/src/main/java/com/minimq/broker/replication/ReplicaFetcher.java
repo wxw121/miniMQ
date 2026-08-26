@@ -194,6 +194,9 @@ public final class ReplicaFetcher implements AutoCloseable {
             epochStateStore.save(topicName, partition.partitionId,
                     new LeaderEpochState(partition.leaderEpoch, partition.leaderEpochStartOffset, true));
         }
+        if (fetchOffset < partition.leaderEpochStartOffset) {
+            fetchOffset = partition.leaderEpochStartOffset;
+        }
         try {
             LeaderReplicaClient client = connectionPool.client(leader.host, leader.port);
             var snapshot = clusterController.snapshot();
@@ -219,6 +222,8 @@ public final class ReplicaFetcher implements AutoCloseable {
                         record.deliverAtEpochMs());
                 changed = true;
             }
+        } catch (LogManager.ScheduledCapacityExceededException ignored) {
+            return changed;
         } catch (LeaderReplicaClient.ReplicaFetchException failure) {
             connectionPool.invalidate(leader.host, leader.port);
             if ((failure.errorCode() == ErrorCode.NOT_LEADER

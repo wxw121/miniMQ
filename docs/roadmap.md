@@ -1,19 +1,19 @@
 ﻿# MiniMQ Roadmap
 
-This roadmap summarizes the completed baseline, the current V4 Operator Readiness implementation, and deferred future work.
+This roadmap summarizes the completed V4 Operator Readiness baseline, the current V5.0.0 working tree, and deferred future work.
 
-本路线图说明当前完成状态、V4 Operator Readiness 实现快照，以及后续延后事项。
+本路线图说明已完成的 V4 Operator Readiness 基线、当前 V5.0.0 工作树，以及后续延后事项。
 
 ## 1. Current State
 
-MiniMQ 4.0.0 has completed the V4 Operator Readiness implementation snapshot on top of the V3.0.0 Controller HA baseline and V3.3-V3.5 production-hardening work.
+MiniMQ 5.0.0 is open. V4 Operator Readiness is the completed baseline; V5 adds producer acknowledgements, `min.insync.replicas`, a broker-scoped produce-ack executor, `LEAVE_GROUP`, per-member session timeouts, topic config changes, partition reassignment, and preferred-leader election. Client linger/auto-batch (`batchSize=50`, `lingerMs=5`) and default storage flush `everyNAppends(100)` are also in source. Latest evidence: [test-report-2026-08-14-batch-flush-defaults.md](test-report-2026-08-14-batch-flush-defaults.md) (823 tests, 91.78% overall line coverage).
 
 Current implemented capabilities include:
 
 - Java 17 Maven multi-module project with `mq-common`, `mq-storage`, `mq-protocol`, `mq-broker`, `mq-client`, and `mq-demo`.
 - Custom Netty binary protocol and protocol serdes tests.
-- WAL-backed segmented append-only log, sparse index, retention, compaction, checkpoints, recovery, zero-copy fetch, delayed-message scheduling, and visible-prefix fetch semantics.
-- Producer and Consumer SDKs with metadata refresh and leader-aware retry behavior.
+- WAL-backed segmented append-only log, sparse index, retention, compaction, checkpoints, recovery, zero-copy fetch, delayed-message scheduling, visible-prefix fetch semantics, and default flush `everyNAppends(100)`.
+- Producer and Consumer SDKs with metadata refresh, leader-aware retry, per-partition linger auto-batch (`batchSize=50`, `lingerMs=5`), and `send(List)`.
 - Consumer group assignment, offset commit/fetch, and group coordination basics.
 - Broker replication, ISR tracking, leader epoch fencing, automatic failover, broker leases, and frozen-partition handling.
 - etcd-backed Controller election and metadata persistence for the HA path.
@@ -35,7 +35,16 @@ Current policy:
 - If the same environment blocker remains unresolved after five bounded attempts, document it in a known-issues file and continue with independent work.
 - Do not mark the real-etcd gate complete until the focused Failsafe tests run successfully.
 
-## 3. Current Major Version: V4.0 Operator Readiness
+## 3. Current Major Version: V5.0 Producer Acknowledgements And Group Hardening
+
+V5.0 adds `LEADER` and `ALL` (current-ISR) produce acknowledgements, plus group-membership hardening. Design and plan:
+
+- [V5.0 Producer Acknowledgements Design](designs/v5-producer-acks-design.md)
+- [V5.0 Producer Acknowledgements Implementation Plan](plans/v5-producer-acks-implementation.md)
+
+Default produce remains Leader-local, matching V4. `ALL` waits on a dedicated executor until the current ISR high watermark meets the post-append Leader LEO and `isr.size() >= min.insync.replicas`, or returns `REQUEST_TIMED_OUT` / `NOT_ENOUGH_REPLICAS`. Consumers leave with `LEAVE_GROUP` and expire on a per-member session timeout. Operators can change `min.insync.replicas`, reassign partition replicas, and elect the preferred leader. Transactions and exactly-once stay out of scope.
+
+## 3a. Previous Major Version: V4.0 Operator Readiness
 
 V4.0 is now the current consolidated operator-readiness implementation, not a documentation-only plan. It folds the previously separate release-gate, multi-node operations, consumer-lag, topic-admin, failover-audit, metrics, local-demo, scoped-permission, retry-topic, dead-letter-topic, and required delayed-message work into one major version.
 
@@ -70,22 +79,20 @@ be recreated. Retry/DLQ targets are operator-selected names rather than inferred
 
 ## 4. Future Version Notes
 
-Future versions are not urgent until the current V4.0 implementation is fully validated in the target environment. They should start with design and implementation documents before code work.
+After V5.0 lands, later versions should start with design documents before code work.
 
-Recommended future topics:
+Recommended later topics:
 
-1. Optional experimental LSM state-store module isolated from the broker default write path.
+1. Optional unclean election (default off).
 2. Transactional produce and exactly-once research.
-3. Larger benchmark automation and long-running soak tests.
+3. Optional experimental LSM state-store module isolated from the broker default write path.
 4. Multi-tenant authentication and ACL integration beyond local scoped tokens.
-5. More complete client ergonomics such as batching, pause/resume, and auto-commit options.
 
 ## 5. Recommended Next Tasks
 
-1. Run focused V4 protocol, storage, broker, and client verification after each operator-readiness change.
-2. Keep resource use bounded and close all brokers, clients, event loops, executors, and Docker resources started by tests or demos.
-3. Record unresolved Docker/real-etcd blockers after five bounded attempts instead of repeatedly retrying the same blocked path.
-4. Keep README.md, docs/README.md, docs/design.md, docs/architecture.md, docs/testing.md, and test reports synchronized from source and tests.
+1. Keep resource use bounded and close all brokers, clients, event loops, executors, and Docker resources started by tests or demos.
+2. Record unresolved Docker/real-etcd blockers after five bounded attempts instead of repeatedly retrying the same blocked path.
+3. Keep README.md, docs/README.md, docs/design.md, docs/architecture.md, docs/testing.md, and test reports synchronized from source and tests.
 
 ## 6. Risk Register
 
@@ -99,7 +106,7 @@ Recommended future topics:
 
 ## 7. Definition Of Done
 
-A V4.0 feature is done only when:
+A V5.0 feature is done only when:
 
 1. Source code respects module boundaries.
 2. Protocol changes include serdes round-trip and malformed-input tests.

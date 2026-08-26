@@ -9,9 +9,9 @@ MiniMQ aims to be small enough to read, but realistic enough to explain the esse
 
 MiniMQ 的目标是“小到能读完，大到能讲清消息队列核心机制”。项目有意避免把关键行为藏在框架里：协议序列化是手写的，存储格式是显式的，消费组分配逻辑也直接体现在代码里。因此它适合作为学习项目、设计讨论材料以及后续贡献者继续迭代的上下文载体。
 
-The design optimizes for clarity, determinism, and testability. V4 adds etcd-fenced Controller HA, exact Leader epochs, automatic Broker failure detection, physical/visible replica watermarks, scoped operator APIs, crash-safe Topic deletion, explicit retry/DLQ links, and required delayed-message delivery. Producer acknowledgement policies, transactions, and exactly-once semantics remain future work.
+The design optimizes for clarity, determinism, and testability. V4 added etcd-fenced Controller HA, exact Leader epochs, automatic Broker failure detection, physical/visible replica watermarks, scoped operator APIs, crash-safe Topic deletion, explicit retry/DLQ links, and required delayed-message delivery. V5 adds producer `LEADER` / `ALL` acknowledgements, `min.insync.replicas`, a dedicated produce-ack executor, `LEAVE_GROUP`, per-member session timeouts, topic config changes, partition reassignment, and preferred-leader election. Client `send(record)` linger-batches by partition (`batchSize=50`, `lingerMs=5`). Storage flush defaults to `EVERY_N_APPENDS` with `N=100`. Transactions and exactly-once semantics remain future work.
 
-当前设计优先考虑清晰性、确定性和可测试性。V4 已增加 etcd fencing 的 Controller HA、精确 Leader epoch、Broker 自动故障检测、物理/可见副本水位、细粒度运维 API、崩溃安全 Topic 删除、显式 retry/DLQ 关联和必需的延迟投递。Producer 确认策略、事务与 exactly-once 语义仍属于后续工作。
+当前设计优先考虑清晰性、确定性和可测试性。V4 已增加 etcd fencing 的 Controller HA、精确 Leader epoch、Broker 自动故障检测、物理/可见副本水位、细粒度运维 API、崩溃安全 Topic 删除、显式 retry/DLQ 关联和必需的延迟投递。V5 增加 Producer `LEADER` / `ALL` 确认、`min.insync.replicas`、专用 produce-ack 线程池、`LEAVE_GROUP`、按成员 session timeout、Topic 配置变更、分区重分配和 preferred Leader 选举。客户端 `send(record)` 按分区 linger 攒批（`batchSize=50`，`lingerMs=5`）。存储刷盘默认 `EVERY_N_APPENDS`（`N=100`）。事务与 exactly-once 语义仍属于后续工作。
 
 ## 2. Protocol Design / 协议设计
 
@@ -66,11 +66,11 @@ If `errorCode != NONE`, response body is omitted. This rule keeps error response
 
 | ApiKey | Name / 名称 | Plane / 平面 | Purpose / 用途 |
 | ---: | --- | --- | --- |
-| 0 | `CREATE_TOPIC` | Control / 控制面 | Create a topic with N partitions and replication factor. / 创建包含 N 个分区与副本因子的 Topic。 |
+| 0 | `CREATE_TOPIC` | Control / 控制面 | Create a topic with N partitions, replication factor, and optional trailing `minInSyncReplicas`. / 创建 Topic，含分区数、副本因子和可选尾字段 `minInSyncReplicas`。 |
 | 1 | `METADATA` | Control / 控制面 | Fetch brokers and topic-partition leader, replica, and ISR metadata. / 拉取 Broker 列表和 Topic-Partition leader、副本与 ISR 元数据。 |
-| 2 | `PRODUCE` | Data / 数据面 | Append records to a topic partition. / 向 Topic 分区追加消息。 |
+| 2 | `PRODUCE` | Data / 数据面 | Append records; optional trailing `acks` / `ackTimeoutMs`. / 追加消息；可选尾字段 `acks` 与 `ackTimeoutMs`。 |
 | 3 | `FETCH` | Data / 数据面 | Read records from a topic partition starting at an offset. / 从指定 offset 开始读取 Topic 分区消息。 |
-| 4 | `JOIN_GROUP` | Control / 控制面 | Join a consumer group. / 加入消费组。 |
+| 4 | `JOIN_GROUP` | Control / 控制面 | Join a consumer group; optional trailing `sessionTimeoutMs`. / 加入消费组；可选尾字段 `sessionTimeoutMs`。 |
 | 5 | `SYNC_GROUP` | Control / 控制面 | Submit or fetch partition assignment. / 提交或拉取分区分配结果。 |
 | 6 | `HEARTBEAT` | Control / 控制面 | Refresh member liveness. / 刷新成员存活状态。 |
 | 7 | `OFFSET_COMMIT` | Control / 控制面 | Commit consumed offset. / 提交已消费 offset。 |
@@ -89,21 +89,44 @@ If `errorCode != NONE`, response body is omitted. This rule keeps error response
 | 20 | `OPS_STATUS` | Admin / 管理面 | Read one Broker's bounded operational snapshot. / 读取单个 Broker 的有界运维快照。 |
 | 21 | `GROUP_STATUS` | Control / 控制面 | Read bounded group membership, offsets, watermarks, and lag. / 读取有界消费组成员、位点、水位与 lag。 |
 | 22 | `LIST_TOPICS` | Control / 控制面 | List active Topic names with total/truncated metadata. / 列出 active Topic 名称及 total/truncated 元数据。 |
-| 23 | `DESCRIBE_TOPIC` | Control / 控制面 | Describe partitions, reliability links, and optional tombstone state. / 描述分区、可靠性关联和可选 tombstone 状态。 |
+| 23 | `DESCRIBE_TOPIC` | Control / 控制面 | Describe partitions, reliability links, optional tombstone state, and trailing `minInSyncReplicas`. / 描述分区、可靠性关联、可选 tombstone 状态和尾字段 `minInSyncReplicas`。 |
 | 24 | `DELETE_TOPIC` | Control / 控制面 | Start or observe durable Topic deletion. / 启动或观察持久化 Topic 删除。 |
 | 25 | `INCREASE_PARTITIONS` | Control / 控制面 | Increase, never decrease, a Topic's partition count. / 只增加、不减少 Topic 分区数。 |
 | 26 | `FAILOVER_AUDIT` | Admin / 管理面 | Read a Broker-local bounded failover audit ring. / 读取 Broker-local 有界故障转移审计环。 |
 | 27 | `AUTH_STATUS` | Admin / 管理面 | Report the caller credential's scopes on one Broker. / 报告调用凭据在单个 Broker 上的 scopes。 |
 | 28 | `CONFIGURE_TOPIC_RELIABILITY` | Control / 控制面 | Atomically set or clear explicit retry/DLQ links. / 原子设置或清除显式 retry/DLQ 关联。 |
 | 29 | `MARK_BROKER_OFFLINE_ADMIN` | Control / 控制面 | Authorized operator request to mark a Broker offline. / 经授权的运维 Broker 下线请求。 |
-| 30 | `CREATE_TOPIC_ADMIN` | Control / 控制面 | Scoped V4 Topic creation. / V4 scoped Topic 创建。 |
-| 31 | `PRODUCE_V2` | Data / 数据面 | Append immediate or delayed records with `deliverAtEpochMs`. / 追加带 `deliverAtEpochMs` 的即时或延迟记录。 |
+| 30 | `CREATE_TOPIC_ADMIN` | Control / 控制面 | Scoped Topic creation with optional trailing `minInSyncReplicas`. / 带 scope 的 Topic 创建，可选尾字段 `minInSyncReplicas`。 |
+| 31 | `PRODUCE_V2` | Data / 数据面 | Append immediate or delayed records with `deliverAtEpochMs` and the same optional ack fields as `PRODUCE`. / 追加带 `deliverAtEpochMs` 的即时或延迟记录，以及与 `PRODUCE` 相同的可选 ack 字段。 |
 | 32 | `REPLICA_FETCH_V2` | Internal data / 内部数据面 | Fenced replica fetch preserving delivery timestamps. / 保留投递时间且带 fencing 的副本拉取。 |
 | 33 | `TOPIC_DELETE_ACK` | Internal control / 内部控制面 | Acknowledge versioned local tombstone cleanup. / 确认指定版本的本地 tombstone 清理。 |
 | 34 | `FETCH_V2` | Data / 数据面 | Bounded fetch with physical/visible watermarks and next visibility time. / 带物理/可见水位与下次可见时间的有界拉取。 |
 | 35 | `METADATA_V2` | Control / 控制面 | Bounded active metadata, independent topic/tombstone cursors, and explicit reliability links. / 有界 active 元数据、独立 topic/tombstone 游标与显式可靠性关联。 |
 | 36 | `RUNTIME_METRICS_V2` | Admin / 管理面 | Bounded rates, payload bytes, latency, lag, and audit overwrite metrics. / 有界速率、payload 字节、延迟、lag 与审计覆盖指标。 |
 | 37 | `UPDATE_REPLICA_STATE_V2` | Internal control / 内部控制面 | Report fenced physical and visible replica progress. / 上报带 fencing 的物理与可见副本进度。 |
+| 38 | `LEAVE_GROUP` | Control / 控制面 | Remove a consumer-group member. Leave is allowed during rebalance. / 移除消费组成员；rebalance 期间也可离开。 |
+| 39 | `ALTER_TOPIC_CONFIG` | Control / 控制面 | Change `min.insync.replicas` for an existing topic. / 修改已有 Topic 的 `min.insync.replicas`。 |
+| 40 | `REASSIGN_PARTITIONS` | Control / 控制面 | Replace a partition replica list without unclean leader election. / 替换分区副本列表，不允许 unclean 选举。 |
+| 41 | `ELECT_PREFERRED_LEADERS` | Control / 控制面 | Move leadership to `replicaBrokerIds[0]` when that replica is in the ISR. / 在 preferred replica 属于 ISR 时把它选为 Leader。 |
+
+### 2.5 HEARTBEAT and OFFSET_COMMIT bodies / HEARTBEAT 与 OFFSET_COMMIT 报文体
+
+Current encode always writes the membership fields added for join/generation checks:
+
+当前编码始终写出为 join/generation 校验新增的成员字段：
+
+| API | Current request body / 当前请求 body |
+| --- | --- |
+| `HEARTBEAT` (6) | `groupId` (str16), `memberId` (str16), `generationId` (i32) |
+| `OFFSET_COMMIT` (7) | `groupId` (str16), `topicName` (str16), `partitionId` (i32), `offset` (i64), `memberId` (str16), `generationId` (i32) |
+
+Decode accepts a shorter legacy body so old frames are not rejected as malformed: `HEARTBEAT` may omit `generationId`; `OFFSET_COMMIT` may omit `memberId` and `generationId`, or include `memberId` without `generationId`. Missing fields default to `generationId=0` and `memberId=""`. Encode never emits the legacy shape.
+
+解码兼容更短的旧 body，避免旧帧被当成畸形请求：`HEARTBEAT` 可省略 `generationId`；`OFFSET_COMMIT` 可省略 `memberId` 与 `generationId`，或只带 `memberId`。缺省字段为 `generationId=0`、`memberId=""`。编码不再写出旧布局。
+
+After a real `JOIN_GROUP`, the coordinator generation is at least 1. A decoded legacy heartbeat or commit therefore fails the membership check with `REBALANCE_IN_PROGRESS` or `GROUP_NOT_FOUND`. Convenience constructors that default generation to 0 still encode the current layout (the extra fields are present, with those defaults).
+
+真实 `JOIN_GROUP` 之后 generation 至少为 1，因此解码后的旧心跳/提交会在协调器侧因 generation 或成员不匹配而返回 `REBALANCE_IN_PROGRESS` 或 `GROUP_NOT_FOUND`。默认 generation 为 0 的便捷构造仍按当前布局编码（字段在，只是值为默认）。
 
 ## 3. Serialization Rules / 序列化规则
 
@@ -151,9 +174,9 @@ V2.1.0 通过加载 `catalog.json` 恢复分段分区，按 offset 顺序打开�
 
 ### 4.2 Write Safety / 写入安全
 
-The implementation uses a `writeFully(ByteBuffer)` loop because `FileChannel.write` does not guarantee that the whole buffer is written in one call. After each append, `channel.force(false)` flushes file contents to storage.
+The implementation uses a `writeFully(ByteBuffer)` loop because `FileChannel.write` does not guarantee that the whole buffer is written in one call. Durability flush of WAL and partition logs follows `FlushPolicy` (default `EVERY_N_APPENDS` with `N=100`); see §4.3. Close and explicit checkpoint still force a full flush.
 
-实现中使用 `writeFully(ByteBuffer)` 循环写满，因为 `FileChannel.write` 不保证一次写完整个 buffer。每次 append 后调用 `channel.force(false)` 刷盘。
+实现中使用 `writeFully(ByteBuffer)` 循环写满，因为 `FileChannel.write` 不保证一次写完整个 buffer。WAL 与分区日志的持久化刷盘遵循 `FlushPolicy`（默认 `EVERY_N_APPENDS`，`N=100`），见 §4.3。关闭与显式 checkpoint 仍会完整刷盘。
 
 ### 4.3 V2.0 WAL, Checkpoint, And Flush Policy / V2.0 WAL、Checkpoint 与刷盘策略
 
@@ -223,23 +246,23 @@ V2.0 引入显式 `FlushPolicy`：
 
 | Policy / 策略 | Behavior / 行为 | Use case / 使用场景 |
 | --- | --- | --- |
-| `ALWAYS` | Force WAL and partition log on every append. / 每次 append 都刷 WAL 与分区日志。 | Default safety baseline. / 默认安全基线。 |
-| `EVERY_N_APPENDS` | Force after N successful appends. / 每 N 次成功 append 后刷盘。 | Lower latency with bounded loss window. / 降低延迟，同时控制丢失窗口。 |
+| `ALWAYS` | Force WAL and partition log on every append. / 每次 append 都刷 WAL 与分区日志。 | Maximum durability; opt in with `--flush-policy always`. / 最高持久性，通过 `--flush-policy always` 显式开启。 |
+| `EVERY_N_APPENDS` | Force after N successful appends. / 每 N 次成功 append 后刷盘。 | Default (`N=100`): lower fsync cost with a bounded loss window. / 默认（`N=100`）：降低 fsync 成本，丢失窗口有上界。 |
 | `INTERVAL_MS` | Background or append-triggered force after a time interval. / 到达时间间隔后由后台或 append 触发刷盘。 | Throughput-oriented local testing. / 偏吞吐的本地测试。 |
 | `MANUAL_ON_CLOSE` | Flush only on explicit flush or close. / 仅在显式 flush 或 close 时刷盘。 | Tests and demos where durability is not the focus. / 不以持久性为重点的测试和演示。 |
 
-The default remains `ALWAYS` until replication and stronger recovery tests exist. This preserves V1.3's conservative durability behavior while making future performance work explicit.
+The default is `EVERY_N_APPENDS` with `N=100`. Broker close and explicit checkpoint still force a full flush. Durability-sensitive deployments can set `--flush-policy always`.
 
-默认策略保持 `ALWAYS`，直到副本机制和更强恢复测试完成。这保留 V1.3 的保守持久性行为，同时把后续性能优化显式化。
+默认策略为 `EVERY_N_APPENDS`（`N=100`）。Broker 关闭与显式 checkpoint 仍会完整刷盘。对持久性更敏感的部署可设置 `--flush-policy always`。
 
-Broker CLI flags expose the V2.0 policy without changing existing defaults:
+Broker CLI flags expose the V2.0 policy:
 
-Broker CLI 参数暴露 V2.0 策略，同时不改变现有默认行为：
+Broker CLI 参数暴露 V2.0 策略：
 
 | Flag / 参数 | Meaning / 含义 |
 | --- | --- |
-| `--flush-policy always` | Default: force WAL and partition logs after every append. / 默认：每次 append 后刷 WAL 与分区日志。 |
-| `--flush-policy every-n-appends --flush-every-n-appends N` | Force after every `N` successful appends. / 每 `N` 次成功 append 后刷盘。 |
+| `--flush-policy always` | Force WAL and partition logs after every append. / 每次 append 后刷 WAL 与分区日志。 |
+| `--flush-policy every-n-appends --flush-every-n-appends N` | Default: force after every `N` successful appends (`N=100` when omitted). / 默认：每 `N` 次成功 append 后刷盘（省略时 `N=100`）。 |
 | `--flush-policy interval-ms --flush-interval-ms N` | Force when at least `N` milliseconds have elapsed since the last flush. / 距上次刷盘至少经过 `N` 毫秒后刷盘。 |
 | `--flush-policy manual-on-close` | Do not flush during append; explicit checkpoint or broker shutdown still flushes before saving checkpoint. / append 期间不主动刷盘；显式 checkpoint 或 Broker 关闭仍会在保存 checkpoint 前刷盘。 |
 | `--checkpoint-every-n-appends N` | Save a recovery checkpoint after every `N` successful appends; `0` disables append-count checkpointing. / 每 `N` 次成功 append 后保存恢复 checkpoint；`0` 表示关闭按次数 checkpoint。 |
@@ -408,6 +431,11 @@ Consumer group coordination is simplified but captures the essential flow:
 6. Leader submits assignment through `SYNC_GROUP`. / Leader 通过 `SYNC_GROUP` 提交分配结果。
 7. Members fetch their assignment through `SYNC_GROUP`. / 成员通过 `SYNC_GROUP` 拉取自己的分配结果。
 8. Consumers commit offsets after processing. / Consumer 处理消息后提交 offset。
+9. `Consumer.close()` sends `LEAVE_GROUP`. / `Consumer.close()` 发送 `LEAVE_GROUP`。
+
+Each member carries its own `sessionTimeoutMs` from `JOIN_GROUP` (default 10,000, range 1,000..300,000). `JOIN_GROUP`, `HEARTBEAT`, `OFFSET_COMMIT`, `SYNC_GROUP`, and `LEAVE_GROUP` evict members whose last heartbeat is older than that member's timeout. Join already increments `generationId`, so eviction on that path does not add a second bump. Eviction on heartbeat, commit, or sync increments `generationId`, sets `rebalancing=true`, and re-picks the leader if the previous leader left. Leave removes the caller even when generation is stale so a member can exit during rebalance; if others remain, generation advances. An empty group is kept so committed offsets survive. The timed-out or already-left caller then sees `GROUP_NOT_FOUND`; a still-present caller whose generation is now stale sees `REBALANCE_IN_PROGRESS`. A successful commit also refreshes `lastHeartbeatMs`. `GROUP_STATUS` uses each member's session timeout only to mark members alive; it does not evict.
+
+每个成员在 `JOIN_GROUP` 时带上自己的 `sessionTimeoutMs`（默认 10,000，范围 1,000..300,000）。`JOIN_GROUP`、`HEARTBEAT`、`OFFSET_COMMIT`、`SYNC_GROUP` 和 `LEAVE_GROUP` 都会踢出超过该成员超时未心跳的成员。join 本身会递增 `generationId`，该路径上的踢人不再额外加一代。心跳、提交或 sync 上的踢人会递增 `generationId`、置 `rebalancing=true`，并在原 leader 离开时重选。Leave 不校验 generation，因此 rebalance 期间也能离开；若仍有其他成员则推进 generation。空组会保留以便 offset 还在。被踢或已离开的调用方得到 `GROUP_NOT_FOUND`；仍在组内但 generation 已过期的调用方得到 `REBALANCE_IN_PROGRESS`。成功的 offset 提交也会刷新 `lastHeartbeatMs`。`GROUP_STATUS` 用各成员自己的 session timeout 只标记存活，不执行踢人。
 
 `RangeAssignor` sorts members and then allocates contiguous partition ranges. For example, 3 partitions and 2 members results in member 0 receiving partitions `[0, 1]` and member 1 receiving `[2]`.
 
@@ -421,17 +449,21 @@ Consumer group coordination is simplified but captures the essential flow:
 
 `Producer` and `Consumer` use the complete bootstrap list to discover the current Controller, and lazily create partition-Leader clients. They cache metadata for at most 30 seconds and invalidate it on routing errors before one bounded refresh/retry. Producer reliability-link metadata uses the same 30-second bound; a routing error invalidates both route and link state and resolves the link once more.
 
+`send(record)` enqueues by partition and returns immediately. Sequential sends that do not read `offset()` share one Produce per partition (`ProducerConfig` defaults `batchSize=50`, `lingerMs=5`) until `offset()`, `flush()`, linger expiry, or `close()`. `send().offset()` remains a one-record round-trip. `sendDelayed`, retry, and DLQ helpers stay immediate. `send(List)` flushes pending records for those partitions first. Default produce acks are `LEADER`; `ALL` waits for the current ISR on the broker.
+
 `Producer` 与 `Consumer` 使用完整 bootstrap 列表发现当前 Controller，并懒加载分区 Leader 客户端。元数据最多缓存 30 秒；路由错误会先使缓存失效，再执行一次有界刷新/重试。Producer 的 reliability-link 元数据同样最多缓存 30 秒；路由错误会同时失效路由和 link，并重新解析一次。
+
+`send(record)` 按分区入队并立即返回。连续发送且不读 `offset()` 时，同一分区共享一次 Produce（`ProducerConfig` 默认 `batchSize=50`、`lingerMs=5`），直到 `offset()`、`flush()`、linger 到期或 `close()`。`send().offset()` 仍是单条往返。`sendDelayed`、retry 与 DLQ helper 仍立即发出。`send(List)` 会先刷出这些分区上的 pending。默认 acks 为 `LEADER`；`ALL` 在 Broker 上等待当前 ISR。
 
 V1.3 adds the client-resilience boundary for stale metadata. `NetworkClient` supports configurable synchronous request timeout and converts common failures into typed client exceptions. `Producer` and `Consumer` cache metadata per topic, invalidate the cache when a data-plane request receives `NOT_LEADER` or `BROKER_FENCED`, or cached metadata can no longer route the topic/partition, refresh metadata once, and retry once. The retry budget is fixed at initial request plus one refresh retry. If the second attempt still fails, the surfaced `MiniMqServerException` includes operation context such as API, topic, partition, routed Broker, and attempt count.
 
-V1.3 补齐了过期元数据相关的客户端韧性边界。`NetworkClient` 支持同步请求超时配置，并把常见失败转换为类型化客户端异常。`Producer` 和 `Consumer` 按 Topic 缓存元数据；当数据面请求遇到 `NOT_LEADER`，或缓存元数据已经无法路由 topic/partition 时，会失效缓存、刷新元数据并重试一次。重试预算固定为初始请求 + 一次刷新重试；如果第二次仍失败，抛出的 `MiniMqServerException` 会包含 API、topic、partition、attempt 等用户可见上下文。
+V1.3 补齐了过期元数据相关的客户端韧性边界。`NetworkClient` 支持同步请求超时配置，并把常见失败转换为类型化客户端异常。`Producer` 和 `Consumer` 按 Topic 缓存元数据；当数据面请求遇到 `NOT_LEADER` 或 `BROKER_FENCED`，或缓存元数据已经无法路由 topic/partition 时，会失效缓存、刷新元数据并重试一次。重试预算固定为初始请求 + 一次刷新重试；如果第二次仍失败，抛出的 `MiniMqServerException` 会包含 API、topic、partition、attempt 等用户可见上下文。
 
 ### 8.1 Web Runtime Reuse / Web Runtime 复用
 
-The Web demo backend is intentionally closer to a real application than to a one-shot CLI command. It keeps a small runtime cache keyed by `bootstrapServers + topic + groupId`. Each real-flow runtime owns a controller-aware admin client, one `Producer`, one `Consumer`, topic-readiness state, and consumer-subscription state. Operator endpoints use the same controller-aware bootstrap behavior for controller operations and require one explicit Broker for Broker-local operations. Credentials stay on the server, and error text is redacted and capped at 256 characters. The cache uses an access-ordered LRU policy and keeps at most 4 active runtimes.
+The Web demo backend is intentionally closer to a real application than to a one-shot CLI command. It keeps a small runtime cache keyed by `bootstrapServers + topic + groupId`. Each real-flow runtime owns a controller-aware admin client, one `Producer`, one `Consumer`, topic-readiness state, and consumer-subscription state. Operator endpoints use the same controller-aware bootstrap behavior for controller operations and require one explicit Broker for Broker-local operations. Credentials stay on the server, and error text is redacted and capped at 256 characters. The cache uses an access-ordered LRU policy and keeps at most 4 active runtimes. Web / `FlowRequest` default topic partitions are 4; CLI `create-topic --partitions` still defaults to 3.
 
-Web 演示后端更接近真实应用，而不是一次性 CLI 命令。它按 `bootstrapServers + topic + groupId` 维护一个小型 runtime 缓存。每个真实流程 runtime 拥有一个 controller-aware 管理客户端、一个 `Producer`、一个 `Consumer`、Topic 就绪状态和 Consumer 订阅状态。Controller 操作使用相同的 bootstrap 自动发现，Broker-local 操作要求单个明确 Broker。凭据只保留在服务端，错误文本经过脱敏且最多 256 字符。缓存采用按访问顺序排列的 LRU 策略，最多保留 4 个活跃 runtime。
+Web 演示后端更接近真实应用，而不是一次性 CLI 命令。它按 `bootstrapServers + topic + groupId` 维护一个小型 runtime 缓存。每个真实流程 runtime 拥有一个 controller-aware 管理客户端、一个 `Producer`、一个 `Consumer`、Topic 就绪状态和 Consumer 订阅状态。Controller 操作使用相同的 bootstrap 自动发现，Broker-local 操作要求单个明确 Broker。凭据只保留在服务端，错误文本经过脱敏且最多 256 字符。缓存采用按访问顺序排列的 LRU 策略，最多保留 4 个活跃 runtime。Web / `FlowRequest` 默认分区数为 4；CLI `create-topic --partitions` 默认仍是 3。
 
 Why this is needed / 为什么需要这样设计：
 
@@ -473,6 +505,8 @@ MiniMQ 在响应头里使用 `ErrorCode`：
 | 17 | `FORBIDDEN` | Credential is authenticated but lacks the required scope. / 凭据有效但缺少所需 scope。 |
 | 18 | `UNKNOWN_BROKER` | Referenced Broker does not exist. / 引用的 Broker 不存在。 |
 | 19 | `STALE_TOMBSTONE` | Topic-deletion acknowledgement uses a stale version. / Topic 删除确认使用过期版本。 |
+| 20 | `NOT_ENOUGH_REPLICAS` | ISR is empty or below `min.insync.replicas` for `acks=ALL`. / `acks=ALL` 时 ISR 为空或低于 `min.insync.replicas`。 |
+| 21 | `REQUEST_TIMED_OUT` | Produce ack wait or another bounded wait expired. / 生产确认等待或其他有界等待超时。 |
 
 Malformed request bodies are handled inside `MqRequestHandler` so that, when the request header is valid, the broker can return `INVALID_REQUEST` with the original `correlationId`.
 
@@ -598,9 +632,9 @@ V3.5 extends `benchmark-fetch` with `--network-transport nio|auto|epoll`. The be
 
 ## 12. V4 Operator Readiness / V4 运维就绪设计
 
-V4 preserves frame version 1 and all positional layouts for keys 0-19. V3 clients therefore remain wire-compatible with a V4 Broker. A mixed V3/V4 Broker cluster is unsupported: V4 replication keys 32 and 37 are required to preserve delivery timestamps and authoritative physical/visible progress, so every Broker must be upgraded together. Metadata format 4 is likewise a cluster-wide contract.
+V4 preserves frame version 1. Keys 0-19 keep their original field order; `HEARTBEAT` (6) and `OFFSET_COMMIT` (7) append optional trailing membership fields. Decode accepts both the legacy and current bodies (see §2.5). A mixed V3/V4 Broker cluster is unsupported: V4 replication keys 32 and 37 are required to preserve delivery timestamps and authoritative physical/visible progress, so every Broker must be upgraded together. Metadata format 4 is likewise a cluster-wide contract.
 
-V4 保持 frame version 1 以及 API 0-19 的全部位置布局，因此 V3 客户端仍可连接 V4 Broker。但 V3/V4 Broker 混合集群不受支持：只有 V4 的 key 32 与 37 会保留 delivery timestamp 和权威物理/可见进度，所以所有 Broker 必须一起升级；metadata format 4 同样是集群级契约。
+V4 保持 frame version 1。API 0-19 保留原字段顺序；`HEARTBEAT`（6）和 `OFFSET_COMMIT`（7）在末尾追加可选成员字段。解码同时接受旧 body 与当前 body（见 §2.5）。V3/V4 Broker 混合集群不受支持：只有 V4 的 key 32 与 37 会保留 delivery timestamp 和权威物理/可见进度，所以所有 Broker 必须一起升级；metadata format 4 同样是集群级契约。
 
 Authorization is local to each Broker. `--admin-token` maps to every scope; repeated `--operator-credential token=scope,scope` entries can grant only `STATUS`, `TOPIC_ADMIN`, `MAINTENANCE`, and/or `BROKER_OFFLINE`. Authentication runs before mutation, storage access, or expensive snapshot assembly. `UNAUTHORIZED` means the credential is unknown; `FORBIDDEN` means it is known but lacks the required scope.
 
@@ -622,15 +656,20 @@ The local scripts own one run directory through `.minimq-run-directory`, record 
 
 本地脚本通过 `.minimq-run-directory` 声明运行目录所有权，记录 PID 与进程启动时间，对 readiness/shutdown 设置上限，并保留非自身进程或未退出进程。没有有效 ownership marker 时拒绝递归清理。Failover demo 会等 3 个副本全部进入 ISR 后才停止初始 Leader，随后采集状态/审计证据，并始终清理自己拥有的进程。
 
+### 12.1 V5 Produce Acks, Groups, And Defaults / V5 生产确认、消费组与默认值
+
+V5 keeps frame version 1 and appends API keys 38-41 plus error codes `NOT_ENOUGH_REPLICAS=20` and `REQUEST_TIMED_OUT=21`. Produce trailing `acks` / `ackTimeoutMs` default to `LEADER` / 5000 ms. `ALL` waits on a dedicated executor until the current ISR high watermark meets the post-append Leader LEO and `isr.size() >= min.insync.replicas`. Members leave with `LEAVE_GROUP` and expire on per-member `sessionTimeoutMs`. Later 5.0.0 defaults (not new wire keys) add client linger auto-batch and `FlushPolicy.everyNAppends(100)`. Full contract: [v5-producer-acks-design.md](designs/v5-producer-acks-design.md).
+
+V5 保持 frame version 1，追加 API 38-41 以及错误码 `NOT_ENOUGH_REPLICAS=20`、`REQUEST_TIMED_OUT=21`。Produce 尾字段 `acks` / `ackTimeoutMs` 默认 `LEADER` / 5000 ms。`ALL` 在专用线程池上等待当前 ISR 高水位达到追加后的 Leader LEO，且 `isr.size() >= min.insync.replicas`。成员通过 `LEAVE_GROUP` 离开，并按各自的 `sessionTimeoutMs` 过期。之后的 5.0.0 默认值（不是新协议 key）增加客户端 linger 攒批和 `FlushPolicy.everyNAppends(100)`。完整契约见 [v5-producer-acks-design.md](designs/v5-producer-acks-design.md)。
+
 ## 13. Design Tradeoffs / 设计取舍
 
 | Decision / 决策 | Benefit / 收益 | Cost / 代价 |
 | --- | --- | --- |
 | Custom binary protocol / 自定义二进制协议 | Easy to inspect low-level messaging behavior. / 便于观察底层消息行为。 | More validation and compatibility work than JSON/HTTP. / 比 JSON/HTTP 需要更多校验和兼容性工作。 |
 | Segmented local log per partition / 每分区本地分段日志 | Supports sparse indexing, faster recovery boundaries, whole-segment retention, sealed-segment compaction, dry-run reports, and maintenance metrics. / 支持稀疏索引、更清晰的恢复边界、整段保留删除、sealed segment 压缩、dry-run 报告和维护指标。 | External operator APIs still need to render maintenance reports and metrics. / 仍需要外部运维 API 输出维护报告与指标。 |
-| JSON metadata store / JSON 元数据存储 | Human-readable and easy for demos. / 人类可读，适合演示。 | Not a scalable metadata log. / 不是可扩展的元数据日志。 |
-| etcd-fenced Controller role / etcd fencing 的 Controller 角色 | Automatic takeover with epoch and revision fencing. / 使用 epoch 与 revision fencing 自动接管。 | Production Brokers require reachable etcd; SDK clients do not. / 生产 Broker 依赖可达 etcd，但 SDK 不依赖。 |
-| Synchronous client API / 同步客户端 API | Easy to use and test. / 易用且易测。 | Lower throughput than async batching. / 吞吐低于异步批量方案。 |
+| etcd-fenced Controller metadata / etcd fencing 的 Controller 元数据 | Automatic takeover with epoch and revision fencing; local JSON is only the explicit 2.x import source. / 使用 epoch 与 revision fencing 自动接管；本地 JSON 仅作显式 2.x 导入源。 | Production Brokers require reachable etcd; SDK clients do not. / 生产 Broker 依赖可达 etcd，但 SDK 不依赖。 |
+| Synchronous send with client-side linger batches / 同步可读 offset，客户端按分区 linger 攒批 | Sequential `send(record)` calls that do not immediately read `offset()` share one Produce per partition (`batchSize=50`, `lingerMs=5`). / 连续 `send(record)` 且不立刻读 `offset()` 时，同一分区共享一次 Produce（`batchSize=50`，`lingerMs=5`）。 | `send().offset()` still forces a one-record round-trip. / `send().offset()` 仍会变成单条往返。 |
 | Sendfile FETCH path / sendfile FETCH 路径 | Removes payload copies on the Broker network write path. / 去掉 Broker 网络写路径上的 payload 复制。 | TLS and unsupported pipelines still use heap fallback. / TLS 与不支持的 pipeline 仍走 heap 回退。 |
 
 ## 14. Professional Terms / 专业名词解释

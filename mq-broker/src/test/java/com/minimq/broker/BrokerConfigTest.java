@@ -4,6 +4,7 @@ import com.minimq.broker.auth.OperatorScope;
 import org.junit.jupiter.api.Test;
 
 import com.minimq.storage.FlushPolicy;
+import com.minimq.storage.LogManagerConfig;
 
 import java.util.ArrayList;
 import java.nio.file.Path;
@@ -112,6 +113,7 @@ class BrokerConfigTest {
         assertEquals(com.minimq.broker.netty.NetworkTransportMode.NIO, config.networkTransportMode());
         assertEquals(0, config.maxInFlightRequests());
         assertEquals(BrokerConfig.DEFAULT_MAX_SCHEDULED_RECORDS, config.maxScheduledRecords());
+        assertEquals(LogManagerConfig.defaultFlushPolicy(), config.flushPolicy());
         assertEquals(1_000, config.brokerHeartbeatIntervalMs());
         assertEquals(3_000, config.brokerSelfFenceTimeoutMs());
         assertEquals(5_000, config.controllerBrokerLeaseTimeoutMs());
@@ -140,6 +142,8 @@ class BrokerConfigTest {
     void defaultsClusterTokenToAdminTokenForCompatibility() {
         BrokerConfig config = BrokerConfig.parse(new String[] {"--admin-token", "ops-secret"});
         assertEquals("ops-secret", config.clusterToken());
+        assertEquals(LogManagerConfig.defaultFlushPolicy(), config.flushPolicy());
+        assertEquals(FlushPolicy.everyNAppends(100), config.flushPolicy());
     }
 
     @Test

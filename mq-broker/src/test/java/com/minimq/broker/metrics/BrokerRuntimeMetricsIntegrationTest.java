@@ -82,7 +82,9 @@ class BrokerRuntimeMetricsIntegrationTest {
                     ApiKeys.FETCH, new FetchRequest("orders", 0, 0L, 0L, 1_024)).body();
 
             assertEquals(1, response.records().size());
-            assertEquals(before + key.length + value.length, broker.runtimeMetrics().fetchBytes());
+            assertEquals(
+                    before + key.length + value.length,
+                    awaitFetchBytes(broker, before + key.length + value.length));
             assertTrue(broker.fetchTransferMetrics().heapResponses() >= 1);
         }
     }
@@ -102,7 +104,9 @@ class BrokerRuntimeMetricsIntegrationTest {
                     ApiKeys.FETCH_V2, new FetchV2Request("orders", 0, 0L, 0L, 1_024)).body();
 
             assertEquals(1, response.records().items().size());
-            assertEquals(before + key.length + value.length, broker.runtimeMetrics().fetchBytes());
+            assertEquals(
+                    before + key.length + value.length,
+                    awaitFetchBytes(broker, before + key.length + value.length));
         }
     }
 

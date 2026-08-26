@@ -152,10 +152,15 @@ final class SegmentFile implements AutoCloseable {
             throw new IOException("Invalid append offset " + offset + " for segment " + logPath);
         }
         long position = logChannel.size();
-        logChannel.position(position);
-        PartitionLogRecordCodec.write(logChannel, offset, key, value);
-        if (recordCount % config.sparseIndexIntervalRecords() == 0) {
-            index.append(offset, position);
+        try {
+            logChannel.position(position);
+            PartitionLogRecordCodec.write(logChannel, offset, key, value);
+            if (recordCount % config.sparseIndexIntervalRecords() == 0) {
+                index.append(offset, position);
+            }
+        } catch (IOException | RuntimeException failure) {
+            rollbackAppend(position, failure);
+            throw failure;
         }
         if (recordCount == 0) {
             firstOffset = offset;
@@ -206,6 +211,16 @@ final class SegmentFile implements AutoCloseable {
         recordCount = retainedCount;
         firstOffset = retainedFirst;
         lastOffset = retainedLast;
+    }
+
+    private void rollbackAppend(long position, Exception failure) {
+        try {
+            logChannel.truncate(position);
+            logChannel.position(position);
+            logChannel.force(false);
+        } catch (IOException rollback) {
+            failure.addSuppressed(rollback);
+        }
     }
 
     synchronized List<Record> read(long fromOffset, int maxBytes) throws IOException {

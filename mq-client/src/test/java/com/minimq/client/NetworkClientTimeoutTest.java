@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -327,6 +328,21 @@ class NetworkClientTimeoutTest {
             server.close().sync();
             boss.shutdownGracefully().sync();
             worker.shutdownGracefully().sync();
+        }
+    }
+
+    @Test
+    void clientsShareAProcessWideEventLoopGroup() throws Exception {
+        NetworkClient first = new NetworkClient("shared-io-a");
+        NetworkClient second = new NetworkClient("shared-io-b");
+        try {
+            assertSame(first.eventLoopGroup(), second.eventLoopGroup());
+            first.abortCandidate();
+            assertFalse(second.eventLoopGroup().isShutdown());
+            assertFalse(second.eventLoopGroup().isTerminated());
+        } finally {
+            first.close();
+            second.close();
         }
     }
 

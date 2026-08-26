@@ -30,6 +30,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -500,6 +501,52 @@ class ConsumerNotLeaderRetryTest {
     }
 
     @Test
+    void pollReturnsEmptyWhenDeadlineExpiresBeforeAnotherFetch() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("consumer-poll-sub-ms-deadline");
+        try (BrokerTestHarness controller = BrokerTestHarness.startController(dataDir);
+             NetworkClient admin = new NetworkClient("admin");
+             TestableConsumer consumer = new TestableConsumer(
+                     controller.bootstrapServers(), "sub-ms-group", "consumer-sub-ms")) {
+            admin.connect("127.0.0.1", controller.port());
+            admin.ensureSuccess(admin.send(
+                    ApiKeys.CREATE_TOPIC_ADMIN,
+                    new CreateTopicAdminRequest(BrokerTestHarness.ADMIN_TOKEN, "orders", 1, 1)));
+            MetadataResponse metadata = (MetadataResponse) admin.send(
+                    ApiKeys.METADATA, new MetadataRequest("orders")).body();
+            consumer.subscribe("orders");
+            consumer.enqueueMetadata(metadata);
+            consumer.enqueueFetchResponse(emptyFetchResponse(-1L));
+            consumer.advanceTime(Consumer.DEFAULT_METADATA_CACHE_MAX_AGE_MS + 1);
+            consumer.delayNextMetadataFetch(50);
+
+            assertEquals(List.of(), consumer.poll(Duration.ofMillis(50)));
+            assertEquals(0, consumer.fetchAttempts());
+        }
+    }
+
+    @Test
+    void pollReturnsEmptyWhenFetchTimeoutExhaustsDeadline() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("consumer-poll-fetch-deadline");
+        try (BrokerTestHarness controller = BrokerTestHarness.startController(dataDir);
+             NetworkClient admin = new NetworkClient("admin");
+             TestableConsumer consumer = new TestableConsumer(
+                     controller.bootstrapServers(), "fetch-deadline-group", "consumer-fetch-deadline")) {
+            admin.connect("127.0.0.1", controller.port());
+            admin.ensureSuccess(admin.send(
+                    ApiKeys.CREATE_TOPIC_ADMIN,
+                    new CreateTopicAdminRequest(BrokerTestHarness.ADMIN_TOKEN, "orders", 1, 1)));
+            consumer.subscribe("orders");
+            consumer.delayNextFetch(50);
+            consumer.enqueueFetchFailure(new MiniMqRequestTimeoutException(
+                    "FETCH_V2", Duration.ZERO));
+
+            assertEquals(List.of(), consumer.poll(Duration.ofMillis(50)));
+            assertEquals(1, consumer.fetchAttempts());
+            assertEquals(1, consumer.invalidatedBrokerClients());
+        }
+    }
+
+    @Test
     void pollDoesNotFetchAgainWhenNextVisibilityIsBeyondDeadline() throws Exception {
         Path dataDir = BrokerTestHarness.newDataDir("consumer-poll-deadline-future-hint");
         try (BrokerTestHarness controller = BrokerTestHarness.startController(dataDir);
@@ -731,7 +778,11 @@ class ConsumerNotLeaderRetryTest {
         protected MetadataResponse fetchMetadata(String topicName, long deadlineNanos)
                 throws InterruptedException {
             metadataTimeout = remainingTimeout(deadlineNanos);
-            return fetchMetadata(topicName);
+            MetadataResponse metadata = fetchMetadata(topicName);
+            if (deadlineNanos - currentTimeNanos() < TimeUnit.MILLISECONDS.toNanos(1L)) {
+                throw new MiniMqRequestTimeoutException("METADATA", Duration.ZERO);
+            }
+            return metadata;
         }
 
         @Override

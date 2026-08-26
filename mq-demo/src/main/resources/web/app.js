@@ -20,6 +20,9 @@ const operatorFields = {
   partitionLimit: document.querySelector('#partitionLimit'),
   replicationFactor: document.querySelector('#replicationFactor'),
   targetPartitionCount: document.querySelector('#targetPartitionCount'),
+  minInSyncReplicas: document.querySelector('#minInSyncReplicas'),
+  assignment: document.querySelector('#assignment'),
+  partition: document.querySelector('#partition'),
   includeDeleted: document.querySelector('#includeDeleted'),
   retryTopic: document.querySelector('#retryTopic'),
   deadLetterTopic: document.querySelector('#deadLetterTopic'),
@@ -349,6 +352,24 @@ function operatorPayload(endpoint) {
         ...connectionPayload(),
         topic: requiredValue(fields.topic, 'Topic'),
         targetPartitionCount: numericValue(operatorFields.targetPartitionCount, 'Target partitions')
+      };
+    case '/api/topic/alter-config':
+      return {
+        ...connectionPayload(),
+        topic: requiredValue(fields.topic, 'Topic'),
+        minInSyncReplicas: numericValue(operatorFields.minInSyncReplicas, 'min.insync.replicas')
+      };
+    case '/api/topic/reassign':
+      return {
+        ...connectionPayload(),
+        topic: requiredValue(fields.topic, 'Topic'),
+        assignment: requiredValue(operatorFields.assignment, 'Assignment')
+      };
+    case '/api/topic/elect-preferred':
+      return {
+        ...connectionPayload(),
+        topic: requiredValue(fields.topic, 'Topic'),
+        partition: numericValue(operatorFields.partition, 'Partition')
       };
     case '/api/topic/reliability': {
       const sourceTopic = requiredValue(fields.topic, 'Topic');

@@ -6,6 +6,7 @@ import com.minimq.protocol.message.ProtocolMessages.*;
 import com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest;
 import com.minimq.protocol.message.ProtocolMessages.ProduceRequest;
 import com.minimq.protocol.message.ProtocolMessages.ProduceRecord;
+import com.minimq.common.acks.ProduceAcks;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.protocol.codec.ByteBufSerde;
 import com.minimq.protocol.codec.MqDecoder;
@@ -35,7 +36,7 @@ class ProtocolSerdesTest {
         assertGoldenRequest(
                 ApiKeys.CREATE_TOPIC,
                 new CreateTopicRequest("orders", 3, 2),
-                "4d51010000001e0000000000070006636c69656e7400066f72646572730000000300000002");
+                "4d5101000000220000000000070006636c69656e7400066f7264657273000000030000000200000001");
         assertGoldenRequest(
                 ApiKeys.METADATA,
                 new MetadataRequest("orders"),
@@ -47,7 +48,7 @@ class ProtocolSerdesTest {
                         1,
                         4L,
                         List.of(new ProduceRecord(bytes("k"), bytes("v")))),
-                "4d5101000000300002000000070006636c69656e7400066f726465727300000001000000000000000400000001000000016b0000000176");
+                "4d5101000000360002000000070006636c69656e7400066f726465727300000001000000000000000400000001000000016b0000000176000100001388");
         assertGoldenRequest(
                 ApiKeys.FETCH,
                 new FetchRequest("orders", 2, 4L, 10L, 4096),
@@ -127,6 +128,7 @@ class ProtocolSerdesTest {
         assertEquals("orders", decodedBody.topicName());
         assertEquals(3, decodedBody.numPartitions());
         assertEquals(2, decodedBody.replicationFactor());
+        assertEquals(1, decodedBody.minInSyncReplicas());
         encoded.release();
         payload.release();
     }
@@ -186,8 +188,9 @@ class ProtocolSerdesTest {
                 new RequestCase(ApiKeys.FETCH, new FetchRequest("orders", 2, 4L, 10L, 4096)),
                 new RequestCase(ApiKeys.JOIN_GROUP, new JoinGroupRequest("g1", "m1", "orders")),
                 new RequestCase(ApiKeys.SYNC_GROUP, new SyncGroupRequest("g1", 2, "m1", bytes("assignment"))),
-                new RequestCase(ApiKeys.HEARTBEAT, new HeartbeatRequest("g1", "m1")),
-                new RequestCase(ApiKeys.OFFSET_COMMIT, new OffsetCommitRequest("g1", "orders", 1, 42L)),
+                new RequestCase(ApiKeys.HEARTBEAT, new HeartbeatRequest("g1", "m1", 7)),
+                new RequestCase(ApiKeys.LEAVE_GROUP, new LeaveGroupRequest("g1", "m1", 7)),
+                new RequestCase(ApiKeys.OFFSET_COMMIT, new OffsetCommitRequest("g1", "orders", 1, 42L, "m1", 7)),
                 new RequestCase(ApiKeys.OFFSET_FETCH, new OffsetFetchRequest("g1", "orders", 1)),
                 new RequestCase(ApiKeys.REPLICA_FETCH, new ReplicaFetchRequest("orders", 0, 1, 4L, 5L, 4096)),
                 new RequestCase(ApiKeys.MARK_BROKER_OFFLINE, new MarkBrokerOfflineRequest(2)),
@@ -220,6 +223,211 @@ class ProtocolSerdesTest {
     }
 
     @Test
+    void decodeLegacyProduceWithoutAcksDefaultsToLeader() {
+        ByteBuf body = Unpooled.buffer();
+        try {
+            ByteBufSerde.writeString(body, "orders");
+            body.writeInt(1);
+            body.writeLong(4L);
+            body.writeInt(1);
+            ByteBufSerde.writeBytes(body, bytes("k"));
+            ByteBufSerde.writeBytes(body, bytes("v"));
+            ProduceRequest decoded = (ProduceRequest) ProtocolSerdes.decodeRequestBody(ApiKeys.PRODUCE, body);
+            assertEquals(ProduceAcks.LEADER.code(), decoded.acks());
+            assertEquals(ProduceAcks.DEFAULT_TIMEOUT_MS, decoded.ackTimeoutMs());
+        } finally {
+            body.release();
+        }
+    }
+
+    @Test
+    void decodeProduceWithAcksOnlyUsesDefaultTimeout() {
+        ByteBuf body = Unpooled.buffer();
+        try {
+            ByteBufSerde.writeString(body, "orders");
+            body.writeInt(1);
+            body.writeLong(4L);
+            body.writeInt(1);
+            ByteBufSerde.writeBytes(body, bytes("k"));
+            ByteBufSerde.writeBytes(body, bytes("v"));
+            body.writeShort(ProduceAcks.ALL.code());
+            ProduceRequest decoded = (ProduceRequest) ProtocolSerdes.decodeRequestBody(ApiKeys.PRODUCE, body);
+            assertEquals(ProduceAcks.ALL.code(), decoded.acks());
+            assertEquals(ProduceAcks.DEFAULT_TIMEOUT_MS, decoded.ackTimeoutMs());
+        } finally {
+            body.release();
+        }
+    }
+
+    @Test
+    void decodeProduceRejectsUnsupportedAcks() {
+        ByteBuf body = Unpooled.buffer();
+        try {
+            ByteBufSerde.writeString(body, "orders");
+            body.writeInt(1);
+            body.writeLong(4L);
+            body.writeInt(0);
+            body.writeShort((short) 0);
+            assertThrows(IllegalArgumentException.class,
+                    () -> ProtocolSerdes.decodeRequestBody(ApiKeys.PRODUCE, body));
+        } finally {
+            body.release();
+        }
+    }
+
+    @Test
+    void decodeLegacyCreateTopicWithoutMinInSyncDefaultsToOne() {
+        ByteBuf body = Unpooled.buffer();
+        try {
+            ByteBufSerde.writeString(body, "orders");
+            body.writeInt(3);
+            body.writeInt(2);
+            CreateTopicRequest decoded = (CreateTopicRequest) ProtocolSerdes.decodeRequestBody(
+                    ApiKeys.CREATE_TOPIC, body);
+            assertEquals("orders", decoded.topicName());
+            assertEquals(3, decoded.numPartitions());
+            assertEquals(2, decoded.replicationFactor());
+            assertEquals(1, decoded.minInSyncReplicas());
+        } finally {
+            body.release();
+        }
+    }
+
+    @Test
+    void decodeLegacyJoinGroupWithoutSessionTimeoutDefaultsToTenSeconds() {
+        ByteBuf body = Unpooled.buffer();
+        try {
+            ByteBufSerde.writeString(body, "g1");
+            ByteBufSerde.writeString(body, "m1");
+            ByteBufSerde.writeString(body, "orders");
+            JoinGroupRequest decoded = (JoinGroupRequest) ProtocolSerdes.decodeRequestBody(
+                    ApiKeys.JOIN_GROUP, body);
+            assertEquals("g1", decoded.groupId());
+            assertEquals("m1", decoded.memberId());
+            assertEquals("orders", decoded.topicName());
+            assertEquals(10_000, decoded.sessionTimeoutMs());
+        } finally {
+            body.release();
+        }
+    }
+
+    @Test
+    void decodeLegacyDescribeTopicWithoutMinInSyncDefaultsToOne() {
+        DescribeTopicResponse current = new DescribeTopicResponse(
+                "orders",
+                9L,
+                true,
+                null,
+                null,
+                new V4BoundedList<>(0, false, List.of()),
+                null,
+                2);
+        var frame = ProtocolSerdes.encodeResponse(new MqResponseHeader(1, ErrorCode.NONE), current);
+        var payload = unwrapRetainedPayload(frame);
+        try {
+            payload.readInt();
+            payload.readShort();
+            ByteBuf v4Body = payload.copy();
+            try {
+                v4Body.writerIndex(v4Body.writerIndex() - Integer.BYTES);
+                DescribeTopicResponse decoded =
+                        (DescribeTopicResponse) ProtocolSerdes.decodeResponseBody(
+                                ApiKeys.DESCRIBE_TOPIC, v4Body);
+                assertEquals(1, decoded.minInSyncReplicas());
+                assertEquals("orders", decoded.topicName());
+            } finally {
+                v4Body.release();
+            }
+        } finally {
+            payload.release();
+            frame.release();
+        }
+    }
+
+    @Test
+    void decodeLegacyHeartbeatWithoutGenerationDefaultsToZero() {
+        ByteBuf body = Unpooled.buffer();
+        try {
+            ByteBufSerde.writeString(body, "g1");
+            ByteBufSerde.writeString(body, "m1");
+            HeartbeatRequest decoded = (HeartbeatRequest) ProtocolSerdes.decodeRequestBody(
+                    ApiKeys.HEARTBEAT, body);
+            assertEquals("g1", decoded.groupId());
+            assertEquals("m1", decoded.memberId());
+            assertEquals(0, decoded.generationId());
+        } finally {
+            body.release();
+        }
+    }
+
+    @Test
+    void decodeLegacyOffsetCommitWithoutMemberFieldsDefaultsEmptyAndZero() {
+        ByteBuf body = Unpooled.buffer();
+        try {
+            ByteBufSerde.writeString(body, "g1");
+            ByteBufSerde.writeString(body, "orders");
+            body.writeInt(1);
+            body.writeLong(42L);
+            OffsetCommitRequest decoded = (OffsetCommitRequest) ProtocolSerdes.decodeRequestBody(
+                    ApiKeys.OFFSET_COMMIT, body);
+            assertEquals("g1", decoded.groupId());
+            assertEquals("orders", decoded.topicName());
+            assertEquals(1, decoded.partitionId());
+            assertEquals(42L, decoded.offset());
+            assertEquals("", decoded.memberId());
+            assertEquals(0, decoded.generationId());
+        } finally {
+            body.release();
+        }
+    }
+
+    @Test
+    void decodeOffsetCommitWithMemberIdButNoGenerationDefaultsGenerationToZero() {
+        ByteBuf body = Unpooled.buffer();
+        try {
+            ByteBufSerde.writeString(body, "g1");
+            ByteBufSerde.writeString(body, "orders");
+            body.writeInt(1);
+            body.writeLong(42L);
+            ByteBufSerde.writeString(body, "m1");
+            OffsetCommitRequest decoded = (OffsetCommitRequest) ProtocolSerdes.decodeRequestBody(
+                    ApiKeys.OFFSET_COMMIT, body);
+            assertEquals("m1", decoded.memberId());
+            assertEquals(0, decoded.generationId());
+        } finally {
+            body.release();
+        }
+    }
+
+    @Test
+    void encodeHeartbeatAndOffsetCommitStillWriteCurrentFields() {
+        ByteBuf heartbeatFrame = ProtocolSerdes.encodeRequest(
+                new MqRequestHeader(ApiKeys.HEARTBEAT, 1, "client"),
+                new HeartbeatRequest("g1", "m1", 7));
+        ByteBuf heartbeatPayload = unwrapRetainedPayload(heartbeatFrame);
+        try {
+            HeartbeatRequest decoded = (HeartbeatRequest) MqDecoder.decodeRequest(heartbeatPayload).body();
+            assertEquals(7, decoded.generationId());
+        } finally {
+            heartbeatPayload.release();
+            heartbeatFrame.release();
+        }
+
+        ByteBuf commitFrame = ProtocolSerdes.encodeRequest(
+                new MqRequestHeader(ApiKeys.OFFSET_COMMIT, 2, "client"),
+                new OffsetCommitRequest("g1", "orders", 1, 42L, "m1", 7));
+        ByteBuf commitPayload = unwrapRetainedPayload(commitFrame);
+        try {
+            OffsetCommitRequest decoded = (OffsetCommitRequest) MqDecoder.decodeRequest(commitPayload).body();
+            assertEquals("m1", decoded.memberId());
+            assertEquals(7, decoded.generationId());
+        } finally {
+            commitPayload.release();
+            commitFrame.release();
+        }
+    }
+
+    @Test
     void allResponseBodiesRoundTrip() {
         List<ResponseCase> cases = List.of(
                 new ResponseCase(ApiKeys.CREATE_TOPIC, new CreateTopicResponse("orders")),
@@ -239,6 +447,7 @@ class ProtocolSerdesTest {
                 new ResponseCase(ApiKeys.JOIN_GROUP, new JoinGroupResponse(1, "m1", "m1", List.of("m1", "m2"))),
                 new ResponseCase(ApiKeys.SYNC_GROUP, new SyncGroupResponse(bytes("assignment"))),
                 new ResponseCase(ApiKeys.HEARTBEAT, new HeartbeatResponse()),
+                new ResponseCase(ApiKeys.LEAVE_GROUP, new LeaveGroupResponse()),
                 new ResponseCase(ApiKeys.OFFSET_COMMIT, new OffsetCommitResponse()),
                 new ResponseCase(ApiKeys.OFFSET_FETCH, new OffsetFetchResponse(42L)),
                 new ResponseCase(ApiKeys.REGISTER_BROKER, new RegisterBrokerResponse(7L, 5_000L)),
@@ -649,6 +858,12 @@ class ProtocolSerdesTest {
                         bounded(2))),
                 new ResponseCase(ApiKeys.INCREASE_PARTITIONS,
                         new IncreasePartitionsResponse("orders", 3, 6, 10L)),
+                new ResponseCase(ApiKeys.ALTER_TOPIC_CONFIG,
+                        new AlterTopicConfigResponse("orders", 2, 11L)),
+                new ResponseCase(ApiKeys.REASSIGN_PARTITIONS,
+                        new ReassignPartitionsResponse("orders", 12L, List.of(0, 1))),
+                new ResponseCase(ApiKeys.ELECT_PREFERRED_LEADERS,
+                        new ElectPreferredLeadersResponse("orders", 13L, List.of(0))),
                 new ResponseCase(ApiKeys.FAILOVER_AUDIT, new FailoverAuditResponse(
                         1,
                         100L,
@@ -757,6 +972,15 @@ class ProtocolSerdesTest {
                 new RequestCase(ApiKeys.DELETE_TOPIC, new DeleteTopicRequest("operator", "orders")),
                 new RequestCase(ApiKeys.INCREASE_PARTITIONS,
                         new IncreasePartitionsRequest("operator", "orders", 6)),
+                new RequestCase(ApiKeys.ALTER_TOPIC_CONFIG,
+                        new AlterTopicConfigRequest("operator", "orders", 2)),
+                new RequestCase(ApiKeys.REASSIGN_PARTITIONS,
+                        new ReassignPartitionsRequest(
+                                "operator",
+                                "orders",
+                                List.of(new PartitionReplicaAssignment(0, List.of(1, 2, 0))))),
+                new RequestCase(ApiKeys.ELECT_PREFERRED_LEADERS,
+                        new ElectPreferredLeadersRequest("operator", "orders", List.of(0, 1))),
                 new RequestCase(ApiKeys.FAILOVER_AUDIT, new FailoverAuditRequest("operator", 50)),
                 new RequestCase(ApiKeys.AUTH_STATUS, new AuthStatusRequest("operator")),
                 new RequestCase(ApiKeys.CONFIGURE_TOPIC_RELIABILITY,
@@ -921,7 +1145,10 @@ class ProtocolSerdesTest {
                 ApiKeys.REPLICA_FETCH_V2,
                 ApiKeys.TOPIC_DELETE_ACK,
                 ApiKeys.RUNTIME_METRICS_V2,
-                ApiKeys.UPDATE_REPLICA_STATE_V2)) {
+                ApiKeys.UPDATE_REPLICA_STATE_V2,
+                ApiKeys.ALTER_TOPIC_CONFIG,
+                ApiKeys.REASSIGN_PARTITIONS,
+                ApiKeys.ELECT_PREFERRED_LEADERS)) {
             ByteBuf incompleteBody = Unpooled.buffer();
             try {
                 writeString(incompleteBody, "credential");
@@ -1420,6 +1647,8 @@ class ProtocolSerdesTest {
             ProduceRequest a = (ProduceRequest) actual;
             assertEquals(e.topicName(), a.topicName());
             assertEquals(e.partitionId(), a.partitionId());
+            assertEquals(e.acks(), a.acks());
+            assertEquals(e.ackTimeoutMs(), a.ackTimeoutMs());
             assertEquals(e.records().size(), a.records().size());
             assertProduceRecordEquals(e.records().get(0), a.records().get(0));
         } else if (expected instanceof ProduceRecord e) {
@@ -1448,6 +1677,8 @@ class ProtocolSerdesTest {
             assertEquals(e.records().total(), a.records().total());
             assertEquals(e.records().truncated(), a.records().truncated());
             assertEquals(e.records().items().size(), a.records().items().size());
+            assertEquals(e.acks(), a.acks());
+            assertEquals(e.ackTimeoutMs(), a.ackTimeoutMs());
             assertScheduledProduceRecordEquals(
                     e.records().items().get(0), a.records().items().get(0));
         } else if (expected instanceof ReplicaFetchV2Response e) {

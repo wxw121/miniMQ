@@ -3,6 +3,7 @@ package com.minimq.demo;
 import com.minimq.broker.BrokerConfig;
 import com.minimq.broker.support.BrokerTestHarness;
 import com.minimq.client.exception.MiniMqServerException;
+import com.minimq.common.acks.ProduceAcks;
 import com.minimq.common.error.ErrorCode;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledOnOs;
@@ -364,6 +365,9 @@ class DemoCliTest {
                 "describe-topic",
                 "delete-topic",
                 "increase-partitions",
+                "alter-topic-config",
+                "reassign-partitions",
+                "elect-preferred-leaders",
                 "failover-audit",
                 "auth-status",
                 "configure-topic-reliability",
@@ -437,6 +441,17 @@ class DemoCliTest {
                 DemoCli.parseFirstHostPort(DemoCli.arg(args, "--brokers", "localhost:9092")));
         assertArrayEquals(new String[] {"--brokers", "host1:9092,host2:9093", "--topic", "orders", "--message", "hello"},
                 DemoCli.copyTail(args));
+        assertEquals(ProduceAcks.LEADER, DemoCli.parseProduceAcks("leader"));
+        assertEquals(ProduceAcks.ALL, DemoCli.parseProduceAcks("all"));
+        assertEquals(0, DemoCli.parseAssignment("0:1,2").partitionId());
+        assertEquals(List.of(1, 2), DemoCli.parseAssignment("0:1,2").replicaBrokerIds());
+        assertEquals(List.of("0:1", "1:2,0"), DemoCli.repeatedArg(
+                new String[] {"--assignment", "0:1", "--assignment", "1:2,0"}, "--assignment"));
+        assertThrows(IllegalArgumentException.class, () -> DemoCli.parseAssignment("0"));
+        assertThrows(IllegalArgumentException.class, () -> DemoCli.parseAssignment("x:1"));
+        assertThrows(IllegalArgumentException.class, () -> DemoCli.parseAssignment("0:a"));
+        assertThrows(IllegalArgumentException.class,
+                () -> DemoCli.repeatedArg(new String[] {"--assignment"}, "--assignment"));
     }
 
     @Test
@@ -449,6 +464,7 @@ class DemoCliTest {
                 () -> DemoCli.arg(new String[] {"produce", "--message", "--topic"}, "--message", null));
         assertThrows(IllegalArgumentException.class,
                 () -> DemoCli.parseFirstHostPort("localhost"));
+        assertThrows(IllegalArgumentException.class, () -> DemoCli.parseProduceAcks("none"));
     }
 
     @Test
@@ -582,6 +598,18 @@ class DemoCliTest {
                     "--topic", "orders", "--target-count", "2"
             })));
             output.append(captureStdout(() -> DemoCli.main(new String[] {
+                    "alter-topic-config", "--brokers", endpoint, "--admin-token", credential,
+                    "--topic", "orders", "--min-insync-replicas", "1"
+            })));
+            output.append(captureStdout(() -> DemoCli.main(new String[] {
+                    "reassign-partitions", "--brokers", endpoint, "--admin-token", credential,
+                    "--topic", "orders", "--assignment", "0:0"
+            })));
+            output.append(captureStdout(() -> DemoCli.main(new String[] {
+                    "elect-preferred-leaders", "--brokers", endpoint, "--admin-token", credential,
+                    "--topic", "orders"
+            })));
+            output.append(captureStdout(() -> DemoCli.main(new String[] {
                     "list-topics", "--brokers", endpoint, "--admin-token", credential
             })));
             output.append(captureStdout(() -> DemoCli.main(new String[] {
@@ -633,7 +661,8 @@ class DemoCliTest {
             })));
             String rendered = output.toString();
             for (String marker : List.of(
-                    "Reliability configured", "Partitions increased", "Topics total=",
+                    "Reliability configured", "Partitions increased", "Topic config",
+                    "Partitions reassigned", "Preferred leaders elected", "Topics total=",
                     "Topic orders active=true", "Ops status", "Auth status", "Failover audit",
                     "Group status", "Delayed produce", "Retry produce", "Dead-letter produce",
                     "Topic deletion", "active=false", "Broker offline")) {

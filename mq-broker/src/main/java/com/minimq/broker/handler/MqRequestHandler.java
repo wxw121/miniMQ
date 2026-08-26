@@ -26,6 +26,7 @@ import com.minimq.broker.auth.OperatorScope;
 import com.minimq.broker.admin.TopicAdminService;
 import com.minimq.broker.status.BrokerStatusService;
 import com.minimq.broker.status.GroupStatusService;
+import com.minimq.common.acks.ProduceAcks;
 import com.minimq.common.error.ErrorCode;
 import com.minimq.common.model.Record;
 import com.minimq.protocol.ApiKeys;
@@ -50,6 +51,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Broker 请求处理器，将网络帧解码成业务请求，并按 API 类型路由到存储或控制器。
@@ -57,6 +62,9 @@ import java.util.concurrent.CompletionStage;
 public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     private static final Logger log = LoggerFactory.getLogger(MqRequestHandler.class);
     private static final int MAX_V4_FETCH_RECORDS = 10_000;
+    private static final int PRODUCE_ACK_THREADS =
+            Math.max(4, Runtime.getRuntime().availableProcessors());
+    private static final AtomicInteger PRODUCE_ACK_THREAD_INDEX = new AtomicInteger();
     private final BrokerConfig config;
     private final ClusterController clusterController;
     private final GroupCoordinator groupCoordinator;
@@ -76,6 +84,8 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     private final TopicAdminService topicAdminService;
     private final RuntimeMetricsV2Service runtimeMetricsV2Service;
     private final FailoverAuditLog auditLog;
+    private final ExecutorService produceAckExecutor;
+    private final boolean ownsProduceAckExecutor;
 
     public MqRequestHandler(
             BrokerConfig config,
@@ -299,6 +309,44 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             BrokerStatusService brokerStatusService,
             FailoverAuditLog auditLog,
             TopicAdminService topicAdminService) {
+        this(
+                config,
+                clusterController,
+                groupCoordinator,
+                partitionManager,
+                replicaStateManager,
+                fetchTransferMetrics,
+                replicaStateReporter,
+                availabilityGuard,
+                maintenanceAdminService,
+                controllerRole,
+                operatorAuthorizer,
+                runtimeMetrics,
+                requestThrottler,
+                brokerStatusService,
+                auditLog,
+                topicAdminService,
+                null);
+    }
+
+    public MqRequestHandler(
+            BrokerConfig config,
+            ClusterController clusterController,
+            GroupCoordinator groupCoordinator,
+            PartitionManager partitionManager,
+            ReplicaStateManager replicaStateManager,
+            FetchTransferMetrics fetchTransferMetrics,
+            ReplicaStateReporter replicaStateReporter,
+            BrokerAvailabilityGuard availabilityGuard,
+            MaintenanceAdminService maintenanceAdminService,
+            ControllerRole controllerRole,
+            OperatorAuthorizer operatorAuthorizer,
+            BrokerRuntimeMetrics runtimeMetrics,
+            RequestThrottler requestThrottler,
+            BrokerStatusService brokerStatusService,
+            FailoverAuditLog auditLog,
+            TopicAdminService topicAdminService,
+            ExecutorService produceAckExecutor) {
         this.config = config;
         this.replicaStateReporter = replicaStateReporter;
         this.clusterController = clusterController;
@@ -337,6 +385,20 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 partitionManager,
                 new LeaderEpochStateStore(config.dataDir().resolve("leader-epochs")),
                 this.auditLog);
+        this.ownsProduceAckExecutor = produceAckExecutor == null;
+        this.produceAckExecutor = this.ownsProduceAckExecutor
+                ? newProduceAckExecutor()
+                : produceAckExecutor;
+    }
+
+    public static ExecutorService newProduceAckExecutor() {
+        return Executors.newFixedThreadPool(PRODUCE_ACK_THREADS, runnable -> {
+            Thread thread = new Thread(
+                    runnable,
+                    "minimq-produce-ack-" + PRODUCE_ACK_THREAD_INDEX.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        });
     }
 
     @Override
@@ -355,14 +417,14 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             if (!throttle.allowed()) {
                 errorCode = ErrorCode.THROTTLED;
                 runtimeMetrics.recordThrottled(header.apiKey());
-                writeResponse(ctx, header.correlationId(), errorCode, null);
                 recordCompletion(header, errorCode, startedNanos);
+                writeResponse(ctx, header.correlationId(), errorCode, null);
                 return;
             }
             errorCode = authorizeBeforeDecode(header.apiKey(), payload);
             if (errorCode != ErrorCode.NONE) {
-                writeResponse(ctx, header.correlationId(), errorCode, null);
                 recordCompletion(header, errorCode, startedNanos);
+                writeResponse(ctx, header.correlationId(), errorCode, null);
                 throttle.release();
                 return;
             }
@@ -479,6 +541,18 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                     }
                     if (errorCode == ErrorCode.NONE) {
                         responseBody = handleProduce(request);
+                        if (scheduleProduceAckIfNeeded(
+                                ctx,
+                                header,
+                                request.topicName(),
+                                request.partitionId(),
+                                request.acks(),
+                                request.ackTimeoutMs(),
+                                responseBody,
+                                throttle,
+                                startedNanos)) {
+                            return;
+                        }
                     }
                 }
                 case ApiKeys.FETCH -> {
@@ -501,9 +575,9 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                         long fetchHighWatermark = Math.min(replicationHighWatermark, visibleHighWatermark);
                         MqResponseHeader fetchHeader =
                                 new MqResponseHeader(header.correlationId(), ErrorCode.NONE);
-                        fetchResponseWriter.write(
-                                ctx, fetchHeader, request, partitionLog, fetchHighWatermark, replicationHighWatermark);
                         recordCompletion(header, ErrorCode.NONE, startedNanos);
+                        fetchResponseWriter.write(
+                                ctx, fetchHeader, request, partitionLog, fetchHighWatermark, fetchHighWatermark);
                         throttle.release();
                         return;
                     }
@@ -527,6 +601,18 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                     if (errorCode == ErrorCode.NONE) {
                         try {
                             responseBody = handleProduceV2(request);
+                            if (scheduleProduceAckIfNeeded(
+                                    ctx,
+                                    header,
+                                    request.topicName(),
+                                    request.partitionId(),
+                                    request.acks(),
+                                    request.ackTimeoutMs(),
+                                    responseBody,
+                                    throttle,
+                                    startedNanos)) {
+                                return;
+                            }
                         } catch (LogManager.ScheduledCapacityExceededException e) {
                             errorCode = ErrorCode.THROTTLED;
                         }
@@ -555,6 +641,13 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                     errorCode = groupCoordinator.heartbeat((HeartbeatRequest) requestBody);
                     if (errorCode == ErrorCode.NONE) {
                         responseBody = new HeartbeatResponse();
+                    }
+                }
+                case ApiKeys.LEAVE_GROUP -> {
+                    ensureController();
+                    errorCode = groupCoordinator.leaveGroup((LeaveGroupRequest) requestBody);
+                    if (errorCode == ErrorCode.NONE) {
+                        responseBody = new LeaveGroupResponse();
                     }
                 }
                 case ApiKeys.OFFSET_COMMIT -> {
@@ -693,6 +786,27 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                     errorCode = result.errorCode();
                     responseBody = result.response();
                 }
+                case ApiKeys.ALTER_TOPIC_CONFIG -> {
+                    ensureController();
+                    TopicAdminService.Result<AlterTopicConfigResponse> result =
+                            topicAdminService.alterConfig((AlterTopicConfigRequest) requestBody);
+                    errorCode = result.errorCode();
+                    responseBody = result.response();
+                }
+                case ApiKeys.REASSIGN_PARTITIONS -> {
+                    ensureController();
+                    TopicAdminService.Result<ReassignPartitionsResponse> result =
+                            topicAdminService.reassign((ReassignPartitionsRequest) requestBody);
+                    errorCode = result.errorCode();
+                    responseBody = result.response();
+                }
+                case ApiKeys.ELECT_PREFERRED_LEADERS -> {
+                    ensureController();
+                    TopicAdminService.Result<ElectPreferredLeadersResponse> result =
+                            topicAdminService.electPreferred((ElectPreferredLeadersRequest) requestBody);
+                    errorCode = result.errorCode();
+                    responseBody = result.response();
+                }
                 case ApiKeys.CONFIGURE_TOPIC_RELIABILITY -> {
                     ensureController();
                     TopicAdminService.Result<ConfigureTopicReliabilityResponse> result =
@@ -761,8 +875,8 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         }
 
         int correlationId = header != null ? header.correlationId() : 0;
-        writeResponse(ctx, correlationId, errorCode, responseBody);
         recordCompletion(header, errorCode, startedNanos);
+        writeResponse(ctx, correlationId, errorCode, responseBody);
         if (throttle != null) {
             throttle.release();
         }
@@ -822,7 +936,10 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                     ApiKeys.DELETE_TOPIC,
                     ApiKeys.INCREASE_PARTITIONS,
                     ApiKeys.CONFIGURE_TOPIC_RELIABILITY,
-                    ApiKeys.CREATE_TOPIC_ADMIN -> OperatorScope.TOPIC_ADMIN;
+                    ApiKeys.CREATE_TOPIC_ADMIN,
+                    ApiKeys.ALTER_TOPIC_CONFIG,
+                    ApiKeys.REASSIGN_PARTITIONS,
+                    ApiKeys.ELECT_PREFERRED_LEADERS -> OperatorScope.TOPIC_ADMIN;
             case ApiKeys.MARK_BROKER_OFFLINE_ADMIN -> OperatorScope.BROKER_OFFLINE;
             default -> null;
         };
@@ -854,16 +971,16 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         stage.whenComplete((result, failure) -> ctx.executor().execute(() -> {
             if (failure != null) {
                 log.error("Maintenance request failed for apiKey={}", header.apiKey(), failure);
-                writeResponse(ctx, header.correlationId(), ErrorCode.INVALID_REQUEST, null);
                 recordCompletion(header, ErrorCode.INVALID_REQUEST, startedNanos);
+                writeResponse(ctx, header.correlationId(), ErrorCode.INVALID_REQUEST, null);
                 throttle.release();
                 return;
             }
             Object body = result.errorCode() == ErrorCode.NONE
                     ? toMaintenanceReportResponse(result.body())
                     : null;
-            writeResponse(ctx, header.correlationId(), result.errorCode(), body);
             recordCompletion(header, result.errorCode(), startedNanos);
+            writeResponse(ctx, header.correlationId(), result.errorCode(), body);
             throttle.release();
         }));
     }
@@ -877,13 +994,13 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         stage.whenComplete((result, failure) -> ctx.executor().execute(() -> {
             if (failure != null) {
                 log.error("Topic deletion request failed", failure);
-                writeResponse(ctx, header.correlationId(), ErrorCode.CONTROLLER_NOT_READY, null);
                 recordCompletion(header, ErrorCode.CONTROLLER_NOT_READY, startedNanos);
+                writeResponse(ctx, header.correlationId(), ErrorCode.CONTROLLER_NOT_READY, null);
                 throttle.release();
                 return;
             }
-            writeResponse(ctx, header.correlationId(), result.errorCode(), result.response());
             recordCompletion(header, result.errorCode(), startedNanos);
+            writeResponse(ctx, header.correlationId(), result.errorCode(), result.response());
             throttle.release();
         }));
     }
@@ -1032,21 +1149,31 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     }
 
     @Override
+    public void handlerRemoved(ChannelHandlerContext ctx) throws Exception {
+        if (ownsProduceAckExecutor) {
+            produceAckExecutor.shutdownNow();
+        }
+        super.handlerRemoved(ctx);
+    }
+
+    @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         log.error("Channel pipeline error", cause);
         ctx.close();
     }
 
     private ProduceResponse handleProduce(ProduceRequest request) {
-        long baseOffset = -1;
         long payloadBytes = 0L;
+        List<LogManager.AppendRecord> records = new ArrayList<>(request.records().size());
         for (ProduceRecord record : request.records()) {
             payloadBytes = Math.addExact(
                     payloadBytes,
                     (record.key() == null ? 0L : record.key().length)
                             + (record.value() == null ? 0L : record.value().length));
-            baseOffset = partitionManager.append(request.topicName(), request.partitionId(), record.key(), record.value());
+            records.add(new LogManager.AppendRecord(record.key(), record.value(), 0L));
         }
+        long baseOffset = partitionManager.appendBatch(
+                request.topicName(), request.partitionId(), records);
         runtimeMetrics.recordProduceBytes(payloadBytes);
         PartitionLog partitionLog = partitionManager.getOrCreate(request.topicName(), request.partitionId());
         replicaStateManager.updateReplicaLeo(
@@ -1060,6 +1187,83 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 config.brokerId(),
                 partitionLog.highWatermark());
         return new ProduceResponse(request.topicName(), request.partitionId(), baseOffset);
+    }
+
+    /**
+     * Completes {@code LEADER} on the calling thread. {@code ALL} waits run on
+     * {@link #produceAckExecutor} so the Netty event loop is not blocked for the timeout.
+     *
+     * @return true when this method wrote or scheduled the produce response
+     */
+    private boolean scheduleProduceAckIfNeeded(
+            ChannelHandlerContext ctx,
+            MqRequestHeader header,
+            String topicName,
+            int partitionId,
+            short acks,
+            int ackTimeoutMs,
+            Object successBody,
+            ThrottleResult throttle,
+            long startedNanos) {
+        if (ProduceAcks.fromCode(acks) == ProduceAcks.LEADER) {
+            return false;
+        }
+        List<Integer> isrBrokerIds = clusterController.getIsrBrokerIds(topicName, partitionId);
+        int minInSyncReplicas = minInSyncReplicas(topicName);
+        if (isrBrokerIds.isEmpty() || isrBrokerIds.size() < minInSyncReplicas) {
+            completeProduceAck(
+                    ctx, header, ErrorCode.NOT_ENOUGH_REPLICAS, null, throttle, startedNanos);
+            return true;
+        }
+        long requiredHighWatermark = partitionManager.getOrCreate(topicName, partitionId).highWatermark();
+        try {
+            produceAckExecutor.execute(() -> {
+                ReplicaStateManager.ReplicationWaitResult waitResult =
+                        replicaStateManager.awaitReplicationHighWatermark(
+                                topicName,
+                                partitionId,
+                                requiredHighWatermark,
+                                config.brokerId(),
+                                ackTimeoutMs,
+                                () -> clusterController.getLeaderBrokerId(topicName, partitionId),
+                                () -> clusterController.getIsrBrokerIds(topicName, partitionId),
+                                minInSyncReplicas);
+                ErrorCode result = switch (waitResult) {
+                    case REPLICATED -> ErrorCode.NONE;
+                    case TIMED_OUT -> ErrorCode.REQUEST_TIMED_OUT;
+                    case NOT_LEADER -> ErrorCode.NOT_LEADER;
+                    case NOT_ENOUGH_REPLICAS -> ErrorCode.NOT_ENOUGH_REPLICAS;
+                };
+                Object body = result == ErrorCode.NONE ? successBody : null;
+                if (ctx.executor().inEventLoop()) {
+                    completeProduceAck(ctx, header, result, body, throttle, startedNanos);
+                } else {
+                    ctx.executor().execute(() -> completeProduceAck(
+                            ctx, header, result, body, throttle, startedNanos));
+                }
+            });
+        } catch (RejectedExecutionException rejected) {
+            completeProduceAck(
+                    ctx, header, ErrorCode.REQUEST_TIMED_OUT, null, throttle, startedNanos);
+        }
+        return true;
+    }
+
+    private void completeProduceAck(
+            ChannelHandlerContext ctx,
+            MqRequestHeader header,
+            ErrorCode errorCode,
+            Object responseBody,
+            ThrottleResult throttle,
+            long startedNanos) {
+        recordCompletion(header, errorCode, startedNanos);
+        writeResponse(ctx, header.correlationId(), errorCode, responseBody);
+        throttle.release();
+    }
+
+    private int minInSyncReplicas(String topicName) {
+        ClusterMetadata.TopicEntry topic = clusterController.getTopic(topicName);
+        return topic == null ? 1 : topic.effectiveMinInSyncReplicas();
     }
 
     private ErrorCode validateProduceV2(ProduceV2Request request) {
@@ -1420,6 +1624,8 @@ public class MqRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 client.connect(identity.host(), identity.port());
                 client.leaderReady(request);
             }
+            clusterController.noteCommittedLeaderReady(
+                    request.topicName(), request.partitionId(), request.leaderEpoch());
             MetadataSync.refresh(config, clusterController, controllerRole);
             return ErrorCode.NONE;
         } catch (ControllerClient.ControllerRequestException e) {

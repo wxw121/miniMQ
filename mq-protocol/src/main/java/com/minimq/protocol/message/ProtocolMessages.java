@@ -1,10 +1,16 @@
 package com.minimq.protocol.message;
 
+import com.minimq.common.acks.MinInSyncReplicas;
+import com.minimq.common.acks.ProduceAcks;
+import com.minimq.common.group.GroupSessionTimeouts;
 import com.minimq.common.validation.TopicNames;
 import com.minimq.protocol.MqFrame;
 
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 协议消息集合，集中定义各 API 的请求、响应和元数据 record。
@@ -54,9 +60,15 @@ public final class ProtocolMessages {
         }
     }
 
-    public record CreateTopicRequest(String topicName, int numPartitions, int replicationFactor) {
+    public record CreateTopicRequest(
+            String topicName, int numPartitions, int replicationFactor, int minInSyncReplicas) {
         public CreateTopicRequest {
             requireNewTopicName(topicName, "topicName");
+            MinInSyncReplicas.requireRange(minInSyncReplicas);
+        }
+
+        public CreateTopicRequest(String topicName, int numPartitions, int replicationFactor) {
+            this(topicName, numPartitions, replicationFactor, MinInSyncReplicas.DEFAULT);
         }
 
         public CreateTopicRequest(String topicName, int numPartitions) {
@@ -155,11 +167,24 @@ public final class ProtocolMessages {
     public record ProduceRecord(byte[] key, byte[] value) {
     }
 
-    public record ProduceRequest(String topicName, int partitionId, long leaderEpoch, List<ProduceRecord> records) {
+    public record ProduceRequest(
+            String topicName,
+            int partitionId,
+            long leaderEpoch,
+            List<ProduceRecord> records,
+            short acks,
+            int ackTimeoutMs) {
         public ProduceRequest {
             requireTopicName(topicName, "topicName");
             requireNonNegative(leaderEpoch, "leaderEpoch");
+            ProduceAcks.requireValid(acks);
+            ProduceAcks.requireTimeoutMs(ackTimeoutMs);
         }
+
+        public ProduceRequest(String topicName, int partitionId, long leaderEpoch, List<ProduceRecord> records) {
+            this(topicName, partitionId, leaderEpoch, records, ProduceAcks.LEADER.code(), ProduceAcks.DEFAULT_TIMEOUT_MS);
+        }
+
         public ProduceRequest(String topicName, int partitionId, List<ProduceRecord> records) {
             this(topicName, partitionId, 0L, records);
         }
@@ -188,9 +213,15 @@ public final class ProtocolMessages {
             List<FetchedRecord> records) {
     }
 
-    public record JoinGroupRequest(String groupId, String memberId, String topicName) {
+    public record JoinGroupRequest(
+            String groupId, String memberId, String topicName, int sessionTimeoutMs) {
         public JoinGroupRequest {
             requireTopicName(topicName, "topicName");
+            GroupSessionTimeouts.requireValid(sessionTimeoutMs);
+        }
+
+        public JoinGroupRequest(String groupId, String memberId, String topicName) {
+            this(groupId, memberId, topicName, GroupSessionTimeouts.DEFAULT_MS);
         }
     }
 
@@ -207,15 +238,51 @@ public final class ProtocolMessages {
     public record SyncGroupResponse(byte[] assignment) {
     }
 
-    public record HeartbeatRequest(String groupId, String memberId) {
+    public record HeartbeatRequest(String groupId, String memberId, int generationId) {
+        public HeartbeatRequest {
+            if (memberId == null) {
+                throw new IllegalArgumentException("memberId must not be null");
+            }
+            requireNonNegative(generationId, "generationId");
+        }
+
+        public HeartbeatRequest(String groupId, String memberId) {
+            this(groupId, memberId, 0);
+        }
     }
 
     public record HeartbeatResponse() {
     }
 
-    public record OffsetCommitRequest(String groupId, String topicName, int partitionId, long offset) {
+    public record LeaveGroupRequest(String groupId, String memberId, int generationId) {
+        public LeaveGroupRequest {
+            if (memberId == null) {
+                throw new IllegalArgumentException("memberId must not be null");
+            }
+            requireNonNegative(generationId, "generationId");
+        }
+    }
+
+    public record LeaveGroupResponse() {
+    }
+
+    public record OffsetCommitRequest(
+            String groupId,
+            String topicName,
+            int partitionId,
+            long offset,
+            String memberId,
+            int generationId) {
         public OffsetCommitRequest {
             requireTopicName(topicName, "topicName");
+            if (memberId == null) {
+                throw new IllegalArgumentException("memberId must not be null");
+            }
+            requireNonNegative(generationId, "generationId");
+        }
+
+        public OffsetCommitRequest(String groupId, String topicName, int partitionId, long offset) {
+            this(groupId, topicName, partitionId, offset, "", 0);
         }
     }
 
@@ -488,6 +555,74 @@ public final class ProtocolMessages {
         }
     }
 
+    public record AlterTopicConfigRequest(
+            String credential, String topicName, int minInSyncReplicas) {
+        public AlterTopicConfigRequest {
+            requireNonEmpty(credential, "credential");
+            requireTopicName(topicName, "topicName");
+            MinInSyncReplicas.requireRange(minInSyncReplicas);
+        }
+    }
+
+    public record PartitionReplicaAssignment(int partitionId, List<Integer> replicaBrokerIds) {
+        public PartitionReplicaAssignment {
+            requireRange(partitionId, 0, 9_999, "partitionId");
+            if (replicaBrokerIds == null
+                    || replicaBrokerIds.isEmpty()
+                    || replicaBrokerIds.size() > 10_000) {
+                throw new IllegalArgumentException("replicaBrokerIds must contain 1..10000 ids");
+            }
+            Set<Integer> unique = new LinkedHashSet<>(replicaBrokerIds);
+            if (unique.size() != replicaBrokerIds.size()) {
+                throw new IllegalArgumentException("replicaBrokerIds must be unique");
+            }
+            replicaBrokerIds = List.copyOf(replicaBrokerIds);
+        }
+    }
+
+    public record ReassignPartitionsRequest(
+            String credential, String topicName, List<PartitionReplicaAssignment> assignments) {
+        public ReassignPartitionsRequest {
+            requireNonEmpty(credential, "credential");
+            requireTopicName(topicName, "topicName");
+            if (assignments == null || assignments.isEmpty() || assignments.size() > 1_000) {
+                throw new IllegalArgumentException("assignments must contain 1..1000 entries");
+            }
+            Set<Integer> partitionIds = new HashSet<>();
+            for (PartitionReplicaAssignment assignment : assignments) {
+                if (assignment == null) {
+                    throw new IllegalArgumentException("assignments must not contain null");
+                }
+                if (!partitionIds.add(assignment.partitionId())) {
+                    throw new IllegalArgumentException("assignments must not repeat partitionId");
+                }
+            }
+            assignments = List.copyOf(assignments);
+        }
+    }
+
+    public record ElectPreferredLeadersRequest(
+            String credential, String topicName, List<Integer> partitionIds) {
+        public ElectPreferredLeadersRequest {
+            requireNonEmpty(credential, "credential");
+            requireTopicName(topicName, "topicName");
+            if (partitionIds == null || partitionIds.size() > 1_000) {
+                throw new IllegalArgumentException("partitionIds must contain 0..1000 entries");
+            }
+            Set<Integer> unique = new LinkedHashSet<>();
+            for (Integer partitionId : partitionIds) {
+                if (partitionId == null) {
+                    throw new IllegalArgumentException("partitionIds must not contain null");
+                }
+                requireRange(partitionId, 0, 9_999, "partitionId");
+                if (!unique.add(partitionId)) {
+                    throw new IllegalArgumentException("partitionIds must be unique");
+                }
+            }
+            partitionIds = List.copyOf(partitionIds);
+        }
+    }
+
     public record FailoverAuditRequest(String credential, int limit) {
         public FailoverAuditRequest {
             requireNonEmpty(credential, "credential");
@@ -546,12 +681,22 @@ public final class ProtocolMessages {
     }
 
     public record CreateTopicAdminRequest(
-            String credential, String topicName, int numPartitions, int replicationFactor) {
+            String credential,
+            String topicName,
+            int numPartitions,
+            int replicationFactor,
+            int minInSyncReplicas) {
         public CreateTopicAdminRequest {
             requireNonEmpty(credential, "credential");
             requireNewTopicName(topicName, "topicName");
             requireRange(numPartitions, 1, 10_000, "numPartitions");
             requireRange(replicationFactor, 1, 10_000, "replicationFactor");
+            MinInSyncReplicas.requireRange(minInSyncReplicas);
+        }
+
+        public CreateTopicAdminRequest(
+                String credential, String topicName, int numPartitions, int replicationFactor) {
+            this(credential, topicName, numPartitions, replicationFactor, MinInSyncReplicas.DEFAULT);
         }
     }
 
@@ -565,13 +710,25 @@ public final class ProtocolMessages {
             String topicName,
             int partitionId,
             long leaderEpoch,
-            V4BoundedList<ScheduledProduceRecord> records) {
+            V4BoundedList<ScheduledProduceRecord> records,
+            short acks,
+            int ackTimeoutMs) {
         public ProduceV2Request {
             requireTopicName(topicName, "topicName");
             requireNonNegative(leaderEpoch, "leaderEpoch");
             if (records == null) {
                 throw new IllegalArgumentException("records must not be null");
             }
+            ProduceAcks.requireValid(acks);
+            ProduceAcks.requireTimeoutMs(ackTimeoutMs);
+        }
+
+        public ProduceV2Request(
+                String topicName,
+                int partitionId,
+                long leaderEpoch,
+                V4BoundedList<ScheduledProduceRecord> records) {
+            this(topicName, partitionId, leaderEpoch, records, ProduceAcks.LEADER.code(), ProduceAcks.DEFAULT_TIMEOUT_MS);
         }
     }
 
@@ -859,7 +1016,30 @@ public final class ProtocolMessages {
             String retryTopic,
             String deadLetterTopic,
             V4BoundedList<TopicPartitionInfo> partitions,
-            TopicTombstoneInfo tombstone) {
+            TopicTombstoneInfo tombstone,
+            int minInSyncReplicas) {
+        public DescribeTopicResponse {
+            MinInSyncReplicas.requireRange(minInSyncReplicas);
+        }
+
+        public DescribeTopicResponse(
+                String topicName,
+                long metadataVersion,
+                boolean active,
+                String retryTopic,
+                String deadLetterTopic,
+                V4BoundedList<TopicPartitionInfo> partitions,
+                TopicTombstoneInfo tombstone) {
+            this(
+                    topicName,
+                    metadataVersion,
+                    active,
+                    retryTopic,
+                    deadLetterTopic,
+                    partitions,
+                    tombstone,
+                    MinInSyncReplicas.DEFAULT);
+        }
     }
 
     public record DeleteTopicResponse(
@@ -877,6 +1057,33 @@ public final class ProtocolMessages {
             int previousPartitionCount,
             int newPartitionCount,
             long metadataVersion) {
+    }
+
+    public record AlterTopicConfigResponse(
+            String topicName, int minInSyncReplicas, long metadataVersion) {
+        public AlterTopicConfigResponse {
+            MinInSyncReplicas.requireRange(minInSyncReplicas);
+        }
+    }
+
+    public record ReassignPartitionsResponse(
+            String topicName, long metadataVersion, List<Integer> changedPartitionIds) {
+        public ReassignPartitionsResponse {
+            if (changedPartitionIds == null || changedPartitionIds.size() > 1_000) {
+                throw new IllegalArgumentException("changedPartitionIds must contain 0..1000 entries");
+            }
+            changedPartitionIds = List.copyOf(changedPartitionIds);
+        }
+    }
+
+    public record ElectPreferredLeadersResponse(
+            String topicName, long metadataVersion, List<Integer> electedPartitionIds) {
+        public ElectPreferredLeadersResponse {
+            if (electedPartitionIds == null || electedPartitionIds.size() > 1_000) {
+                throw new IllegalArgumentException("electedPartitionIds must contain 0..1000 entries");
+            }
+            electedPartitionIds = List.copyOf(electedPartitionIds);
+        }
     }
 
     public record FailoverAuditResponse(

@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -106,10 +107,62 @@ class SparseOffsetIndexTest {
             nullReplacement.add(new SparseOffsetIndex.IndexEntry(1, 0));
             nullReplacement.add(null);
 
-            assertThrows(NullPointerException.class, () -> index.replace(nullReplacement));
+            assertThrows(IllegalArgumentException.class, () -> index.replace(nullReplacement));
             assertThrows(IllegalArgumentException.class, () -> index.replace(List.of(
                     new SparseOffsetIndex.IndexEntry(1, 0),
                     new SparseOffsetIndex.IndexEntry(2, 0))));
+        }
+    }
+
+    @Test
+    void replacePublishesAtomicallyAndKeepsChannelBoundForLaterAppends(@TempDir Path dir) throws Exception {
+        Path path = dir.resolve("live.index");
+        Files.write(path.resolveSibling("live.index.tmp"), new byte[] {1, 2, 3});
+
+        try (SparseOffsetIndex index = SparseOffsetIndex.open(path)) {
+            assertFalse(Files.exists(path.resolveSibling("live.index.tmp")));
+            index.append(10, 100);
+            index.replace(List.of(
+                    new SparseOffsetIndex.IndexEntry(1, 0),
+                    new SparseOffsetIndex.IndexEntry(4, 40)));
+            index.append(8, 80);
+            index.flush();
+            assertEquals(40, index.floorPosition(7));
+            assertEquals(80, index.floorPosition(8));
+        }
+
+        try (SparseOffsetIndex reopened = SparseOffsetIndex.open(path)) {
+            assertEquals(0, reopened.floorPosition(1));
+            assertEquals(40, reopened.floorPosition(4));
+            assertEquals(80, reopened.floorPosition(8));
+        }
+    }
+
+    @Test
+    void replaceKeepsOriginalIndexWhenTempPathCannotBeReplaced(@TempDir Path dir) throws Exception {
+        Path path = dir.resolve("blocked.index");
+        Path tempFile = path.resolveSibling("blocked.index.tmp");
+        try (SparseOffsetIndex index = SparseOffsetIndex.open(path)) {
+            index.append(10, 100);
+            index.flush();
+            Files.createDirectory(tempFile);
+            Files.write(tempFile.resolve("blocker"), new byte[] {1});
+
+            IllegalStateException failure = assertThrows(
+                    IllegalStateException.class,
+                    () -> index.replace(List.of(new SparseOffsetIndex.IndexEntry(1, 0))));
+            assertTrue(failure.getMessage().contains("Failed to replace sparse index"));
+            assertEquals(100, index.floorPosition(10));
+            index.append(20, 200);
+            index.flush();
+        }
+
+        Files.delete(tempFile.resolve("blocker"));
+        Files.delete(tempFile);
+
+        try (SparseOffsetIndex reopened = SparseOffsetIndex.open(path)) {
+            assertEquals(100, reopened.floorPosition(10));
+            assertEquals(200, reopened.floorPosition(20));
         }
     }
 }

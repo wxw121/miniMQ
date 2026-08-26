@@ -20,6 +20,7 @@ import com.minimq.protocol.message.ProtocolMessages.TopicSummary;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
@@ -45,7 +46,9 @@ public final class MetadataSync {
             return;
         }
         if (!config.usesLegacyControllerMode()) {
-            // Production followers are installed by MetadataWatchService with the etcd revision.
+            // Watch is the primary path. Poll the durable repository when ensureLeader /
+            // ReplicaFetcher ask for a refresh after a missed or delayed watch event.
+            controller.refreshFromRepository();
             return;
         }
         var identity = controllerRole.currentLeader();
@@ -131,6 +134,9 @@ public final class MetadataSync {
             throw revisionMismatch(metadata, metadataV2);
         }
         ClusterMetadata snapshot = controller.snapshot();
+        Map<String, Integer> previousMinInSync = new HashMap<>();
+        snapshot.topics.forEach((name, topic) ->
+                previousMinInSync.put(name, topic.effectiveMinInSyncReplicas()));
         snapshot.brokers.clear();
         snapshot.topics.clear();
         snapshot.metadataVersion = metadata.metadataVersion();
@@ -148,6 +154,7 @@ public final class MetadataSync {
         for (TopicMetadata topic : metadata.topics()) {
             TopicEntry entry = new TopicEntry();
             entry.topicName = topic.topicName();
+            entry.minInSyncReplicas = previousMinInSync.getOrDefault(topic.topicName(), 1);
             for (PartitionMetadata partition : topic.partitions()) {
                 PartitionEntry partitionEntry = new PartitionEntry();
                 partitionEntry.partitionId = partition.partitionId();

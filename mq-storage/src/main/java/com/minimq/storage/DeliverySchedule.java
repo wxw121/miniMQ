@@ -18,6 +18,7 @@ public final class DeliverySchedule {
     private final LongSupplier clockMillis;
     private final Map<PartitionKey, Map<Long, Long>> entries = new HashMap<>();
     private final Map<PartitionKey, Long> visibleWatermarks = new HashMap<>();
+    private int reservedFutureSlots;
 
     public DeliverySchedule() {
         this(System::currentTimeMillis);
@@ -30,11 +31,14 @@ public final class DeliverySchedule {
     public synchronized void put(String topic, int partitionId, long offset, long deliverAtEpochMs) {
         validate(topic, partitionId, offset, deliverAtEpochMs);
         if (deliverAtEpochMs <= clockMillis.getAsLong()) {
-            remove(topic, partitionId, offset);
+            noteReadyOffset(topic, partitionId, offset);
             return;
         }
         entries.computeIfAbsent(new PartitionKey(topic, partitionId), ignored -> new HashMap<>())
                 .put(offset, deliverAtEpochMs);
+        if (reservedFutureSlots > 0) {
+            reservedFutureSlots--;
+        }
     }
 
     public synchronized void restore(String topic, int partitionId, long offset, long deliverAtEpochMs) {
@@ -45,6 +49,21 @@ public final class DeliverySchedule {
             }
             entries.computeIfAbsent(new PartitionKey(topic, partitionId), ignored -> new HashMap<>())
                     .put(offset, deliverAtEpochMs);
+            return;
+        }
+        noteReadyOffset(topic, partitionId, offset);
+    }
+
+    /**
+     * Marks {@code offset} immediately visible when it is the next contiguous
+     * ready offset. Used for due or never-delayed records so an empty schedule
+     * can keep the stored watermark without hiding later ready appends.
+     */
+    synchronized void noteReadyOffset(String topic, int partitionId, long offset) {
+        validate(topic, partitionId, offset, 0L);
+        remove(topic, partitionId, offset);
+        if (offset == visibleWatermark(topic, partitionId)) {
+            markVisible(topic, partitionId, offset + 1);
         }
     }
 
@@ -154,11 +173,14 @@ public final class DeliverySchedule {
         if (physicalHighWatermark < 0) {
             throw new IllegalArgumentException("physicalHighWatermark must be non-negative");
         }
+        long floor = visibleWatermark(topic, partitionId);
         Map<Long, Long> partition = entries.get(new PartitionKey(topic, partitionId));
         if (partition == null || partition.isEmpty()) {
-            return new VisibilityState(physicalHighWatermark, -1L);
+            long visible = floor > 0
+                    ? Math.min(physicalHighWatermark, floor)
+                    : physicalHighWatermark;
+            return new VisibilityState(visible, -1L);
         }
-        long floor = visibleWatermark(topic, partitionId);
         long visible = partition.entrySet().stream()
                 .filter(entry -> entry.getKey() < physicalHighWatermark
                         && entry.getKey() >= floor
@@ -241,6 +263,24 @@ public final class DeliverySchedule {
 
     public synchronized int count() {
         return entries.values().stream().mapToInt(Map::size).sum();
+    }
+
+    synchronized boolean tryReserveFutureSlots(int n, int maxScheduledRecords) {
+        if (n < 0) {
+            throw new IllegalArgumentException("n must be non-negative");
+        }
+        if (n == 0) {
+            return true;
+        }
+        if (count() + reservedFutureSlots + n > maxScheduledRecords) {
+            return false;
+        }
+        reservedFutureSlots += n;
+        return true;
+    }
+
+    synchronized void releaseFutureSlots(int n) {
+        reservedFutureSlots = Math.max(0, reservedFutureSlots - n);
     }
 
     public synchronized Map<String, Map<Long, Long>> snapshotByPartitionKey() {

@@ -37,6 +37,7 @@ class ConsumerIntegrationTest {
                         ("k" + i).getBytes(StandardCharsets.UTF_8),
                         ("v" + i).getBytes(StandardCharsets.UTF_8)));
             }
+            producer.flush();
 
             consumer.subscribe("orders");
             List<ConsumerRecord> records = consumer.poll(Duration.ofSeconds(2));

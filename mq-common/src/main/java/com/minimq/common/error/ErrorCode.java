@@ -23,7 +23,9 @@ public enum ErrorCode {
     THROTTLED(16),
     FORBIDDEN(17),
     UNKNOWN_BROKER(18),
-    STALE_TOMBSTONE(19);
+    STALE_TOMBSTONE(19),
+    NOT_ENOUGH_REPLICAS(20),
+    REQUEST_TIMED_OUT(21);
 
     public final short code;
 

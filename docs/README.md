@@ -1,6 +1,6 @@
 # MiniMQ Project Context Index / 项目上下文索引
 
-> Last updated / 最后更新：2026-07-29
+> Last updated / 最后更新：2026-08-14
 > Audience / 适用对象（英文）：new contributors, reviewers, and operators
 > 适用对象：新贡献者、代码审查者与运维/排障读者
 
@@ -12,7 +12,7 @@ MiniMQ 是一个 Java 17 实现的轻量消息队列项目，概念上参考 Kaf
 
 The current implementation uses etcd-backed Controller election and a single-leader partition model. Any Broker can become Controller; clients discover it through the bootstrap list and route produce/fetch with an exact Leader epoch.
 
-The current V4 layer is implemented in source: operator APIs expose status, group lag, topic administration, failover audit, auth status, reliability links, metadata V2, metrics V2, and replica-state V2 reporting. Delayed messages use PRODUCE_V2, WAL type 8, visible-prefix fetches, and bounded Consumer waits.
+The current V4 layer is implemented in source: operator APIs expose status, group lag, topic administration, failover audit, auth status, reliability links, metadata V2, metrics V2, and replica-state V2 reporting. Delayed messages use PRODUCE_V2, WAL type 8, visible-prefix fetches, and bounded Consumer waits. V5 adds produce acknowledgements (`LEADER` / `ALL`), `min.insync.replicas`, a broker-scoped produce-ack executor, `LEAVE_GROUP`, per-member session timeouts, topic config changes, partition reassignment, and preferred-leader election. Client `send(record)` enqueues per partition (`batchSize=50`, `lingerMs=5`) until `offset()` / `flush()` / linger / `close()`. Storage flush defaults to `everyNAppends(100)`. The Web/FlowRequest default partition count is 4; CLI `create-topic --partitions` still defaults to 3.
 
 当前实现采用 etcd 支持的 Controller 自动选举与单 Leader 分区模型。任意 Broker 都可接管 Controller；客户端通过 bootstrap 列表发现 Controller，并携带精确 Leader epoch 路由生产和拉取请求。
 
@@ -26,6 +26,7 @@ The current V4 layer is implemented in source: operator APIs expose status, grou
 | 4 | [Roadmap](roadmap.md) / [代办与路线图](roadmap.md) | Understand known limitations, backlog items, version features, and recommended next tasks. / 理解已知限制、待办事项、版本功能与推荐下一步任务。 |
 | 5 | [Code Review Fix Log](code-review-2026-07-02.md) / [代码审查修复记录](code-review-2026-07-02.md) | See recently fixed bugs and why they mattered. / 查看近期修复的问题以及它们的重要性。 |
 | 5b | [V2.3 Code Review Fix Log](code-review-2026-07-17-v2.3-replication.md) / [V2.3 代码审查修复记录](code-review-2026-07-17-v2.3-replication.md) | See V2.3 replication review findings, `2.3.0` fixes, and `2.3.1` backlog. / 查看 V2.3 副本审查问题、`2.3.0` 修复与 `2.3.1` 待办。 |
+| 5c | [V4.0.0 Full Code Review](code-review-2026-08-13-v4.0.0-full-review.md) / [V4.0.0 全量代码审查](code-review-2026-08-13-v4.0.0-full-review.md) | See the 2026-08-13 full-tree findings, landed P1 fixes, and remaining crash-window / HA items. / 查看 2026-08-13 全量审查结论、已合入的 P1 修复，以及仍开放的崩溃窗口与 HA 项。 |
 | 6 | [Test Report](test-report-2026-07-10-v2-storage.md) / [测试报告](test-report-2026-07-10-v2-storage.md) | See the V2.0 storage recovery closeout results. / 查看 V2.0 存储恢复收口测试结果。 |
 | 7 | [V2.3 Replication Test Report](test-report-2026-07-17-v2.3-replication.md) / [V2.3 副本机制测试报告](test-report-2026-07-17-v2.3-replication.md) | See the V2.3 replication release verification. / 查看 V2.3 副本机制发布验证。 |
 | 7b | [V2.3.1 Replication Hardening Test Report](test-report-2026-07-18-v2.3.1-replication-hardening.md) | See the V2.3.1 replication hardening release verification. |
@@ -37,8 +38,14 @@ The current V4 layer is implemented in source: operator APIs expose status, grou
 | 7h | [V4 Operator Readiness Design](designs/v4-operator-readiness-design.md) | Understand the implemented operations-focused major version and its compatibility rules. |
 | 7i | [V4 Operator Readiness Implementation Plan](plans/v4-operator-readiness-implementation.md) | Historical implementation checklist; use source and focused tests as current truth. |
 | 7j | [V3.3-V3.5 Production Hardening Test Report](test-report-2026-07-21-v3.3-v3.5-production-hardening.md) | See runtime metrics export, resilience matrix, benchmark transport selector, and bounded verification evidence. |
-| 7k | [Future Storage Notes](roadmap.md#future-version-notes) | Review deferred experimental storage work after V4 is complete. |
-| 7l | [V4.0.0 Operator Readiness Test Report](test-report-2026-07-22-v4.0.0-operator-readiness.md) | See the fresh full-reactor test counts, coverage, review regressions, and Docker-gated etcd status. |
+| 7k | [V5.0 Producer Acknowledgements Design](designs/v5-producer-acks-design.md) | Understand `LEADER` / `ALL` produce acks, `min.insync.replicas`, the ack executor, `LEAVE_GROUP`, session timeouts, reassignment, and preferred-leader election. |
+| 7l | [V4.0.0 Operator Readiness Test Report](test-report-2026-07-22-v4.0.0-operator-readiness.md) | See the 2026-07-29 full-reactor test counts, coverage, review regressions, and Docker-gated etcd status. |
+| 7n | [V5.0 Producer Acknowledgements Test Report](test-report-2026-08-14-v5.0.0-producer-acks.md) | Historical acks-only slice: 2026-08-14 `mvn clean verify` for `LEADER` / `ALL` (767 tests, line ≥ 90%). |
+| 7o | [V5.0 Expanded Verify (acks + min.insync + leave)](test-report-2026-08-14-v5.0.0-acks-minisr-leave.md) | Historical 2026-08-14 full `mvn clean verify` after min.insync, leave-group, session timeout, and the produce-ack executor (781 tests, line ≥ 90%). |
+| 7p | [V5.0 Expanded Verify (reassign + preferred leader)](test-report-2026-08-14-v5.0.0-reassign-preferred.md) | Historical 2026-08-14 full `mvn clean verify` after `ALTER_TOPIC_CONFIG`, `REASSIGN_PARTITIONS`, and `ELECT_PREFERRED_LEADERS` (785 tests, line ≥ 90%). |
+| 7q | [V5.0 Review-Fix Verify](test-report-2026-08-14-v5.0.0-review-fixes.md) | Historical 2026-08-14 full `mvn clean verify` after sharing the produce-ack executor, aborting `ALL` waits, idempotent leave, replica fetch offset, and operator-console APIs (792 tests, line ≥ 90%). |
+| 7r | [Produce Concurrency Verify](test-report-2026-08-14-produce-concurrency.md) | Historical 2026-08-14 full `mvn clean verify` after per-partition appends, broker `appendBatch`, client `send(List)`, and shared Netty loops (810 tests, line ≥ 90%). |
+| 7s | [Auto-Batch And Every-N Flush Verify](test-report-2026-08-14-batch-flush-defaults.md) | Latest 2026-08-14 full `mvn clean verify` after client linger/auto-batch, default `everyNAppends(100)`, and Web default partitions 4 (823 tests, line ≥ 90%). |
 | 8 | [Troubleshooting Guide](troubleshooting.md) / [故障排查指南](troubleshooting.md) | Resolve common Maven, port, Windows, test report, and GitHub/SSH issues. / 排查 Maven、端口、Windows、测试报告、GitHub/SSH 常见问题。 |
 
 ## 3. Current Snapshot / 当前快照
@@ -46,17 +53,17 @@ The current V4 layer is implemented in source: operator APIs expose status, grou
 | Item / 项目 | Value / 值 |
 | --- | --- |
 | Language / 语言 | Java 17 |
-| Project version | 4.0.0 |
+| Project version | 5.0.0 |
 | Build tool / 构建工具 | Maven multi-module project / Maven 多模块项目 |
 | Network framework / 网络框架 | Netty 4.1 |
 | Serialization / 序列化 | Custom binary protocol over Netty `ByteBuf` / 基于 Netty `ByteBuf` 的自定义二进制协议 |
 | Metadata persistence / 元数据持久化 | etcd revision CAS + monotonic watch; local JSON only for explicit 2.x import / etcd revision CAS 与单调 watch；本地 JSON 仅用于显式 2.x 导入 |
-| Storage / 存储 | WAL-backed segmented log with retention, compaction, dry-run reports, maintenance metrics, zero-copy FETCH sendfile, ISR-aware replication, delayed scheduling, and visible-prefix reads / 基于 WAL 的分段日志，支持保留策略、压缩、dry-run 报告、维护指标、零拷贝 FETCH sendfile、ISR 感知副本、延迟调度与可见前缀读取 |
+| Storage / 存储 | WAL-backed segmented log with retention, compaction, dry-run reports, maintenance metrics, zero-copy FETCH sendfile, ISR-aware replication, delayed scheduling, visible-prefix reads, and default `everyNAppends(100)` flush / 基于 WAL 的分段日志，支持保留策略、压缩、dry-run 报告、维护指标、零拷贝 FETCH sendfile、ISR 感知副本、延迟调度、可见前缀读取，以及默认每 100 次 append 刷盘 |
 | Tests / 测试 | JUnit 5 + Surefire |
 | Coverage / 覆盖率 | JaCoCo |
-| Latest milestone tag | Not cut for the current working tree; Maven project version is 4.0.0 |
-| Latest release | V4 operator readiness in the working tree: operator APIs, bounded metrics V2, topic admin, failover audit, reliability links, delayed delivery, and FETCH_V2 visibility |
-| Latest evidence | [V4.0.0 operator readiness test report](test-report-2026-07-22-v4.0.0-operator-readiness.md): 712 tests, zero failures/errors/skips, 91.17% overall line coverage, and every module above 90% |
+| Latest milestone tag | Not cut for the current working tree; Maven project version is 5.0.0 |
+| Latest release | V5.0.0 in progress: producer acks, min.insync, leave-group, session timeout, alter-config, reassignment, preferred-leader election, client linger/auto-batch, default every-n flush, and Web default 4 partitions on top of the completed V4 operator-readiness tree |
+| Latest evidence | [Auto-batch and every-n flush](test-report-2026-08-14-batch-flush-defaults.md): 823 tests, 0 failures/errors, 6 Linux-skipped Windows cases, 91.78% overall line coverage, every module above 90%. Docker/etcd ITs remain unrun. |
 
 ## 4. Module Map / 模块地图
 
@@ -110,9 +117,9 @@ Start a three-broker demo cluster / 启动三节点 Broker 演示集群：
 
 ```powershell
 docker compose -f deploy/etcd/docker-compose.yml up -d
-java -jar mq-demo/target/mq-demo-4.0.0.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --etcd-endpoints http://localhost:2379 --initialize-empty-cluster --admin-token <secret>
-java -jar mq-demo/target/mq-demo-4.0.0.jar broker --broker-id 1 --port 9093 --data-dir ./data/broker-1 --etcd-endpoints http://localhost:2379 --admin-token <secret>
-java -jar mq-demo/target/mq-demo-4.0.0.jar broker --broker-id 2 --port 9094 --data-dir ./data/broker-2 --etcd-endpoints http://localhost:2379 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-5.0.0.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --etcd-endpoints http://localhost:2379 --initialize-empty-cluster --admin-token <secret>
+java -jar mq-demo/target/mq-demo-5.0.0.jar broker --broker-id 1 --port 9093 --data-dir ./data/broker-1 --etcd-endpoints http://localhost:2379 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-5.0.0.jar broker --broker-id 2 --port 9094 --data-dir ./data/broker-2 --etcd-endpoints http://localhost:2379 --admin-token <secret>
 ```
 
 On Windows, `scripts/start-brokers.ps1` reads the current project version from the root POM and
@@ -129,18 +136,20 @@ Delayed-message admission is bounded by --max-scheduled-records with default 100
 Create, produce, and consume / 创建 Topic、生产消息、消费消息：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-4.0.0.jar create-topic --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --name orders --partitions 3
-java -jar mq-demo/target/mq-demo-4.0.0.jar produce --brokers localhost:9092,localhost:9093,localhost:9094 --topic orders --key user-1 --message hello
-java -jar mq-demo/target/mq-demo-4.0.0.jar consume --brokers localhost:9092,localhost:9093,localhost:9094 --topic orders --group order-processors
+java -jar mq-demo/target/mq-demo-5.0.0.jar create-topic --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --name orders --partitions 3
+java -jar mq-demo/target/mq-demo-5.0.0.jar produce --brokers localhost:9092,localhost:9093,localhost:9094 --topic orders --key user-1 --message hello
+java -jar mq-demo/target/mq-demo-5.0.0.jar consume --brokers localhost:9092,localhost:9093,localhost:9094 --topic orders --group order-processors
 ```
+
+CLI `create-topic --partitions` defaults to 3 when omitted. The Web console / `FlowRequest` default is 4. Producer `send(record)` enqueues (`batchSize=50`, `lingerMs=5`) until `offset()`, `flush()`, linger, or `close()`. Broker flush defaults to `everyNAppends(100)`.
 
 Inspect and run storage maintenance / 查看并执行存储维护：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-4.0.0.jar maintenance-report --broker localhost:9092 --admin-token <secret>
-java -jar mq-demo/target/mq-demo-4.0.0.jar maintenance-run --broker localhost:9092 --admin-token <secret>
-java -jar mq-demo/target/mq-demo-4.0.0.jar maintenance-metrics --broker localhost:9092 --admin-token <secret>
-java -jar mq-demo/target/mq-demo-4.0.0.jar runtime-metrics --broker localhost:9092 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-5.0.0.jar maintenance-report --broker localhost:9092 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-5.0.0.jar maintenance-run --broker localhost:9092 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-5.0.0.jar maintenance-metrics --broker localhost:9092 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-5.0.0.jar runtime-metrics --broker localhost:9092 --admin-token <secret>
 ```
 
 All brokers require the shared admin token. Invalid maintenance credentials return `UNAUTHORIZED`, while an overlapping destructive run returns `MAINTENANCE_BUSY`; report/run work executes on the broker's dedicated maintenance executor.
@@ -148,14 +157,14 @@ All brokers require the shared admin token. Invalid maintenance credentials retu
 Benchmark FETCH heap versus sendfile / 对比 HEAP 与 sendfile 的 FETCH 基准：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-4.0.0.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576 --network-transport nio
+java -jar mq-demo/target/mq-demo-5.0.0.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576 --network-transport nio
 ```
 
 ## 6. V4 Operator Readiness Notes
 
-- API keys 20-37 are reserved and implemented for operator status, group lag, topic administration, failover audit, authorization status, reliability links, create-topic admin, PRODUCE_V2, REPLICA_FETCH_V2, FETCH_V2, METADATA_V2, RUNTIME_METRICS_V2, and replica-state V2.
+- API keys 20-37 are V4 operator/data-plane keys (status, group lag, topic administration, failover audit, authorization, reliability links, create-topic admin, PRODUCE_V2, REPLICA_FETCH_V2, FETCH_V2, METADATA_V2, RUNTIME_METRICS_V2, replica-state V2). V5 appends 38-41: `LEAVE_GROUP`, `ALTER_TOPIC_CONFIG`, `REASSIGN_PARTITIONS`, and `ELECT_PREFERRED_LEADERS`.
 - METADATA_V2 uses independent start-after cursors for active topic summaries and tombstones; legacy followers page V2 metadata and fetch exact legacy topic metadata when a snapshot has more than 10,000 active topics.
-- Error codes are append-only through `STALE_TOMBSTONE = 19`; metadata format version is 4.
+- Error codes are append-only through `REQUEST_TIMED_OUT = 21` (`STALE_TOMBSTONE = 19`, `NOT_ENOUGH_REPLICAS = 20`); metadata format version is 4.
 - Operator scopes are `STATUS`, `TOPIC_ADMIN`, `MAINTENANCE`, and `BROKER_OFFLINE`. The legacy admin token maps to all four scopes.
 - Topic names use 1..249 characters from `[A-Za-z0-9._-]`, excluding `.` and `..`. Deletion advances `DELETING -> DELETED`; deleted names stay reserved and cannot be recreated.
 - Topic deletion uses one caller deadline across queueing, metadata mutation, repository IO, and polling. A normal wait timeout returns the current `DELETING` tombstone; an uncertain mutation result returns `CONTROLLER_NOT_READY`.
@@ -163,18 +172,21 @@ java -jar mq-demo/target/mq-demo-4.0.0.jar benchmark-fetch --records 256 --value
 - WAL type 8 is SCHEDULED_DATA_APPEND. It keeps the existing data append body and adds deliverAtEpochMs for future visibility.
 - Legacy FETCH and FETCH_V2 both hide future delayed records behind the contiguous visible prefix.
 - Consumer uses FETCH_V2 and bounded client-side waiting: nextVisibleAtEpochMs caps the sleep by the remaining poll timeout, and the Broker request is not held open.
-- V3 clients remain wire-compatible because keys 0-19 retain their layouts. Mixed V3/V4 Broker clusters are unsupported.
+- Keys 0-19 keep their original field order. `HEARTBEAT` and `OFFSET_COMMIT` append optional trailing membership fields: decode accepts legacy bodies (defaults `memberId=""` / `generationId=0`); encode always writes the current layout. A legacy client that omits generation fails coordinator checks after join. Mixed V3/V4 Broker clusters are unsupported.
 - Web AUTO mode falls back to mock only before a real side effect happens. Once real produce succeeds, later poll/commit failure is surfaced as a real error instead of mock success.
 
 Controller-aware commands use the complete `--brokers` bootstrap list; Broker-local status,
 maintenance, audit, auth, and metrics commands require exactly one `--broker` target.
 
 ```powershell
-java -jar mq-demo/target/mq-demo-4.0.0.jar ops-status --broker localhost:9092 --admin-token <secret>
-java -jar mq-demo/target/mq-demo-4.0.0.jar group-status --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --group order-processors
-java -jar mq-demo/target/mq-demo-4.0.0.jar list-topics --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret>
-java -jar mq-demo/target/mq-demo-4.0.0.jar describe-topic --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --topic orders
-java -jar mq-demo/target/mq-demo-4.0.0.jar delete-topic --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --topic orders
+java -jar mq-demo/target/mq-demo-5.0.0.jar ops-status --broker localhost:9092 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-5.0.0.jar group-status --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --group order-processors
+java -jar mq-demo/target/mq-demo-5.0.0.jar list-topics --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-5.0.0.jar describe-topic --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --topic orders
+java -jar mq-demo/target/mq-demo-5.0.0.jar delete-topic --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --topic orders
+java -jar mq-demo/target/mq-demo-5.0.0.jar alter-topic-config --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --topic orders --min-insync-replicas 2
+java -jar mq-demo/target/mq-demo-5.0.0.jar reassign-partitions --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --topic orders --assignment 0:1,2,0
+java -jar mq-demo/target/mq-demo-5.0.0.jar elect-preferred-leaders --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --topic orders
 ```
 
 The local workflow scripts use a PID/start-time manifest and bounded readiness. Recursive cleanup
@@ -198,7 +210,7 @@ replicas to enter ISR before stopping the initial Leader.
 | Offset | 分区内消息的递增位置编号。 | A monotonically increasing position in a partition log. |
 | Consumer Group | 一组消费者共享同一个消费进度和分区分配。 | A group of consumers coordinating partition ownership and offsets. |
 | Assignment | Consumer Group 中“哪个成员消费哪些分区”的结果。 | The mapping from consumer members to partitions. |
-| High Watermark | 当前分区下一条消息的 offset，也可理解为已写入尾部位置。 | The next offset after the last appended record. |
+| High Watermark | 分区日志的下一条 offset（LEO）；复制路径上的 replication HWM 是当前 ISR 已确认的最小 LEO。 | The next offset after the last appended record (LEO). Replication HWM is the minimum confirmed LEO across the current ISR. |
 | Append-only Log | 只追加、不原地修改的日志文件。 | A log file that only appends new records. |
 | Frame | 网络协议中的完整消息包，包含 magic、version、length、payload。 | A complete network packet with magic, version, length, and payload. |
 
@@ -208,9 +220,9 @@ replicas to enter ISR before stopping the initial Leader.
 2. Read `architecture.md` for module boundaries and runtime topology. / 阅读 `architecture.md`，理解模块边界和运行时拓扑。
 3. Read `design.md` before changing protocol, storage, metadata, or consumer group logic. / 修改协议、存储、元数据或消费组逻辑前先阅读 `design.md`。
 4. Run `mvn verify -gs .mvn/settings.xml -s .mvn/settings.xml` before and after changes. / 修改前后都运行完整 Maven 测试命令。
-5. Check `docs/test-report-2026-07-22-v4.0.0-operator-readiness.md` for the current closeout baseline. / 查看 `docs/test-report-2026-07-22-v4.0.0-operator-readiness.md` 了解当前收口基线。
+5. Check `docs/test-report-2026-08-14-batch-flush-defaults.md` for the current closeout baseline. Dated V4/V5 reports and `docs/code-review-2026-08-13-v4.0.0-full-review.md` remain historical. / 查看 `docs/test-report-2026-08-14-batch-flush-defaults.md` 了解当前收口基线。带日期的 V4/V5 报告与 `docs/code-review-2026-08-13-v4.0.0-full-review.md` 仍是历史记录。
 6. Do not treat target files as source of truth; source lives under `src/main/java` and `src/test/java`. / 不要把 `target` 目录当作事实来源，源码位于 `src/main/java` 和 `src/test/java`。
-7. Keep JaCoCo overall line coverage at or above 90%. / 保持 JaCoCo 总体行覆盖率不低于 90%。
+7. Keep JaCoCo **per-module** line coverage at or above 90% (the Maven `jacoco-maven-plugin` `check` gate). Overall line coverage is a report metric, not the gate. / 保持 JaCoCo **各模块**行覆盖率不低于 90%（Maven `jacoco-maven-plugin` `check` 门禁）。总体行覆盖率只是报告指标，不是门禁。
 8. If changing protocol fields, update both `ProtocolSerdesTest` and the design document. / 如果修改协议字段，同时更新 `ProtocolSerdesTest` 和设计文档。
 9. If changing topic/partition routing, update `ProducerIntegrationTest`, `ProduceFetchIntegrationTest`, and architecture diagrams. / 如果修改 Topic/Partition 路由，同时更新 `ProducerIntegrationTest`、`ProduceFetchIntegrationTest` 和架构图。
 10. If changing CLI behavior, update `DemoCliTest` and command examples in docs. / 如果修改 CLI 行为，同时更新 `DemoCliTest` 和文档中的命令示例。

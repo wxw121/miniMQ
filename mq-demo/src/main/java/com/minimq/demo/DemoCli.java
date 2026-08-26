@@ -6,6 +6,7 @@ import com.minimq.client.NetworkClient;
 import com.minimq.client.Producer;
 import com.minimq.client.model.ConsumerRecord;
 import com.minimq.client.model.ProducerRecord;
+import com.minimq.common.acks.ProduceAcks;
 import com.minimq.protocol.ApiKeys;
 import com.minimq.protocol.codec.MqDecoder;
 import com.minimq.protocol.message.ProtocolMessages.CreateTopicAdminRequest;
@@ -51,6 +52,9 @@ public final class DemoCli {
             case "describe-topic" -> describeTopic(args);
             case "delete-topic" -> deleteTopic(args);
             case "increase-partitions" -> increasePartitions(args);
+            case "alter-topic-config" -> alterTopicConfig(args);
+            case "reassign-partitions" -> reassignPartitions(args);
+            case "elect-preferred-leaders" -> electPreferredLeaders(args);
             case "failover-audit" -> failoverAudit(args);
             case "auth-status" -> authStatus(args);
             case "configure-topic-reliability" -> configureTopicReliability(args);
@@ -69,15 +73,19 @@ public final class DemoCli {
         String name = arg(args, "--name", "orders");
         int partitions = Integer.parseInt(arg(args, "--partitions", "3"));
         int replicationFactor = Integer.parseInt(arg(args, "--replication-factor", "1"));
+        int minInSyncReplicas = Integer.parseInt(arg(args, "--min-insync-replicas", "1"));
         try (ControllerAwareNetworkClient client =
                      new ControllerAwareNetworkClient(brokers, "demo-admin")) {
             client.connect();
             MqDecoder.DecodedResponse response = client.send(
                     ApiKeys.CREATE_TOPIC_ADMIN,
-                    new CreateTopicAdminRequest(adminToken, name, partitions, replicationFactor));
+                    new CreateTopicAdminRequest(
+                            adminToken, name, partitions, replicationFactor, minInSyncReplicas));
             client.ensureSuccess(response);
             CreateTopicAdminResponse body = (CreateTopicAdminResponse) response.body();
-            System.out.println("Created topic: " + body.topicName() + " partitions=" + partitions);
+            System.out.println("Created topic: " + body.topicName()
+                    + " partitions=" + partitions
+                    + " minInSyncReplicas=" + minInSyncReplicas);
         }
     }
 
@@ -86,11 +94,14 @@ public final class DemoCli {
         String topic = arg(args, "--topic", "orders");
         String key = optionalArg(args, "--key");
         String message = arg(args, "--message", "hello");
+        ProduceAcks acks = parseProduceAcks(arg(args, "--acks", "leader"));
+        int ackTimeoutMs = Integer.parseInt(arg(args, "--ack-timeout-ms",
+                Integer.toString(ProduceAcks.DEFAULT_TIMEOUT_MS)));
         try (Producer producer = new Producer(brokers, "demo-producer")) {
             producer.start();
             var result = producer.send(new ProducerRecord(
                     topic, null, key != null ? key.getBytes(StandardCharsets.UTF_8) : null,
-                    message.getBytes(StandardCharsets.UTF_8)));
+                    message.getBytes(StandardCharsets.UTF_8)), acks, ackTimeoutMs);
             System.out.printf("Produced to %s-%d offset=%d%n", result.topic(), result.partitionId(), result.offset());
         }
     }
@@ -103,7 +114,8 @@ public final class DemoCli {
         String brokers = arg(args, "--brokers", "localhost:9092");
         String topic = arg(args, "--topic", "orders");
         String group = arg(args, "--group", "demo-group");
-        try (Consumer consumer = new Consumer(brokers, group, "demo-consumer")) {
+        int sessionTimeoutMs = Integer.parseInt(arg(args, "--session-timeout-ms", "10000"));
+        try (Consumer consumer = new Consumer(brokers, group, "demo-consumer", sessionTimeoutMs)) {
             consumer.subscribe(topic);
             int polls = 0;
             while (maxPolls < 0 || polls < maxPolls) {
@@ -243,9 +255,10 @@ public final class DemoCli {
                         Integer.parseInt(arg(args, "--partition-limit", "100")),
                         hasFlag(args, "--include-deleted")),
                 "describe topic").body();
-        System.out.printf("Topic %s active=%s metadataVersion=%d retry=%s deadLetter=%s%n",
+        System.out.printf(
+                "Topic %s active=%s metadataVersion=%d retry=%s deadLetter=%s minInSyncReplicas=%d%n",
                 response.topicName(), response.active(), response.metadataVersion(),
-                response.retryTopic(), response.deadLetterTopic());
+                response.retryTopic(), response.deadLetterTopic(), response.minInSyncReplicas());
         System.out.println("partitions=" + bounded(response.partitions()));
         if (response.tombstone() != null) {
             System.out.printf("tombstoneState=%s pendingBrokers=%s%n",
@@ -275,6 +288,49 @@ public final class DemoCli {
         System.out.printf("Partitions increased topic=%s previous=%d current=%d metadataVersion=%d%n",
                 response.topicName(), response.previousPartitionCount(), response.newPartitionCount(),
                 response.metadataVersion());
+    }
+
+    private static void alterTopicConfig(String[] args) throws Exception {
+        String credential = arg(args, "--admin-token", null);
+        AlterTopicConfigResponse response = (AlterTopicConfigResponse) sendController(
+                args, ApiKeys.ALTER_TOPIC_CONFIG,
+                new AlterTopicConfigRequest(
+                        credential,
+                        arg(args, "--topic", null),
+                        Integer.parseInt(arg(args, "--min-insync-replicas", null))),
+                "alter topic config").body();
+        System.out.printf("Topic config topic=%s minInSyncReplicas=%d metadataVersion=%d%n",
+                response.topicName(), response.minInSyncReplicas(), response.metadataVersion());
+    }
+
+    private static void reassignPartitions(String[] args) throws Exception {
+        String credential = arg(args, "--admin-token", null);
+        List<PartitionReplicaAssignment> assignments = new java.util.ArrayList<>();
+        for (String value : repeatedArg(args, "--assignment")) {
+            assignments.add(parseAssignment(value));
+        }
+        ReassignPartitionsResponse response = (ReassignPartitionsResponse) sendController(
+                args, ApiKeys.REASSIGN_PARTITIONS,
+                new ReassignPartitionsRequest(
+                        credential, arg(args, "--topic", null), assignments),
+                "reassign partitions").body();
+        System.out.printf("Partitions reassigned topic=%s changed=%s metadataVersion=%d%n",
+                response.topicName(), response.changedPartitionIds(), response.metadataVersion());
+    }
+
+    private static void electPreferredLeaders(String[] args) throws Exception {
+        String credential = arg(args, "--admin-token", null);
+        List<Integer> partitionIds = new java.util.ArrayList<>();
+        for (String value : repeatedArg(args, "--partition")) {
+            partitionIds.add(Integer.parseInt(value));
+        }
+        ElectPreferredLeadersResponse response = (ElectPreferredLeadersResponse) sendController(
+                args, ApiKeys.ELECT_PREFERRED_LEADERS,
+                new ElectPreferredLeadersRequest(
+                        credential, arg(args, "--topic", null), partitionIds),
+                "elect preferred leaders").body();
+        System.out.printf("Preferred leaders elected topic=%s elected=%s metadataVersion=%d%n",
+                response.topicName(), response.electedPartitionIds(), response.metadataVersion());
     }
 
     private static void failoverAudit(String[] args) throws Exception {
@@ -448,6 +504,14 @@ public final class DemoCli {
         }
     }
 
+    static ProduceAcks parseProduceAcks(String value) {
+        return switch (value) {
+            case "leader" -> ProduceAcks.LEADER;
+            case "all" -> ProduceAcks.ALL;
+            default -> throw new IllegalArgumentException("--acks must be leader or all");
+        };
+    }
+
     static String arg(String[] args, String name, String defaultValue) {
         for (int i = 0; i < args.length; i++) {
             if (args[i].equals(name)) {
@@ -473,6 +537,42 @@ public final class DemoCli {
             }
         }
         return null;
+    }
+
+    static List<String> repeatedArg(String[] args, String name) {
+        List<String> values = new java.util.ArrayList<>();
+        for (int i = 0; i < args.length; i++) {
+            if (args[i].equals(name)) {
+                if (i == args.length - 1 || args[i + 1].startsWith("--")) {
+                    throw new IllegalArgumentException("Missing " + name);
+                }
+                values.add(args[++i]);
+            }
+        }
+        return values;
+    }
+
+    static PartitionReplicaAssignment parseAssignment(String value) {
+        if (value == null || !value.contains(":")) {
+            throw new IllegalArgumentException(
+                    "--assignment must be partitionId:brokerId[,brokerId...]");
+        }
+        String[] parts = value.split(":", 2);
+        int partitionId;
+        try {
+            partitionId = Integer.parseInt(parts[0].trim());
+        } catch (NumberFormatException ex) {
+            throw new IllegalArgumentException("--assignment partition id must be an integer", ex);
+        }
+        List<Integer> replicas = new java.util.ArrayList<>();
+        for (String token : parts[1].split(",")) {
+            try {
+                replicas.add(Integer.parseInt(token.trim()));
+            } catch (NumberFormatException ex) {
+                throw new IllegalArgumentException("--assignment replica ids must be integers", ex);
+            }
+        }
+        return new PartitionReplicaAssignment(partitionId, replicas);
     }
 
     static boolean hasFlag(String[] args, String name) {
@@ -537,9 +637,9 @@ public final class DemoCli {
         System.out.println("""
                 Usage:
                   java -jar mq-demo.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --etcd-endpoints http://localhost:2379 --initialize-empty-cluster --admin-token <secret>
-                  java -jar mq-demo.jar create-topic --brokers localhost:9092 --admin-token <secret> --name orders --partitions 3
-                  java -jar mq-demo.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello
-                  java -jar mq-demo.jar consume --brokers localhost:9092 --topic orders --group demo-group
+                  java -jar mq-demo.jar create-topic --brokers localhost:9092 --admin-token <secret> --name orders --partitions 3 [--min-insync-replicas 1]
+                  java -jar mq-demo.jar produce --brokers localhost:9092 --topic orders --key user-1 --message hello [--acks leader|all] [--ack-timeout-ms 5000]
+                  java -jar mq-demo.jar consume --brokers localhost:9092 --topic orders --group demo-group [--session-timeout-ms 10000]
                   java -jar mq-demo.jar maintenance-report --broker localhost:9092 --admin-token <secret>
                   java -jar mq-demo.jar maintenance-run --broker localhost:9092 --admin-token <secret>
                   java -jar mq-demo.jar maintenance-metrics --broker localhost:9092 --admin-token <secret>
@@ -550,6 +650,9 @@ public final class DemoCli {
                   java -jar mq-demo.jar describe-topic --brokers localhost:9092 --admin-token <secret> --topic orders [--include-deleted]
                   java -jar mq-demo.jar delete-topic --brokers localhost:9092 --admin-token <secret> --topic orders [--request-timeout-ms 15000]
                   java -jar mq-demo.jar increase-partitions --brokers localhost:9092 --admin-token <secret> --topic orders --target-count 6
+                  java -jar mq-demo.jar alter-topic-config --brokers localhost:9092 --admin-token <secret> --topic orders --min-insync-replicas 2
+                  java -jar mq-demo.jar reassign-partitions --brokers localhost:9092 --admin-token <secret> --topic orders --assignment 0:1,2,0
+                  java -jar mq-demo.jar elect-preferred-leaders --brokers localhost:9092 --admin-token <secret> --topic orders [--partition 0]
                   java -jar mq-demo.jar failover-audit --broker localhost:9092 --admin-token <secret> [--limit 100]
                   java -jar mq-demo.jar auth-status --broker localhost:9092 --admin-token <secret>
                   java -jar mq-demo.jar configure-topic-reliability --brokers localhost:9092 --admin-token <secret> --source-topic orders [--retry-topic orders-retry] [--dead-letter-topic orders-dlq]

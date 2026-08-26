@@ -7,6 +7,7 @@ import com.minimq.client.model.ConsumerRecord;
 import com.minimq.common.assignor.AssignmentSerde;
 import com.minimq.common.assignor.RangeAssignor;
 import com.minimq.common.error.ErrorCode;
+import com.minimq.common.group.GroupSessionTimeouts;
 import com.minimq.protocol.ApiKeys;
 import com.minimq.protocol.codec.MqDecoder;
 import com.minimq.protocol.message.MqResponseHeader;
@@ -18,6 +19,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -28,10 +30,12 @@ import java.util.function.Function;
  */
 public class Consumer implements AutoCloseable {
     public static final long DEFAULT_METADATA_CACHE_MAX_AGE_MS = 30_000L;
+    private static final long MIN_POLL_RPC_NANOS = TimeUnit.MILLISECONDS.toNanos(1L);
     private final ControllerAwareNetworkClient controllerClient;
     private final Function<String, NetworkClient> brokerClientFactory;
     private final String groupId;
-    private final Map<Integer, NetworkClient> brokerClients = new HashMap<>();
+    private final int sessionTimeoutMs;
+    private final Map<Integer, NetworkClient> brokerClients = new ConcurrentHashMap<>();
     private final Map<String, CachedMetadata> metadataCache = new HashMap<>();
     private String topic;
     private String memberId = "";
@@ -42,7 +46,11 @@ public class Consumer implements AutoCloseable {
     private ScheduledExecutorService heartbeatExecutor;
 
     public Consumer(String bootstrapServers, String groupId, String clientId) {
-        this(bootstrapServers, groupId, clientId, NetworkClient::new);
+        this(bootstrapServers, groupId, clientId, GroupSessionTimeouts.DEFAULT_MS);
+    }
+
+    public Consumer(String bootstrapServers, String groupId, String clientId, int sessionTimeoutMs) {
+        this(bootstrapServers, groupId, clientId, sessionTimeoutMs, NetworkClient::new);
     }
 
     Consumer(
@@ -50,7 +58,18 @@ public class Consumer implements AutoCloseable {
             String groupId,
             String clientId,
             Function<String, NetworkClient> brokerClientFactory) {
+        this(bootstrapServers, groupId, clientId, GroupSessionTimeouts.DEFAULT_MS, brokerClientFactory);
+    }
+
+    Consumer(
+            String bootstrapServers,
+            String groupId,
+            String clientId,
+            int sessionTimeoutMs,
+            Function<String, NetworkClient> brokerClientFactory) {
+        GroupSessionTimeouts.requireValid(sessionTimeoutMs);
         this.groupId = groupId;
+        this.sessionTimeoutMs = sessionTimeoutMs;
         this.brokerClientFactory = Objects.requireNonNull(
                 brokerClientFactory, "brokerClientFactory");
         this.controllerClient = new ControllerAwareNetworkClient(bootstrapServers, clientId);
@@ -71,7 +90,7 @@ public class Consumer implements AutoCloseable {
     // 加入消费组后只有 leader 成员负责计算完整分配，其余成员等待同步结果。
     private void joinGroup() throws InterruptedException {
         MqDecoder.DecodedResponse joinResponse = controllerClient.send(
-                ApiKeys.JOIN_GROUP, new JoinGroupRequest(groupId, memberId, topic));
+                ApiKeys.JOIN_GROUP, new JoinGroupRequest(groupId, memberId, topic, sessionTimeoutMs));
         controllerClient.ensureSuccess(joinResponse);
         JoinGroupResponse join = (JoinGroupResponse) joinResponse.body();
         memberId = join.memberId();
@@ -118,7 +137,12 @@ public class Consumer implements AutoCloseable {
         long deadlineNanos = NetworkClient.deadlineNanos(currentTimeNanos(),
                 Duration.ofNanos(timeoutNanos));
         List<ConsumerRecord> result = new ArrayList<>();
-        MetadataResponse metadata = cachedMetadata(topic, deadlineNanos);
+        MetadataResponse metadata;
+        try {
+            metadata = cachedMetadata(topic, deadlineNanos);
+        } catch (MiniMqRequestTimeoutException timeoutExpired) {
+            return result;
+        }
         do {
             long nextVisibleAtEpochMs = -1L;
             for (int partition : assignedPartitions) {
@@ -227,6 +251,9 @@ public class Consumer implements AutoCloseable {
                         deadlineNanos);
             } catch (MiniMqRequestTimeoutException failure) {
                 invalidateBrokerClient(route.leader().brokerId(), deadlineNanos);
+                if (!hasPollTimeRemaining(deadlineNanos)) {
+                    return new FetchPartitionResult(metadata, -1L);
+                }
                 throw failure;
             } catch (MiniMqConnectionException failure) {
                 invalidateMetadata(topic);
@@ -305,7 +332,8 @@ public class Consumer implements AutoCloseable {
 
     public void commitSync(String topic, int partition, long offset) throws InterruptedException {
         MqDecoder.DecodedResponse response = controllerClient.send(
-                ApiKeys.OFFSET_COMMIT, new OffsetCommitRequest(groupId, topic, partition, offset));
+                ApiKeys.OFFSET_COMMIT,
+                new OffsetCommitRequest(groupId, topic, partition, offset, memberId, generationId));
         controllerClient.ensureSuccess(response, "OFFSET_COMMIT topic=" + topic
                 + " partition=" + partition);
         offsets.put(partition, offset);
@@ -342,8 +370,26 @@ public class Consumer implements AutoCloseable {
             }
             throw failure;
         }
-        brokerClients.put(leader.brokerId(), candidate);
+        NetworkClient existing = brokerClients.putIfAbsent(leader.brokerId(), candidate);
+        if (existing != null) {
+            discardUnusedBrokerClient(candidate, deadlineNanos);
+            return existing;
+        }
         return candidate;
+    }
+
+    private void discardUnusedBrokerClient(NetworkClient candidate, Long deadlineNanos) {
+        try {
+            if (deadlineNanos == null) {
+                candidate.close();
+            } else {
+                candidate.abortCandidate(remainingPollTimeout(deadlineNanos));
+            }
+        } catch (InterruptedException closeFailure) {
+            Thread.currentThread().interrupt();
+        } catch (RuntimeException | Error ignored) {
+            // The winner's client is already cached; losing the extra connection is best-effort.
+        }
     }
 
     protected MqDecoder.DecodedResponse sendFetch(
@@ -370,7 +416,7 @@ public class Consumer implements AutoCloseable {
     }
 
     private boolean hasPollTimeRemaining(long deadlineNanos) {
-        return deadlineNanos - currentTimeNanos() > 0L;
+        return deadlineNanos - currentTimeNanos() >= MIN_POLL_RPC_NANOS;
     }
 
     private Duration requirePollTimeRemaining(long deadlineNanos, String operation) {
@@ -421,15 +467,17 @@ public class Consumer implements AutoCloseable {
             heartbeatExecutor.shutdownNow();
         }
         heartbeatExecutor = Executors.newSingleThreadScheduledExecutor();
+        int intervalMs = GroupSessionTimeouts.heartbeatIntervalMs(sessionTimeoutMs);
         heartbeatExecutor.scheduleAtFixedRate(() -> {
             try {
-                controllerClient.send(ApiKeys.HEARTBEAT, new HeartbeatRequest(groupId, memberId));
+                controllerClient.send(
+                        ApiKeys.HEARTBEAT, new HeartbeatRequest(groupId, memberId, generationId));
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             } catch (RuntimeException ignored) {
                 // A transient heartbeat failure must not cancel future scheduled executions.
             }
-        }, 3, 3, TimeUnit.SECONDS);
+        }, intervalMs, intervalMs, TimeUnit.MILLISECONDS);
     }
 
     @Override
@@ -437,9 +485,25 @@ public class Consumer implements AutoCloseable {
         if (heartbeatExecutor != null) {
             heartbeatExecutor.shutdownNow();
         }
+        leaveGroupQuietly();
         controllerClient.close();
         for (NetworkClient client : brokerClients.values()) {
             client.close();
+        }
+    }
+
+    private void leaveGroupQuietly() {
+        if (memberId == null || memberId.isEmpty()) {
+            return;
+        }
+        try {
+            controllerClient.send(
+                    ApiKeys.LEAVE_GROUP,
+                    new LeaveGroupRequest(groupId, memberId, generationId));
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        } catch (RuntimeException ignored) {
+            // Close must still release connections after a best-effort leave.
         }
     }
 

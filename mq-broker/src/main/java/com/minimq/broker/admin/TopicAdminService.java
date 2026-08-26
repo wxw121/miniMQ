@@ -14,10 +14,16 @@ import com.minimq.protocol.message.ProtocolMessages.DeleteTopicRequest;
 import com.minimq.protocol.message.ProtocolMessages.DeleteTopicResponse;
 import com.minimq.protocol.message.ProtocolMessages.DescribeTopicRequest;
 import com.minimq.protocol.message.ProtocolMessages.DescribeTopicResponse;
+import com.minimq.protocol.message.ProtocolMessages.ElectPreferredLeadersRequest;
+import com.minimq.protocol.message.ProtocolMessages.ElectPreferredLeadersResponse;
 import com.minimq.protocol.message.ProtocolMessages.IncreasePartitionsRequest;
 import com.minimq.protocol.message.ProtocolMessages.IncreasePartitionsResponse;
 import com.minimq.protocol.message.ProtocolMessages.ListTopicsRequest;
 import com.minimq.protocol.message.ProtocolMessages.ListTopicsResponse;
+import com.minimq.protocol.message.ProtocolMessages.ReassignPartitionsRequest;
+import com.minimq.protocol.message.ProtocolMessages.ReassignPartitionsResponse;
+import com.minimq.protocol.message.ProtocolMessages.AlterTopicConfigRequest;
+import com.minimq.protocol.message.ProtocolMessages.AlterTopicConfigResponse;
 import com.minimq.protocol.message.ProtocolMessages.TopicPartitionInfo;
 import com.minimq.protocol.message.ProtocolMessages.TopicTombstoneInfo;
 import com.minimq.protocol.message.ProtocolMessages.V4BoundedList;
@@ -157,7 +163,8 @@ public final class TopicAdminService implements AutoCloseable {
                     retryTopic,
                     deadLetterTopic,
                     bounded(partitions, request.partitionLimit()),
-                    null));
+                    null,
+                    topic.effectiveMinInSyncReplicas()));
         }
         ClusterMetadata.TopicTombstone tombstone = snapshot.topicTombstones.get(request.topicName());
         if (tombstone == null || !request.includeDeleted()) {
@@ -184,6 +191,42 @@ public final class TopicAdminService implements AutoCloseable {
                 result.previousPartitionCount(),
                 result.newPartitionCount(),
                 result.metadataVersion()));
+    }
+
+    public Result<AlterTopicConfigResponse> alterConfig(AlterTopicConfigRequest request) {
+        ClusterController.TopicConfigResult result = controller.alterTopicConfig(
+                request.topicName(), request.minInSyncReplicas());
+        if (result.errorCode() != ErrorCode.NONE) {
+            return Result.failure(result.errorCode());
+        }
+        return Result.success(new AlterTopicConfigResponse(
+                request.topicName(),
+                result.minInSyncReplicas(),
+                result.metadataVersion()));
+    }
+
+    public Result<ReassignPartitionsResponse> reassign(ReassignPartitionsRequest request) {
+        ClusterController.ReassignPartitionsResult result = controller.reassignPartitions(
+                request.topicName(), request.assignments());
+        if (result.errorCode() != ErrorCode.NONE) {
+            return Result.failure(result.errorCode());
+        }
+        return Result.success(new ReassignPartitionsResponse(
+                request.topicName(),
+                result.metadataVersion(),
+                result.changedPartitionIds()));
+    }
+
+    public Result<ElectPreferredLeadersResponse> electPreferred(ElectPreferredLeadersRequest request) {
+        ClusterController.ElectPreferredLeadersResult result = controller.electPreferredLeaders(
+                request.topicName(), request.partitionIds());
+        if (result.errorCode() != ErrorCode.NONE) {
+            return Result.failure(result.errorCode());
+        }
+        return Result.success(new ElectPreferredLeadersResponse(
+                request.topicName(),
+                result.metadataVersion(),
+                result.electedPartitionIds()));
     }
 
     public Result<CreateTopicAdminResponse> create(CreateTopicAdminRequest request) {

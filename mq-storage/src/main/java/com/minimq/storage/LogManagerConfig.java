@@ -10,6 +10,7 @@ public record LogManagerConfig(
         LogMaintenanceConfig maintenanceConfig,
         int maxScheduledRecords) {
     public static final int DEFAULT_MAX_SCHEDULED_RECORDS = 100_000;
+    public static final int DEFAULT_FLUSH_EVERY_N_APPENDS = 100;
 
     public LogManagerConfig {
         if (flushPolicy == null) {
@@ -49,9 +50,13 @@ public record LogManagerConfig(
         this(flushPolicy, checkpointEveryNAppends, SegmentedLogConfig.defaults(), LogMaintenanceConfig.disabled());
     }
 
+    public static FlushPolicy defaultFlushPolicy() {
+        return FlushPolicy.everyNAppends(DEFAULT_FLUSH_EVERY_N_APPENDS);
+    }
+
     public static LogManagerConfig defaults() {
         return new LogManagerConfig(
-                FlushPolicy.always(),
+                defaultFlushPolicy(),
                 0,
                 SegmentedLogConfig.defaults(),
                 LogMaintenanceConfig.disabled(),

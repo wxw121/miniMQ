@@ -11,6 +11,9 @@ import com.minimq.protocol.message.ProtocolMessages.FetchResponse;
 import com.minimq.protocol.message.ProtocolMessages.FetchedRecord;
 import com.minimq.protocol.message.ProtocolMessages.ProduceRecord;
 import com.minimq.protocol.message.ProtocolMessages.ProduceRequest;
+import com.minimq.protocol.message.ProtocolMessages.ProduceV2Request;
+import com.minimq.protocol.message.ProtocolMessages.ScheduledProduceRecord;
+import com.minimq.protocol.message.ProtocolMessages.V4BoundedList;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -57,9 +60,9 @@ class ZeroCopyFetchIntegrationTest {
             }
 
             FetchTransferMetricsSnapshot metrics = broker.fetchTransferMetrics();
-            assertEquals(1, metrics.sendfileResponses());
-            assertTrue(metrics.sendfileBytes() > 0);
-            assertEquals(0, metrics.heapResponses());
+            assertEquals(1, metrics.sendfileResponses(), metrics.toString());
+            assertTrue(metrics.sendfileBytes() > 0, metrics.toString());
+            assertEquals(0, metrics.heapResponses(), metrics.toString());
         }
     }
 
@@ -76,6 +79,54 @@ class ZeroCopyFetchIntegrationTest {
             assertEquals(auto.offset(), heap.offset());
             assertArrayEquals(auto.key(), heap.key());
             assertArrayEquals(auto.value(), heap.value());
+        }
+    }
+
+    @Test
+    void autoSendfileFetchPublishesVisibleHighWatermarkForDelayedRecords(@TempDir Path dataDir)
+            throws Exception {
+        BrokerConfig config = BrokerTestHarness.controllerConfig(0, dataDir,
+                "--segment-max-bytes", "64",
+                "--sparse-index-interval-records", "1",
+                "--fetch-transfer-mode", "auto",
+                "--fetch-transfer-timeout-ms", "5000");
+        try (BrokerTestHarness broker = BrokerTestHarness.start(config);
+             TestNetworkClient client = new TestNetworkClient()) {
+            client.connect("127.0.0.1", broker.port());
+            createTopic(client, "orders", 1);
+
+            long deliverAtEpochMs = System.currentTimeMillis() + 60_000L;
+            MqDecoder.DecodedResponse produced = client.send(
+                    ApiKeys.PRODUCE_V2,
+                    new ProduceV2Request(
+                            "orders",
+                            0,
+                            0L,
+                            new V4BoundedList<>(
+                                    2,
+                                    false,
+                                    List.of(
+                                            new ScheduledProduceRecord(
+                                                    "ready".getBytes(StandardCharsets.UTF_8),
+                                                    "now".getBytes(StandardCharsets.UTF_8),
+                                                    0L),
+                                            new ScheduledProduceRecord(
+                                                    "later".getBytes(StandardCharsets.UTF_8),
+                                                    "wait".getBytes(StandardCharsets.UTF_8),
+                                                    deliverAtEpochMs)))));
+            assertEquals(ErrorCode.NONE, produced.header().errorCode());
+
+            MqDecoder.DecodedResponse response = client.send(
+                    ApiKeys.FETCH, new FetchRequest("orders", 0, 0, 4_096));
+            assertEquals(ErrorCode.NONE, response.header().errorCode());
+            FetchResponse fetch = (FetchResponse) response.body();
+            assertEquals(1L, fetch.highWatermark());
+            assertEquals(1, fetch.records().size());
+            assertEquals(0L, fetch.records().get(0).offset());
+
+            FetchTransferMetricsSnapshot metrics = broker.fetchTransferMetrics();
+            assertEquals(1, metrics.sendfileResponses(), metrics.toString());
+            assertTrue(metrics.sendfileBytes() > 0, metrics.toString());
         }
     }
 
@@ -98,11 +149,11 @@ class ZeroCopyFetchIntegrationTest {
             assertEquals(ErrorCode.NONE, response.header().errorCode());
             FetchTransferMetricsSnapshot metrics = broker.fetchTransferMetrics();
             if (mode == FetchTransferMode.AUTO) {
-                assertEquals(1, metrics.sendfileResponses());
-                assertEquals(0, metrics.heapResponses());
+                assertEquals(1, metrics.sendfileResponses(), metrics.toString());
+                assertEquals(0, metrics.heapResponses(), metrics.toString());
             } else {
-                assertEquals(0, metrics.sendfileResponses());
-                assertEquals(1, metrics.heapModeFallbacks());
+                assertEquals(0, metrics.sendfileResponses(), metrics.toString());
+                assertEquals(1, metrics.heapModeFallbacks(), metrics.toString());
             }
             return (FetchResponse) response.body();
         }

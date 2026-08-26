@@ -169,6 +169,8 @@ class DeliveryScheduleTest {
         assertEquals(Map.of("orders-0", 2L),
                 schedule.visibleWatermarkSnapshotByPartitionKey());
 
+        assertEquals(2L, schedule.visibleHighWatermark("orders", 0, 6L));
+
         assertThrows(IllegalArgumentException.class,
                 () -> schedule.visibleHighWatermark("orders", 0, -1L));
         assertThrows(IllegalArgumentException.class,
@@ -212,5 +214,50 @@ class DeliveryScheduleTest {
                 () -> schedule.put("orders", 0, -1L, 0L));
         assertThrows(IllegalArgumentException.class,
                 () -> schedule.put("orders", 0, 0L, -1L));
+    }
+
+    @Test
+    void emptyScheduleKeepsStoredVisibleWatermarkBelowPhysicalHw() {
+        AtomicLong now = new AtomicLong(100L);
+        DeliverySchedule schedule = new DeliverySchedule(now::get);
+
+        assertEquals(5L, schedule.visibleHighWatermark("orders", 0, 5L));
+
+        schedule.restoreVisibleWatermark("orders", 0, 4L);
+        assertEquals(4L, schedule.visibleHighWatermark("orders", 0, 10L));
+        assertEquals(-1L, schedule.nextVisibleAtEpochMs("orders", 0, 10L));
+
+        schedule.noteReadyOffset("orders", 0, 4L);
+        schedule.noteReadyOffset("orders", 0, 5L);
+        assertEquals(6L, schedule.visibleHighWatermark("orders", 0, 6L));
+        assertEquals(Map.of("orders-0", 6L),
+                schedule.visibleWatermarkSnapshotByPartitionKey());
+    }
+
+    @Test
+    void reservedFutureSlotsAreConsumedByPutAndReleasedOnDemand() {
+        DeliverySchedule schedule = new DeliverySchedule(() -> 1_000L);
+
+        assertTrue(schedule.tryReserveFutureSlots(2, 2));
+        assertFalse(schedule.tryReserveFutureSlots(1, 2));
+        schedule.put("orders", 0, 0L, 5_000L);
+        assertEquals(1, schedule.count());
+        assertFalse(schedule.tryReserveFutureSlots(1, 2));
+        schedule.releaseFutureSlots(1);
+        assertTrue(schedule.tryReserveFutureSlots(1, 2));
+        schedule.releaseFutureSlots(1);
+        assertThrows(IllegalArgumentException.class, () -> schedule.tryReserveFutureSlots(-1, 2));
+        assertTrue(schedule.tryReserveFutureSlots(0, 2));
+    }
+
+    @Test
+    void pruneAndGetVisibilityWithoutExplicitNowUsesClock() {
+        AtomicLong now = new AtomicLong(1_000L);
+        DeliverySchedule schedule = new DeliverySchedule(now::get);
+        schedule.put("orders", 0, 0L, 2_000L);
+        assertEquals(0L, schedule.pruneAndGetVisibility("orders", 0, 1L).visibleHighWatermark());
+        now.set(2_000L);
+        assertEquals(1L, schedule.pruneAndGetVisibility("orders", 0, 1L).visibleHighWatermark());
+        assertEquals(0, schedule.pruneDue("orders", 0, 1L));
     }
 }

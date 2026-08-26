@@ -1,6 +1,9 @@
 package com.minimq.protocol;
 
+import com.minimq.common.acks.MinInSyncReplicas;
+import com.minimq.common.acks.ProduceAcks;
 import com.minimq.common.error.ErrorCode;
+import com.minimq.common.group.GroupSessionTimeouts;
 import com.minimq.protocol.codec.ByteBufSerde;
 import com.minimq.protocol.message.MqRequestHeader;
 import com.minimq.protocol.message.MqResponseHeader;
@@ -92,8 +95,7 @@ public final class ProtocolSerdes {
 
     private static Object decodeRequestBodyUnchecked(short apiKey, ByteBuf payload) {
         Object body = switch (apiKey) {
-            case ApiKeys.CREATE_TOPIC -> new CreateTopicRequest(
-                    ByteBufSerde.readString(payload), payload.readInt(), payload.readInt());
+            case ApiKeys.CREATE_TOPIC -> decodeCreateTopicRequest(payload);
             case ApiKeys.METADATA -> new MetadataRequest(ByteBufSerde.readString(payload));
             case ApiKeys.PRODUCE -> decodeProduceRequest(payload);
             case ApiKeys.FETCH -> new FetchRequest(
@@ -102,22 +104,18 @@ public final class ProtocolSerdes {
                     payload.readLong(),
                     payload.readLong(),
                     payload.readInt());
-            case ApiKeys.JOIN_GROUP -> new JoinGroupRequest(
-                    ByteBufSerde.readString(payload),
-                    ByteBufSerde.readString(payload),
-                    ByteBufSerde.readString(payload));
+            case ApiKeys.JOIN_GROUP -> decodeJoinGroupRequest(payload);
             case ApiKeys.SYNC_GROUP -> new SyncGroupRequest(
                     ByteBufSerde.readString(payload),
                     payload.readInt(),
                     ByteBufSerde.readString(payload),
                     readByteArrayWithShortPrefix(payload));
-            case ApiKeys.HEARTBEAT -> new HeartbeatRequest(
-                    ByteBufSerde.readString(payload), ByteBufSerde.readString(payload));
-            case ApiKeys.OFFSET_COMMIT -> new OffsetCommitRequest(
+            case ApiKeys.HEARTBEAT -> decodeHeartbeatRequest(payload);
+            case ApiKeys.LEAVE_GROUP -> new LeaveGroupRequest(
                     ByteBufSerde.readString(payload),
                     ByteBufSerde.readString(payload),
-                    payload.readInt(),
-                    payload.readLong());
+                    payload.readInt());
+            case ApiKeys.OFFSET_COMMIT -> decodeOffsetCommitRequest(payload);
             case ApiKeys.OFFSET_FETCH -> new OffsetFetchRequest(
                     ByteBufSerde.readString(payload),
                     ByteBufSerde.readString(payload),
@@ -186,11 +184,7 @@ public final class ProtocolSerdes {
                     decodeConfigureTopicReliabilityRequest(payload);
             case ApiKeys.MARK_BROKER_OFFLINE_ADMIN -> new MarkBrokerOfflineAdminRequest(
                     readV4Credential(payload), payload.readInt());
-            case ApiKeys.CREATE_TOPIC_ADMIN -> new CreateTopicAdminRequest(
-                    readV4Credential(payload),
-                    readV4String(payload, "topic name"),
-                    payload.readInt(),
-                    payload.readInt());
+            case ApiKeys.CREATE_TOPIC_ADMIN -> decodeCreateTopicAdminRequest(payload);
             case ApiKeys.PRODUCE_V2 -> decodeProduceV2Request(payload);
             case ApiKeys.REPLICA_FETCH_V2 -> new ReplicaFetchV2Request(
                     readV4Credential(payload),
@@ -237,6 +231,15 @@ public final class ProtocolSerdes {
                     payload.readLong(),
                     payload.readLong(),
                     payload.readLong());
+            case ApiKeys.ALTER_TOPIC_CONFIG -> new AlterTopicConfigRequest(
+                    readV4Credential(payload),
+                    readV4String(payload, "topic name"),
+                    payload.readInt());
+            case ApiKeys.REASSIGN_PARTITIONS -> decodeReassignPartitionsRequest(payload);
+            case ApiKeys.ELECT_PREFERRED_LEADERS -> new ElectPreferredLeadersRequest(
+                    readV4Credential(payload),
+                    readV4String(payload, "topic name"),
+                    readIntIdList(payload, "partition ids"));
             default -> throw new IllegalArgumentException("Unknown apiKey: " + apiKey);
         };
         requireFullyConsumed(payload, "request body for apiKey " + apiKey);
@@ -286,6 +289,7 @@ public final class ProtocolSerdes {
             case ApiKeys.JOIN_GROUP -> decodeJoinGroupResponse(payload);
             case ApiKeys.SYNC_GROUP -> new SyncGroupResponse(readByteArrayWithShortPrefix(payload));
             case ApiKeys.HEARTBEAT -> new HeartbeatResponse();
+            case ApiKeys.LEAVE_GROUP -> new LeaveGroupResponse();
             case ApiKeys.OFFSET_COMMIT -> new OffsetCommitResponse();
             case ApiKeys.OFFSET_FETCH -> new OffsetFetchResponse(payload.readLong());
             case ApiKeys.REGISTER_BROKER ->
@@ -340,6 +344,18 @@ public final class ProtocolSerdes {
             case ApiKeys.METADATA_V2 -> decodeMetadataV2Response(payload);
             case ApiKeys.RUNTIME_METRICS_V2 -> decodeRuntimeMetricsV2Response(payload);
             case ApiKeys.UPDATE_REPLICA_STATE_V2 -> new UpdateReplicaStateV2Response();
+            case ApiKeys.ALTER_TOPIC_CONFIG -> new AlterTopicConfigResponse(
+                    readV4String(payload, "topic name"),
+                    payload.readInt(),
+                    payload.readLong());
+            case ApiKeys.REASSIGN_PARTITIONS -> new ReassignPartitionsResponse(
+                    readV4String(payload, "topic name"),
+                    payload.readLong(),
+                    readIntIdList(payload, "changed partition ids"));
+            case ApiKeys.ELECT_PREFERRED_LEADERS -> new ElectPreferredLeadersResponse(
+                    readV4String(payload, "topic name"),
+                    payload.readLong(),
+                    readIntIdList(payload, "elected partition ids"));
             default -> throw new IllegalArgumentException("Unknown apiKey: " + apiKey);
         };
         requireFullyConsumed(payload, "response body for apiKey " + apiKey);
@@ -353,6 +369,7 @@ public final class ProtocolSerdes {
                 ByteBufSerde.writeString(buf, req.topicName());
                 buf.writeInt(req.numPartitions());
                 buf.writeInt(req.replicationFactor());
+                buf.writeInt(req.minInSyncReplicas());
             }
             case ApiKeys.METADATA -> ByteBufSerde.writeString(buf, ((MetadataRequest) body).topicName());
             case ApiKeys.PRODUCE -> writeProduceRequest(buf, (ProduceRequest) body);
@@ -369,6 +386,7 @@ public final class ProtocolSerdes {
                 ByteBufSerde.writeString(buf, req.groupId());
                 ByteBufSerde.writeString(buf, req.memberId());
                 ByteBufSerde.writeString(buf, req.topicName());
+                buf.writeInt(req.sessionTimeoutMs());
             }
             case ApiKeys.SYNC_GROUP -> {
                 SyncGroupRequest req = (SyncGroupRequest) body;
@@ -381,6 +399,13 @@ public final class ProtocolSerdes {
                 HeartbeatRequest req = (HeartbeatRequest) body;
                 ByteBufSerde.writeString(buf, req.groupId());
                 ByteBufSerde.writeString(buf, req.memberId());
+                buf.writeInt(req.generationId());
+            }
+            case ApiKeys.LEAVE_GROUP -> {
+                LeaveGroupRequest req = (LeaveGroupRequest) body;
+                ByteBufSerde.writeString(buf, req.groupId());
+                ByteBufSerde.writeString(buf, req.memberId());
+                buf.writeInt(req.generationId());
             }
             case ApiKeys.OFFSET_COMMIT -> {
                 OffsetCommitRequest req = (OffsetCommitRequest) body;
@@ -388,6 +413,8 @@ public final class ProtocolSerdes {
                 ByteBufSerde.writeString(buf, req.topicName());
                 buf.writeInt(req.partitionId());
                 buf.writeLong(req.offset());
+                ByteBufSerde.writeString(buf, req.memberId());
+                buf.writeInt(req.generationId());
             }
             case ApiKeys.OFFSET_FETCH -> {
                 OffsetFetchRequest req = (OffsetFetchRequest) body;
@@ -498,6 +525,7 @@ public final class ProtocolSerdes {
                 ByteBufSerde.writeString(buf, req.topicName());
                 buf.writeInt(req.numPartitions());
                 buf.writeInt(req.replicationFactor());
+                buf.writeInt(req.minInSyncReplicas());
             }
             case ApiKeys.PRODUCE_V2 -> writeProduceV2Request(buf, (ProduceV2Request) body);
             case ApiKeys.REPLICA_FETCH_V2 -> {
@@ -556,6 +584,20 @@ public final class ProtocolSerdes {
                 buf.writeLong(req.physicalLogEndOffset());
                 buf.writeLong(req.visibleLogEndOffset());
                 buf.writeLong(req.nextVisibleAtEpochMs());
+            }
+            case ApiKeys.ALTER_TOPIC_CONFIG -> {
+                AlterTopicConfigRequest req = (AlterTopicConfigRequest) body;
+                ByteBufSerde.writeString(buf, req.credential());
+                ByteBufSerde.writeString(buf, req.topicName());
+                buf.writeInt(req.minInSyncReplicas());
+            }
+            case ApiKeys.REASSIGN_PARTITIONS ->
+                    writeReassignPartitionsRequest(buf, (ReassignPartitionsRequest) body);
+            case ApiKeys.ELECT_PREFERRED_LEADERS -> {
+                ElectPreferredLeadersRequest req = (ElectPreferredLeadersRequest) body;
+                ByteBufSerde.writeString(buf, req.credential());
+                ByteBufSerde.writeString(buf, req.topicName());
+                writeIntIdList(buf, req.partitionIds(), "partition ids");
             }
             default -> throw new IllegalArgumentException("Unknown apiKey: " + apiKey);
         }
@@ -641,6 +683,18 @@ public final class ProtocolSerdes {
         } else if (body instanceof CreateTopicAdminResponse res) {
             ByteBufSerde.writeString(buf, res.topicName());
             buf.writeLong(res.metadataVersion());
+        } else if (body instanceof AlterTopicConfigResponse res) {
+            ByteBufSerde.writeString(buf, res.topicName());
+            buf.writeInt(res.minInSyncReplicas());
+            buf.writeLong(res.metadataVersion());
+        } else if (body instanceof ReassignPartitionsResponse res) {
+            ByteBufSerde.writeString(buf, res.topicName());
+            buf.writeLong(res.metadataVersion());
+            writeIntIdList(buf, res.changedPartitionIds(), "changed partition ids");
+        } else if (body instanceof ElectPreferredLeadersResponse res) {
+            ByteBufSerde.writeString(buf, res.topicName());
+            buf.writeLong(res.metadataVersion());
+            writeIntIdList(buf, res.electedPartitionIds(), "elected partition ids");
         } else if (body instanceof ProduceV2Response res) {
             ByteBufSerde.writeString(buf, res.topicName());
             buf.writeInt(res.partitionId());
@@ -654,6 +708,7 @@ public final class ProtocolSerdes {
         } else if (body instanceof RuntimeMetricsV2Response res) {
             writeRuntimeMetricsV2Response(buf, res);
         } else if (body instanceof HeartbeatResponse
+                || body instanceof LeaveGroupResponse
                 || body instanceof OffsetCommitResponse
                 || body instanceof MarkBrokerOfflineResponse
                 || body instanceof UpdateReplicaLeoResponse
@@ -701,7 +756,15 @@ public final class ProtocolSerdes {
         for (int i = 0; i < count; i++) {
             records.add(new ProduceRecord(ByteBufSerde.readBytes(buf), ByteBufSerde.readBytes(buf)));
         }
-        return new ProduceRequest(topic, partitionId, leaderEpoch, records);
+        short acks = ProduceAcks.LEADER.code();
+        int ackTimeoutMs = ProduceAcks.DEFAULT_TIMEOUT_MS;
+        if (buf.isReadable()) {
+            acks = buf.readShort();
+            if (buf.isReadable()) {
+                ackTimeoutMs = buf.readInt();
+            }
+        }
+        return new ProduceRequest(topic, partitionId, leaderEpoch, records, acks, ackTimeoutMs);
     }
 
     private static void writeProduceRequest(ByteBuf buf, ProduceRequest req) {
@@ -713,6 +776,8 @@ public final class ProtocolSerdes {
             ByteBufSerde.writeBytes(buf, record.key());
             ByteBufSerde.writeBytes(buf, record.value());
         }
+        buf.writeShort(req.acks());
+        buf.writeInt(req.ackTimeoutMs());
     }
 
     private static ProduceV2Request decodeProduceV2Request(ByteBuf buf) {
@@ -724,7 +789,15 @@ public final class ProtocolSerdes {
                 buf,
                 "scheduled produce records",
                 ProtocolSerdes::readScheduledProduceRecord);
-        return new ProduceV2Request(topic, partitionId, leaderEpoch, records);
+        short acks = ProduceAcks.LEADER.code();
+        int ackTimeoutMs = ProduceAcks.DEFAULT_TIMEOUT_MS;
+        if (buf.isReadable()) {
+            acks = buf.readShort();
+            if (buf.isReadable()) {
+                ackTimeoutMs = buf.readInt();
+            }
+        }
+        return new ProduceV2Request(topic, partitionId, leaderEpoch, records, acks, ackTimeoutMs);
     }
 
     private static void writeProduceV2Request(ByteBuf buf, ProduceV2Request req) {
@@ -736,6 +809,8 @@ public final class ProtocolSerdes {
                 req.records(),
                 "scheduled produce records",
                 ProtocolSerdes::writeScheduledProduceRecord);
+        buf.writeShort(req.acks());
+        buf.writeInt(req.ackTimeoutMs());
     }
 
     private static ScheduledProduceRecord readScheduledProduceRecord(ByteBuf buf) {
@@ -788,6 +863,47 @@ public final class ProtocolSerdes {
             ByteBufSerde.writeString(buf, req.deadLetterTopicName());
         }
         writeBoolean(buf, req.clearDeadLetterTopic());
+    }
+
+    private static ReassignPartitionsRequest decodeReassignPartitionsRequest(ByteBuf buf) {
+        String credential = readV4Credential(buf);
+        String topicName = readV4String(buf, "topic name");
+        int assignmentCount = readItemCount(buf, "partition assignments");
+        List<PartitionReplicaAssignment> assignments = new ArrayList<>(assignmentCount);
+        for (int i = 0; i < assignmentCount; i++) {
+            requireReadable(buf, Integer.BYTES, "assignment partition id");
+            int partitionId = buf.readInt();
+            assignments.add(new PartitionReplicaAssignment(
+                    partitionId, readIntIdList(buf, "replica broker ids")));
+        }
+        return new ReassignPartitionsRequest(credential, topicName, assignments);
+    }
+
+    private static void writeReassignPartitionsRequest(ByteBuf buf, ReassignPartitionsRequest req) {
+        ByteBufSerde.writeString(buf, req.credential());
+        ByteBufSerde.writeString(buf, req.topicName());
+        writeItemCount(buf, req.assignments().size(), "partition assignments");
+        for (PartitionReplicaAssignment assignment : req.assignments()) {
+            buf.writeInt(assignment.partitionId());
+            writeIntIdList(buf, assignment.replicaBrokerIds(), "replica broker ids");
+        }
+    }
+
+    private static List<Integer> readIntIdList(ByteBuf buf, String fieldName) {
+        int count = readItemCount(buf, fieldName);
+        List<Integer> ids = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            requireReadable(buf, Integer.BYTES, fieldName);
+            ids.add(buf.readInt());
+        }
+        return ids;
+    }
+
+    private static void writeIntIdList(ByteBuf buf, List<Integer> ids, String fieldName) {
+        writeItemCount(buf, ids.size(), fieldName);
+        for (int id : ids) {
+            buf.writeInt(id);
+        }
     }
 
     private static MetadataResponse decodeMetadataResponse(ByteBuf buf) {
@@ -1148,6 +1264,79 @@ public final class ProtocolSerdes {
         }
     }
 
+    /**
+     * Current CREATE_TOPIC body is {@code topicName, numPartitions, replicationFactor, minInSyncReplicas}.
+     * Legacy bodies omit {@code minInSyncReplicas}; decode defaults it to 1.
+     */
+    private static CreateTopicRequest decodeCreateTopicRequest(ByteBuf buf) {
+        String topicName = ByteBufSerde.readString(buf);
+        int numPartitions = buf.readInt();
+        int replicationFactor = buf.readInt();
+        int minInSyncReplicas = buf.isReadable() ? buf.readInt() : MinInSyncReplicas.DEFAULT;
+        return new CreateTopicRequest(topicName, numPartitions, replicationFactor, minInSyncReplicas);
+    }
+
+    /**
+     * Current CREATE_TOPIC_ADMIN body appends {@code minInSyncReplicas} after replication factor.
+     * Legacy bodies omit it; decode defaults it to 1.
+     */
+    private static CreateTopicAdminRequest decodeCreateTopicAdminRequest(ByteBuf buf) {
+        String credential = readV4Credential(buf);
+        String topicName = readV4String(buf, "topic name");
+        int numPartitions = buf.readInt();
+        int replicationFactor = buf.readInt();
+        int minInSyncReplicas = buf.isReadable() ? buf.readInt() : MinInSyncReplicas.DEFAULT;
+        return new CreateTopicAdminRequest(
+                credential, topicName, numPartitions, replicationFactor, minInSyncReplicas);
+    }
+
+    /**
+     * Current JOIN_GROUP body is {@code groupId, memberId, topicName, sessionTimeoutMs}.
+     * Legacy bodies omit {@code sessionTimeoutMs}; decode defaults it to 10_000.
+     */
+    private static JoinGroupRequest decodeJoinGroupRequest(ByteBuf buf) {
+        String groupId = ByteBufSerde.readString(buf);
+        String memberId = ByteBufSerde.readString(buf);
+        String topicName = ByteBufSerde.readString(buf);
+        int sessionTimeoutMs = buf.isReadable() ? buf.readInt() : GroupSessionTimeouts.DEFAULT_MS;
+        return new JoinGroupRequest(groupId, memberId, topicName, sessionTimeoutMs);
+    }
+
+    /**
+     * Current HEARTBEAT body is {@code groupId, memberId, generationId}.
+     * Legacy bodies omit {@code generationId}; decode defaults it to 0 so old frames
+     * are not rejected as malformed. Coordinator still requires a matching generation
+     * after a real join.
+     */
+    private static HeartbeatRequest decodeHeartbeatRequest(ByteBuf buf) {
+        String groupId = ByteBufSerde.readString(buf);
+        String memberId = ByteBufSerde.readString(buf);
+        int generationId = buf.isReadable() ? buf.readInt() : 0;
+        return new HeartbeatRequest(groupId, memberId, generationId);
+    }
+
+    /**
+     * Current OFFSET_COMMIT body is {@code groupId, topic, partition, offset, memberId, generationId}.
+     * Legacy bodies stop after {@code offset}; decode defaults {@code memberId=""} and
+     * {@code generationId=0}. A body that includes {@code memberId} but omits generation
+     * also defaults generation to 0.
+     */
+    private static OffsetCommitRequest decodeOffsetCommitRequest(ByteBuf buf) {
+        String groupId = ByteBufSerde.readString(buf);
+        String topicName = ByteBufSerde.readString(buf);
+        int partitionId = buf.readInt();
+        long offset = buf.readLong();
+        String memberId = "";
+        int generationId = 0;
+        if (buf.isReadable()) {
+            memberId = ByteBufSerde.readString(buf);
+            if (buf.isReadable()) {
+                generationId = buf.readInt();
+            }
+        }
+        return new OffsetCommitRequest(groupId, topicName, partitionId, offset, memberId, generationId);
+    }
+
     private static JoinGroupResponse decodeJoinGroupResponse(ByteBuf buf) {
         requireReadable(buf, Integer.BYTES, "join group generation");
         int generationId = buf.readInt();
@@ -1426,6 +1615,11 @@ public final class ProtocolSerdes {
         TopicTombstoneInfo tombstone = readBoolean(buf, "tombstone present")
                 ? readTopicTombstoneInfo(buf)
                 : null;
+        int minInSyncReplicas = MinInSyncReplicas.DEFAULT;
+        if (buf.isReadable()) {
+            requireReadable(buf, Integer.BYTES, "min in-sync replicas");
+            minInSyncReplicas = buf.readInt();
+        }
         return new DescribeTopicResponse(
                 topicName,
                 metadataVersion,
@@ -1433,7 +1627,8 @@ public final class ProtocolSerdes {
                 retryTopic,
                 deadLetterTopic,
                 partitions,
-                tombstone);
+                tombstone,
+                minInSyncReplicas);
     }
 
     private static void writeDescribeTopicResponse(ByteBuf buf, DescribeTopicResponse res) {
@@ -1451,6 +1646,7 @@ public final class ProtocolSerdes {
         if (res.tombstone() != null) {
             writeTopicTombstoneInfo(buf, res.tombstone());
         }
+        buf.writeInt(res.minInSyncReplicas());
     }
 
     private static DeleteTopicResponse decodeDeleteTopicResponse(ByteBuf buf) {
@@ -1981,7 +2177,10 @@ public final class ProtocolSerdes {
                     ApiKeys.REPLICA_FETCH_V2,
                     ApiKeys.TOPIC_DELETE_ACK,
                     ApiKeys.RUNTIME_METRICS_V2,
-                    ApiKeys.UPDATE_REPLICA_STATE_V2 -> true;
+                    ApiKeys.UPDATE_REPLICA_STATE_V2,
+                    ApiKeys.ALTER_TOPIC_CONFIG,
+                    ApiKeys.REASSIGN_PARTITIONS,
+                    ApiKeys.ELECT_PREFERRED_LEADERS -> true;
             default -> false;
         };
     }

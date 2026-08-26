@@ -4,7 +4,7 @@ param(
     [string]$EtcdEndpoints = "http://localhost:2379,http://localhost:2479,http://localhost:2579",
     [string]$ClusterId = "minimq",
     [string]$RunDirectory = ".run/minimq-v4",
-    [string]$AdminToken = "demo-admin",
+    [string]$AdminToken = $env:MINIMQ_ADMIN_TOKEN,
     [string]$ComposeFile = "deploy/etcd/docker-compose.yml",
     [string]$ComposeProjectName = "minimq-local",
     [ValidateRange(1, 3600)]
@@ -404,7 +404,7 @@ if (($portValues | Select-Object -Unique).Count -ne 3 -or ($portValues | Where-O
     throw "Ports must be three unique values between 1 and 65535."
 }
 if ([string]::IsNullOrWhiteSpace($AdminToken)) {
-    throw "AdminToken must not be blank."
+    throw "AdminToken must not be blank. Pass -AdminToken or set MINIMQ_ADMIN_TOKEN."
 }
 if ([string]::IsNullOrWhiteSpace($RunDirectory)) {
     throw "RunDirectory must not be blank."

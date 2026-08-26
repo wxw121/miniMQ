@@ -54,37 +54,41 @@ Latest release-gate command / 最新发布门禁命令：
 mvn clean verify -gs .mvn/settings.xml -s .mvn/settings.xml
 ```
 
-Latest V4.0.0 result / 最新 V4.0.0 结果：
+Latest auto-batch / every-n flush result / 最新自动攒批与 every-n 刷盘结果（2026-08-14, OpenJDK 21, Linux）：
 
 | Metric / 指标 | Value / 数值 |
 | --- | ---: |
-| Tests run / 测试总数 | 712 |
+| Tests run / 测试总数 | 823 |
 | Failures / 失败数 | 0 |
 | Errors / 错误数 | 0 |
-| Skipped / 跳过数 | 0 |
-| Overall line coverage / 总体行覆盖率 | 91.17% (`10999 / 12064`) |
-| Overall instruction coverage / 总体指令覆盖率 | 92.01% (`50235 / 54598`) |
-| Overall branch coverage / 总体分支覆盖率 | 78.72% (`4061 / 5159`) |
-| Overall method coverage / 总体方法覆盖率 | 94.84% (`1819 / 1918`) |
-| Overall class coverage / 总体类覆盖率 | 99.34% (`303 / 305`) |
+| Skipped / 跳过数 | 6 (`@DisabledOnOs(LINUX)` Windows script/ownership cases) |
+| Overall line coverage / 总体行覆盖率 | 91.78% (`12273 / 13372`) |
+| Overall instruction coverage / 总体指令覆盖率 | 92.67% (`55829 / 60243`) |
+| Overall branch coverage / 总体分支覆盖率 | 79.52% (`4579 / 5758`) |
+| Overall method coverage / 总体方法覆盖率 | 95.58% (`1990 / 2082`) |
+| Overall class coverage / 总体类覆盖率 | 99.70% (`328 / 329`) |
+
+Evidence / 验证证据：`docs/test-report-2026-08-14-batch-flush-defaults.md`. The same-day produce-concurrency pass (`810` tests) remains in `docs/test-report-2026-08-14-produce-concurrency.md`. The same-day V5 review-fix pass (`792` tests) remains in `docs/test-report-2026-08-14-v5.0.0-review-fixes.md`. The earlier same-day reassign + preferred-leader pass (`785` tests) remains in `docs/test-report-2026-08-14-v5.0.0-reassign-preferred.md`. The acks + min.insync + leave pass (`781` tests) remains in `docs/test-report-2026-08-14-v5.0.0-acks-minisr-leave.md`. The acks-only pass (`767` tests) remains in `docs/test-report-2026-08-14-v5.0.0-producer-acks.md`. The V4.0.0 timeout/wire closeout (`754` tests) remains in `docs/test-report-2026-08-13-v4.0.0-timeout-and-wire.md`. Docker/etcd Failsafe suites were not run on machines without Docker.
+
+验证证据见 `docs/test-report-2026-08-14-batch-flush-defaults.md`。同日生产并发全量（810 tests）仍在 `docs/test-report-2026-08-14-produce-concurrency.md`。同日 V5 review-fix 全量（792 tests）仍在 `docs/test-report-2026-08-14-v5.0.0-review-fixes.md`。同日较早 reassign + preferred Leader 全量（785 tests）仍在 `docs/test-report-2026-08-14-v5.0.0-reassign-preferred.md`。acks + min.insync + leave 全量（781 tests）仍在 `docs/test-report-2026-08-14-v5.0.0-acks-minisr-leave.md`。仅 acks 全量（767 tests）仍在 `docs/test-report-2026-08-14-v5.0.0-producer-acks.md`。V4.0.0 超时与协议兼容收口（754 tests）仍保留在 `docs/test-report-2026-08-13-v4.0.0-timeout-and-wire.md`。无 Docker 的机器未跑 etcd Failsafe。
 
 ## 5. Coverage By Module / 模块覆盖率
 
 | Module / 模块 | Instruction / 指令 | Branch / 分支 | Line / 行 | Method / 方法 | Class / 类 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `mq-broker` | 90.92% | 76.81% | 90.09% | 94.08% | 98.97% |
-| `mq-client` | 90.77% | 74.86% | 90.36% | 94.12% | 100.00% |
-| `mq-common` | 97.92% | 92.96% | 98.40% | 100.00% | 100.00% |
-| `mq-demo` | 94.93% | 77.30% | 92.86% | 93.85% | 100.00% |
-| `mq-protocol` | 94.97% | 81.70% | 94.92% | 94.27% | 100.00% |
-| `mq-storage` | 90.87% | 81.54% | 90.04% | 97.29% | 98.00% |
+| `mq-broker` | 91.62% | 77.43% | 90.80% | 94.78% | 100.00% |
+| `mq-client` | 92.17% | 78.66% | 90.98% | 96.43% | 100.00% |
+| `mq-common` | 97.84% | 92.90% | 97.73% | 97.22% | 100.00% |
+| `mq-demo` | 95.25% | 78.80% | 93.37% | 94.42% | 100.00% |
+| `mq-protocol` | 94.75% | 81.74% | 94.73% | 94.10% | 100.00% |
+| `mq-storage` | 91.94% | 82.11% | 91.03% | 98.32% | 98.00% |
 
 ```mermaid
 xychart-beta
     title "Line Coverage By Module / 模块行覆盖率"
     x-axis ["broker/代理", "client/客户端", "common/公共", "demo/演示", "protocol/协议", "storage/存储"]
     y-axis "Line % / 行覆盖率 %" 0 --> 100
-    bar [90.09, 90.36, 98.40, 92.86, 94.92, 90.04]
+    bar [90.80, 90.98, 97.73, 93.37, 94.73, 91.03]
 ```
 
 ```mermaid
@@ -92,15 +96,15 @@ xychart-beta
     title "Overall Coverage / 总体覆盖率"
     x-axis ["Instruction/指令", "Branch/分支", "Line/行", "Method/方法", "Class/类"]
     y-axis "Coverage % / 覆盖率 %" 0 --> 100
-    bar [92.01, 78.72, 91.17, 94.84, 99.34]
+    bar [92.67, 79.52, 91.78, 95.58, 99.70]
 ```
 
 
 ## 6. Key Flow Test Evidence / 关键流程测试结果截图
 
-The [V4.0.0 closeout report](test-report-2026-07-22-v4.0.0-operator-readiness.md) is the source of truth for the latest verified Surefire and JaCoCo results. The screenshots below remain historical visual aids for the core flows, so a new reader can inspect the main testing shape without opening every `target` report directory.
+The [2026-08-14 auto-batch / every-n flush report](test-report-2026-08-14-batch-flush-defaults.md) is the source of truth for the latest verified Surefire and JaCoCo numbers. The same-day produce-concurrency pass remains in [test-report-2026-08-14-produce-concurrency.md](test-report-2026-08-14-produce-concurrency.md). The same-day V5 review-fix pass remains in [test-report-2026-08-14-v5.0.0-review-fixes.md](test-report-2026-08-14-v5.0.0-review-fixes.md). Browser operator-console results remain in the [2026-08-13 full-verification report](test-report-2026-08-13-v4.0.0-full-verification.md). The screenshots below remain historical visual aids for the core flows, so a new reader can inspect the main testing shape without opening every `target` report directory.
 
-最终 [V4.0.0 收口报告](test-report-2026-07-22-v4.0.0-operator-readiness.md) 是最新 Surefire 与 JaCoCo 结果的事实来源。下面截图保留为核心流程的历史可视化辅助，新读者无需逐个打开 `target` 报告目录，也能快速看到关键测试形态。
+最新 Surefire / JaCoCo 数字以 [2026-08-14 自动攒批与 every-n 刷盘报告](test-report-2026-08-14-batch-flush-defaults.md) 为准。同日生产并发全量仍见 [test-report-2026-08-14-produce-concurrency.md](test-report-2026-08-14-produce-concurrency.md)。同日 V5 review-fix 全量仍见 [test-report-2026-08-14-v5.0.0-review-fixes.md](test-report-2026-08-14-v5.0.0-review-fixes.md)。操作台浏览器验收仍见 [2026-08-13 全量报告](test-report-2026-08-13-v4.0.0-full-verification.md)。下面截图保留为核心流程的历史可视化辅助，新读者无需逐个打开 `target` 报告目录，也能快速看到关键测试形态。
 
 ### 6.1 Full Build Verification / 完整构建验证
 
@@ -134,7 +138,7 @@ The [V4.0.0 closeout report](test-report-2026-07-22-v4.0.0-operator-readiness.md
 | `mq-storage` | `CheckpointStoreTest` | Unit / 单元测试 | Recovery checkpoint safe write, load, corrupt-checkpoint fallback, and temp-file cleanup. / 恢复 checkpoint 安全写入、加载、损坏 checkpoint 回退与临时文件清理。 |
 | `mq-storage` | `LogManagerRecoveryTest` | Unit / 单元测试 | WAL replay without checkpoint, replay when partition logs fall behind checkpoint, and duplicate replay idempotence. / 无 checkpoint WAL 重放、分区日志落后 checkpoint 时重放，以及重复重放幂等。 |
 | `mq-storage` | `FlushPolicyTest` | Unit / 单元测试 | Flush policy decisions and invalid storage config. / 刷盘策略判断与非法存储配置。 |
-| `mq-storage` | `LogManagerFlushPolicyTest` | Unit / 单元测试 | Append-count checkpoint cadence, explicit checkpoint refresh, concurrent append offsets, and close behavior. / 按 append 次数触发 checkpoint、显式 checkpoint 刷新、并发 append offset 与关闭行为。 |
+| `mq-storage` | `LogManagerFlushPolicyTest` | Unit / 单元测试 | Append-count checkpoint cadence, explicit checkpoint refresh, concurrent same-partition and distinct-partition appends, `appendBatch`, and close behavior. / 按 append 次数触发 checkpoint、显式 checkpoint 刷新、同分区与跨分区并发 append、`appendBatch` 与关闭行为。 |
 | `mq-storage` | `SegmentedLogConfigTest` | Unit / 单元测试 | Segment size and sparse-index interval validation. / Segment 大小与稀疏索引间隔校验。 |
 | `mq-storage` | `PartitionLogRecordCodecTest` | Unit / 单元测试 | Shared partition-record framing, metadata-only scanning, invalid offsets/lengths, incomplete payloads, and `FileRegionSlice` validation. / 共享分区记录帧格式、仅元数据扫描、非法 offset/长度、不完整 payload 与 `FileRegionSlice` 校验。 |
 | `mq-storage` | `SparseOffsetIndexTest` | Unit / 单元测试 | Sparse index lookup, reload, replacement, invalid entries, closed behavior, and corrupt index rejection. / 稀疏索引查找、重载、替换、非法条目、关闭行为与损坏索引拒绝。 |
@@ -150,7 +154,7 @@ The [V4.0.0 closeout report](test-report-2026-07-22-v4.0.0-operator-readiness.md
 | `mq-storage` | `SegmentedPartitionLogSnapshotTest` | Unit / 单元测试 | Concurrent read safety, reader-aware maintenance skips, retry after readers drain, and startup cleanup for interrupted maintenance files. / 并发读取安全、reader 感知维护跳过、reader 退出后的重试，以及中断维护文件的启动清理。 |
 | `mq-storage` | `LogManagerMaintenanceTest` | Unit / 单元测试 | Accurate dry-run ordering, action/byte/offset reports, metrics, reader skips, UTC windows, manual execution, checkpointing, and WAL replay after retention or compaction holes. / 精确 dry-run 顺序、动作/字节/offset 报告、指标、reader 跳过、UTC 窗口、手动执行、checkpoint，以及 retention 或 compaction 空洞后的 WAL replay。 |
 | `mq-storage` | `SegmentedPartitionLogFetchPlanTest` | Unit / 单元测试 | Cross-segment fetch plans, high-watermark snapshots, reader-lease retention deferral, compaction holes, and exact byte budgets. / 跨 segment FETCH 计划、high watermark 快照、读租约推迟 retention、compaction 空洞和精确字节预算。 |
-| `mq-protocol` | `ProtocolSerdesTest` | Unit / 单元测试 | Request/response round trips, FETCH prefix equivalence, malformed collection counts, frame limits, encoder. / 请求/响应往返、FETCH 前缀等价、畸形集合 count、帧限制和编码器。 |
+| `mq-protocol` | `ProtocolSerdesTest` | Unit / 单元测试 | Request/response round trips, FETCH prefix equivalence, malformed collection counts, frame limits, encoder, and legacy HEARTBEAT/OFFSET_COMMIT decode. / 请求/响应往返、FETCH 前缀等价、畸形集合 count、帧限制、编码器，以及旧 HEARTBEAT/OFFSET_COMMIT 解码。 |
 | `mq-broker` | `BrokerConfigTest` | Unit / 单元测试 | Broker argument parsing and validation, including maintenance credentials, storage/fetch options, and strict lease timing. / Broker 参数解析与校验，包括维护凭据、存储/FETCH 参数和严格租约时序。 |
 | `mq-broker` | `BrokerAvailabilityGuardTest` | Unit / 单元测试 | Broker state transitions and admission rules for fenced data, replication, and maintenance requests. / Broker 状态转换，以及 fenced 状态下数据、副本和维护请求的准入规则。 |
 | `mq-broker` | `BrokerLeaseServiceTest` | Unit / 单元测试 | Registration, heartbeat renewal, self-fencing deadlines, epoch recovery, and bounded shutdown. / 注册、心跳续租、自我 fencing deadline、epoch 恢复与有界关闭。 |
@@ -160,17 +164,21 @@ The [V4.0.0 closeout report](test-report-2026-07-22-v4.0.0-operator-readiness.md
 | `mq-broker` | `ClusterControllerTest` | Unit / 单元测试 | Topic creation, Broker epochs and leases, replica/ISR metadata, LEO-aware clean election, frozen partitions, and snapshot isolation. / Topic 创建、Broker epoch 与租约、副本/ISR 元数据、LEO 感知 clean election、分区冻结和快照隔离。 |
 | `mq-broker` | `ReplicaStateManagerTest` | Unit / 单元测试 | ISR minimum high watermark math. / ISR 最小 high watermark 计算。 |
 | `mq-broker` | `ReplicationIntegrationTest` | Integration / 集成测试 | Follower catch-up, replication-aware FETCH, real TCP Controller isolation, fencing-before-election ordering, no-ISR freeze, higher-epoch recovery, and client redirects. / Follower 追平、复制感知 FETCH、真实 TCP Controller 隔离、先 fencing 后选主时序、无 ISR 冻结、更高 epoch 恢复和客户端重定向。 |
-| `mq-broker` | `GroupCoordinatorTest` | Unit / 单元测试 | Join/sync assignment, heartbeat, offset commit/fetch. / 加组、同步分配、心跳、offset 提交/拉取。 |
+| `mq-broker` | `GroupCoordinatorTest` | Unit / 单元测试 | Join/sync assignment, heartbeat, offset commit/fetch, `LEAVE_GROUP`, and per-member `sessionTimeoutMs` eviction (default 10s). / 加组、同步分配、心跳、offset 提交/拉取、`LEAVE_GROUP`，以及按成员 `sessionTimeoutMs` 踢人（默认 10 秒）。 |
 | `mq-broker` | `MaintenanceAdminServiceTest` | Unit / 单元测试 | Constant-time token authorization, single-run admission, dedicated executor threading, rejection recovery, and idempotent shutdown. / 常量时间令牌鉴权、单次执行准入、专用执行器线程、拒绝恢复与幂等关闭。 |
 | `mq-broker` | `EmbeddedBrokerChannelTest` | Component / 组件测试 | Authorized async maintenance report/run routing, error mapping, correlation IDs, metrics, and enabled segment actions through Netty `EmbeddedChannel`. / 通过 Netty `EmbeddedChannel` 验证鉴权后的异步维护报告/执行路由、错误映射、关联 ID、指标与已启用的 segment 动作。 |
-| `mq-broker` | `FetchResponseWriterTest` | Component / 组件测试 | AUTO/HEAP selection, DefaultFileRegion outbound messages, unsupported fallbacks, and transfer-timeout lease release. / AUTO/HEAP 选择、DefaultFileRegion 出站消息、不支持回退，以及传输超时释放读租约。 |
+| `mq-broker` | `FetchResponseWriterTest` | Component / 组件测试 | AUTO/HEAP selection, DefaultFileRegion outbound messages, sendfile metrics at queue time, unsupported fallbacks, and transfer-timeout lease release. / AUTO/HEAP 选择、DefaultFileRegion 出站消息、sendfile 入队即计数、不支持回退，以及传输超时释放读租约。 |
 | `mq-broker` | `ProduceFetchIntegrationTest` | Integration / 集成测试 | Real broker produce/fetch and not-leader behavior. / 真实 Broker 生产、拉取与非 leader 行为。 |
 | `mq-broker` | `ZeroCopyFetchIntegrationTest` | Integration / 集成测试 | Real loopback TCP AUTO sendfile FETCH, HEAP equivalence, and transfer metrics. / 真实回环 TCP AUTO sendfile FETCH、HEAP 等价与传输指标。 |
 | `mq-broker` | `TcpSmokeTest` | Smoke / 冒烟测试 | Basic TCP request/response without noisy stdout. / 无冗余 stdout 的基础 TCP 请求/响应。 |
 | `mq-broker` | `BrokerShutdownTest` | Integration / 集成测试 | Broker stop/start resource cleanup on the same port. / Broker 在同一端口停止、重启与资源释放。 |
 | `mq-client` | `ClientValidationTest` | Unit / 单元测试 | Bootstrap validation and unconnected close. / bootstrap 校验与未连接关闭。 |
 | `mq-client` | `NetworkClientRetryTest` | Unit / 单元测试 | Connect retry attempt budget and fixed backoff validation. / 连接重试次数预算与固定退避参数校验。 |
-| `mq-client` | `ProducerIntegrationTest` | Integration / 集成测试 | Producer offsets increase across sends. / Producer 多次发送后 offset 递增。 |
+| `mq-client` | `SharedIoEventLoopsTest` | Unit / 单元测试 | Process-wide Netty event-loop refcount acquire/release. / 进程级 Netty event loop 引用计数申请与释放。 |
+| `mq-client` | `ProducerConfigTest` | Unit / 单元测试 | Default `batchSize=50` / `lingerMs=5` and invalid config rejection. / 默认 `batchSize=50` / `lingerMs=5` 与非法配置拒绝。 |
+| `mq-client` | `ProduceResultTest` | Unit / 单元测试 | Pending `offset()` flushes and Jackson JavaBean getters. / 未完成 `offset()` 触发 flush，以及 Jackson JavaBean getter。 |
+| `mq-client` | `ProducerIntegrationTest` | Integration / 集成测试 | Producer offsets increase across sends, concurrent partition batches, linger auto-batch, and `send(List)` after pending records. / Producer 多次发送后 offset 递增、跨分区并发批量、linger 自动攒批，以及 pending 之后的 `send(List)`。 |
+| `mq-client` | `ProducerRoutingValidationTest` | Unit / 单元测试 | Partition routing and `send(List)` grouping into one Produce request per partition. / 分区路由与 `send(List)` 按分区聚合为一次 Produce。 |
 | `mq-client` | `ConsumerIntegrationTest` | Integration / 集成测试 | Consumer poll and commit behavior. / Consumer poll 与提交行为。 |
 | `mq-demo` | `DemoCliTest` | Component/Integration / 组件/集成测试 | Single-broker/token validation, unauthorized responses, maintenance/runtime metrics CLI output, and real TCP enabled retention/compaction output alongside create/produce/consume. / 单 Broker/令牌校验、未授权响应、维护/运行时指标 CLI 输出，以及真实 TCP 下启用 retention/compaction 的输出和创建/生产/消费链路。 |
 | `mq-demo` | `FetchBenchmarkTest` | Unit / 单元测试 | Benchmark argument parsing, network transport selector parsing, output rendering, and latency percentile summarization. / 基准参数解析、网络传输选择解析、输出渲染与延迟百分位汇总。 |
@@ -200,7 +208,7 @@ V2.2 零拷贝 FETCH 收口记录见 `docs/test-report-2026-07-17-v2.2-read-perf
 Benchmark command / 基准命令：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-3.0.0.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576 --network-transport nio
+java -jar mq-demo/target/mq-demo-5.0.0.jar benchmark-fetch --records 256 --value-bytes 32768 --fetch-bytes 8388608 --warmup 10 --iterations 50 --segment-bytes 1048576 --network-transport nio
 ```
 
 ### 7.5 V2.3 Replication Closeout / V2.3 副本机制收口
@@ -326,9 +334,9 @@ The current agreed gate is:
 Per-module line coverage >= 90% for modules covered by JaCoCo check / 接入 JaCoCo check 的模块行覆盖率均 >= 90%
 ```
 
-JaCoCo `check` is bound to Maven `verify`. The 2026-07-29 V4.0.0 release run passed with every module above the 90% line rule and 91.17% overall line coverage. Blocking process entrypoints (`BrokerMain`, `MiniMqWebMain`, and `MiniMqWebDevMain`) are excluded from the report and gate because their behavior is covered indirectly through CLI, broker integration, and Web launcher tests.
+JaCoCo `check` is bound to Maven `verify`. The 2026-08-14 auto-batch / every-n flush verification passed with every module above the 90% line rule and 91.78% overall line coverage. Blocking process entrypoints (`BrokerMain`, `MiniMqWebMain`, and `MiniMqWebDevMain`) are excluded from the report and gate because their behavior is covered indirectly through CLI, broker integration, and Web launcher tests. Do not lower the 90% line gate to paper over Java 21 vs 17 instruction differences.
 
-JaCoCo `check` 已绑定到 Maven `verify`。2026-07-29 的 V4.0.0 发布验证中，每个模块均超过 90% 行覆盖率，总体行覆盖率为 91.17%。阻塞式进程入口（`BrokerMain`、`MiniMqWebMain`、`MiniMqWebDevMain`）的行为已通过 CLI、Broker 集成测试和 Web 启动器测试间接覆盖，因此从报告和门禁统计中排除。
+JaCoCo `check` 已绑定到 Maven `verify`。2026-08-14 自动攒批 / every-n 刷盘全量验证中，每个模块均超过 90% 行覆盖率，总体行覆盖率为 91.78%。阻塞式进程入口（`BrokerMain`、`MiniMqWebMain`、`MiniMqWebDevMain`）的行为已通过 CLI、Broker 集成测试和 Web 启动器测试间接覆盖，因此从报告和门禁统计中排除。不要为了抹平 Java 21 与 17 的指令差异而降低 90% 行覆盖门槛。
 
 ## 10. Slow Tests / 慢测试说明
 

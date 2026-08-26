@@ -22,6 +22,9 @@ Kafka 风格的 Java 分布式消息队列。
 - **3 Broker + etcd** Controller 自动选举、分区副本、Leader epoch fencing 与自动故障转移
 - **Consumer Group** + Offset 提交
 - **V4 Operator Readiness** 运维状态、Consumer lag、Topic admin、failover audit、retry/DLQ、delayed delivery
+- **V5 Producer acks** `LEADER`（默认）或 `ALL`（等待当前 ISR）；`min.insync.replicas`；`LEAVE_GROUP`；topic 配置变更、分区重分配与 preferred Leader
+- **Client auto-batch** `send(record)` 按分区入队（默认 `batchSize=50`，`lingerMs=5`）；读取 `offset()` / `flush()` / linger / `close()` 时发出 Produce
+- **Default flush** `FlushPolicy.everyNAppends(100)`；`--flush-policy always` 仍可显式开启每次 fsync
 
 ## 模块
 
@@ -49,13 +52,13 @@ mvn test -gs .mvn/settings.xml -s .mvn/settings.xml
 docker compose -f deploy/etcd/docker-compose.yml up -d
 
 # Terminal 1
-java -cp mq-demo/target/mq-demo-4.0.0.jar com.minimq.demo.BrokerMain --broker-id 0 --port 9092 --data-dir ./data/broker-0 --etcd-endpoints http://localhost:2379 --initialize-empty-cluster --admin-token <secret>
+java -cp mq-demo/target/mq-demo-5.0.0.jar com.minimq.demo.BrokerMain --broker-id 0 --port 9092 --data-dir ./data/broker-0 --etcd-endpoints http://localhost:2379 --initialize-empty-cluster --admin-token <secret>
 
 # Terminal 2
-java -cp mq-demo/target/mq-demo-4.0.0.jar com.minimq.demo.BrokerMain --broker-id 1 --port 9093 --data-dir ./data/broker-1 --etcd-endpoints http://localhost:2379 --admin-token <secret>
+java -cp mq-demo/target/mq-demo-5.0.0.jar com.minimq.demo.BrokerMain --broker-id 1 --port 9093 --data-dir ./data/broker-1 --etcd-endpoints http://localhost:2379 --admin-token <secret>
 
 # Terminal 3
-java -cp mq-demo/target/mq-demo-4.0.0.jar com.minimq.demo.BrokerMain --broker-id 2 --port 9094 --data-dir ./data/broker-2 --etcd-endpoints http://localhost:2379 --admin-token <secret>
+java -cp mq-demo/target/mq-demo-5.0.0.jar com.minimq.demo.BrokerMain --broker-id 2 --port 9094 --data-dir ./data/broker-2 --etcd-endpoints http://localhost:2379 --admin-token <secret>
 ```
 
 也可以让脚本从根 `pom.xml` 读取当前版本并启动三个 Broker（脚本不再使用旧的 `--controller` 参数）：
@@ -68,7 +71,7 @@ java -cp mq-demo/target/mq-demo-4.0.0.jar com.minimq.demo.BrokerMain --broker-id
 
 ```bash
 mvn -pl mq-demo package
-java -jar mq-demo/target/mq-demo-4.0.0.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --etcd-endpoints http://localhost:2379 --initialize-empty-cluster --admin-token <secret>
+java -jar mq-demo/target/mq-demo-5.0.0.jar broker --broker-id 0 --port 9092 --data-dir ./data/broker-0 --etcd-endpoints http://localhost:2379 --initialize-empty-cluster --admin-token <secret>
 ```
 
 Delayed-message admission is bounded by --max-scheduled-records, which defaults to 100000. Setting it to 0 disables admission of new future-delayed records while preserving immediate records and ordinary fetch/produce behavior.
@@ -79,13 +82,13 @@ Delayed-message admission is bounded by --max-scheduled-records, which defaults 
 
 ```bash
 # 1. 创建 Topic
-java -jar mq-demo/target/mq-demo-4.0.0.jar create-topic --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --name orders --partitions 3
+java -jar mq-demo/target/mq-demo-5.0.0.jar create-topic --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --name orders --partitions 3 [--min-insync-replicas 1]
 
 # 2. 发送消息
-java -jar mq-demo/target/mq-demo-4.0.0.jar produce --brokers localhost:9092,localhost:9093,localhost:9094 --topic orders --key user-1 --message hello
+java -jar mq-demo/target/mq-demo-5.0.0.jar produce --brokers localhost:9092,localhost:9093,localhost:9094 --topic orders --key user-1 --message hello [--acks leader|all] [--ack-timeout-ms 5000]
 
 # 3. 消费消息
-java -jar mq-demo/target/mq-demo-4.0.0.jar consume --brokers localhost:9092,localhost:9093,localhost:9094 --topic orders --group order-processors
+java -jar mq-demo/target/mq-demo-5.0.0.jar consume --brokers localhost:9092,localhost:9093,localhost:9094 --topic orders --group order-processors [--session-timeout-ms 10000]
 ```
 
 ## Controller HA 与 Leader epoch（4.0.0）
@@ -109,7 +112,7 @@ Leader 切换会先按旧 ISR 已确认 LEO 计算恢复点，持久化 Leader e
 
 ## V4 Operator Readiness
 
-当前工作树已经包含 V4 operator-readiness 协议与服务实现，不再只是 roadmap 或 design-only 规划。API 20-37 覆盖 OPS_STATUS、GROUP_STATUS、Topic list/describe/delete/increase、FAILOVER_AUDIT、AUTH_STATUS、CONFIGURE_TOPIC_RELIABILITY、admin create-topic、PRODUCE_V2、REPLICA_FETCH_V2、FETCH_V2、METADATA_V2、RUNTIME_METRICS_V2 与 replica-state 上报。
+当前工作树已经包含 V4 operator-readiness 协议与服务实现，不再只是 roadmap 或 design-only 规划。API 20-41 覆盖 OPS_STATUS、GROUP_STATUS、Topic list/describe/delete/increase、FAILOVER_AUDIT、AUTH_STATUS、CONFIGURE_TOPIC_RELIABILITY、admin create-topic、PRODUCE_V2、REPLICA_FETCH_V2、FETCH_V2、METADATA_V2、RUNTIME_METRICS_V2 与 replica-state 上报、`LEAVE_GROUP`、`ALTER_TOPIC_CONFIG`、`REASSIGN_PARTITIONS` 与 `ELECT_PREFERRED_LEADERS`。
 
 Reliability links are explicit: operators configure retry and dead-letter topics through CONFIGURE_TOPIC_RELIABILITY; the client Producer resolves those links through METADATA_V2. sendToDeadLetter writes immediately with the normal produce path, while sendToRetry uses PRODUCE_V2 and an exact deliverAtEpochMs.
 
@@ -122,11 +125,11 @@ Topic 名称必须为 1 到 249 个 `[A-Za-z0-9._-]` 字符，且不能是 `.` �
 常用运维命令：
 
 ```powershell
-java -jar mq-demo/target/mq-demo-4.0.0.jar ops-status --broker localhost:9092 --admin-token <secret>
-java -jar mq-demo/target/mq-demo-4.0.0.jar group-status --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --group order-processors
-java -jar mq-demo/target/mq-demo-4.0.0.jar list-topics --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret>
-java -jar mq-demo/target/mq-demo-4.0.0.jar describe-topic --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --topic orders
-java -jar mq-demo/target/mq-demo-4.0.0.jar runtime-metrics --broker localhost:9092 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-5.0.0.jar ops-status --broker localhost:9092 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-5.0.0.jar group-status --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --group order-processors
+java -jar mq-demo/target/mq-demo-5.0.0.jar list-topics --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret>
+java -jar mq-demo/target/mq-demo-5.0.0.jar describe-topic --brokers localhost:9092,localhost:9093,localhost:9094 --admin-token <secret> --topic orders
+java -jar mq-demo/target/mq-demo-5.0.0.jar runtime-metrics --broker localhost:9092 --admin-token <secret>
 ```
 
 控制面命令接受完整 bootstrap 列表并自动发现当前 Controller；维护和 runtime metrics 等 Broker-local 命令只接受单个 `--broker`。`--admin-token` 拥有全部权限，也可用 `--operator-credential token=STATUS,TOPIC_ADMIN,MAINTENANCE,BROKER_OFFLINE` 配置最小权限凭据。
@@ -161,6 +164,7 @@ MiniMQ 提供一个 Brutalism 风格的前端测试面板，用于从浏览器�
 | Web 端口 | `18082` | 浏览器访问端口。 |
 | Broker 端口 | `19092` | Web API 真实消息流连接的 MiniMQ Broker 端口。 |
 | 数据目录 | `.run/data-live` | 本地 Broker 数据目录。 |
+| Topic 分区数 | `4` | Web / `FlowRequest` 默认分区数。CLI `create-topic --partitions` 默认仍是 `3`。 |
 
 如果已经完成打包，可以跳过构建：
 
@@ -189,7 +193,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-web.ps1 
 也可以直接运行开发启动器：
 
 ```powershell
-java -Dminimq.web.port=18082 -Dminimq.broker.port=19092 -Dminimq.data.dir=.run/data-live -cp mq-demo/target/mq-demo-4.0.0.jar com.minimq.demo.web.MiniMqWebDevMain
+java -Dminimq.web.port=18082 -Dminimq.broker.port=19092 -Dminimq.data.dir=.run/data-live -cp mq-demo/target/mq-demo-5.0.0.jar com.minimq.demo.web.MiniMqWebDevMain
 ```
 
 前端自动化测试覆盖：静态页面资源、真实 MiniMQ 主流程、Broker 不可用时的 mock fallback、HTTP 错误处理、表单默认值与模式归一化。
@@ -229,10 +233,12 @@ Additional V4 API keys:
 - 32: REPLICA_FETCH_V2 with delivery timestamps and visibility watermarks.
 - 34: FETCH_V2 with visible watermark and nextVisibleAtEpochMs; Consumer uses this path by default.
 - 35-37: METADATA_V2, RUNTIME_METRICS_V2, and replica-state V2 reporting.
+- 38-41: LEAVE_GROUP, ALTER_TOPIC_CONFIG, REASSIGN_PARTITIONS, and ELECT_PREFERRED_LEADERS.
 
 ## 已实现里程碑
 
 - V2 系列：分区副本 / ISR、Controller failover、Log Segment、retention、compaction、zero-copy FETCH。
 - V3 系列：etcd Controller HA、Leader epoch fencing、runtime metrics、resilience hardening、network transport selector。
 - V4 当前实现：operator readiness、topic admin、failover audit、bounded metrics V2、retry/DLQ links、delayed messages、FETCH_V2 bounded wait。
+- V5 当前实现：`LEADER`/`ALL` produce acks、`min.insync.replicas`、`LEAVE_GROUP`、分区重分配、preferred Leader、客户端 linger 攒批、默认 every-n 刷盘。
 

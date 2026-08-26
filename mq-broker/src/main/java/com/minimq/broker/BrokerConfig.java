@@ -258,7 +258,7 @@ public record BrokerConfig(
                 controllerHost,
                 controllerPort,
                 recoverCorruptMetadata,
-                FlushPolicy.always(),
+                LogManagerConfig.defaultFlushPolicy(),
                 0,
                 SegmentedLogConfig.DEFAULT_SEGMENT_MAX_BYTES,
                 SegmentedLogConfig.DEFAULT_SPARSE_INDEX_INTERVAL_RECORDS,
@@ -370,8 +370,8 @@ public record BrokerConfig(
         String controllerHost = "localhost";
         int controllerPort = 9092;
         boolean recoverCorruptMetadata = false;
-        String flushPolicyName = "always";
-        int flushEveryNAppends = 1;
+        String flushPolicyName = "every-n-appends";
+        int flushEveryNAppends = LogManagerConfig.DEFAULT_FLUSH_EVERY_N_APPENDS;
         long flushIntervalMs = 1_000;
         int checkpointEveryNAppends = 0;
         long segmentMaxBytes = SegmentedLogConfig.DEFAULT_SEGMENT_MAX_BYTES;

@@ -9,7 +9,7 @@ MiniMQ is a modular Java message queue. It separates shared models, protocol enc
 
 MiniMQ 是一个多模块 Java 消息队列系统。它把公共模型、协议编解码、本地存储、Broker 运行时、客户端 SDK、Demo CLI 拆成独立 Maven 模块。项目规模不大，但保留了分区消息系统的核心结构：Producer 按 Topic/Partition 写入消息，Consumer 按 Offset 拉取消息，Controller 维护元数据并指导客户端把请求路由到正确的 Leader Broker。
 
-The architecture supports partition replicas, physical and visible ISR-aware watermarks, persisted replica state, Broker heartbeat leases, etcd-backed Controller election, exact data-plane Leader epochs, crash-safe failover truncation, and automatic clean Leader failover. It remains an educational architecture rather than a production quorum system: unclean election, transactions, and exactly-once semantics are not implemented.
+The architecture supports partition replicas, physical and visible ISR-aware watermarks, persisted replica state, Broker heartbeat leases, etcd-backed Controller election, exact data-plane Leader epochs, crash-safe failover truncation, and automatic clean Leader failover. It remains an educational architecture rather than a production quorum system: unclean election, transactions, and exactly-once semantics are not implemented. V5 produce can wait for the current ISR (`acks=ALL`) or return after the Leader append (`acks=LEADER`). `ALL` waits run on a dedicated executor and require `isr.size() >= min.insync.replicas`. Consumers leave with `LEAVE_GROUP` and expire on a per-member session timeout. Operators can alter `min.insync.replicas`, reassign partition replicas, and elect the preferred replica as leader.
 
 当前架构支持分区副本、ISR 感知的物理/可见 high watermark、持久化副本状态、Broker 心跳租约、etcd Controller 选举、精确数据面 Leader epoch、崩溃安全故障转移截断和 clean Leader 自动故障转移。它仍是教学型架构，不是生产级 quorum 系统：unclean election、事务和 exactly-once 语义尚未实现。
 
@@ -49,7 +49,7 @@ flowchart TB
 | `mq-storage` | Local append-only partition log with WAL-backed segmented storage, retention, and sealed-segment compaction. / 基于 WAL 的本地追加写分段分区日志、保留策略和 sealed segment 压缩。 | `PartitionLog`, `SegmentedPartitionLog`, `SegmentFile`, `SparseOffsetIndex`, `LogManager` |
 | `mq-protocol` | Binary frame format, request/response headers, API messages, Netty decoder/encoder. / 二进制帧格式、请求/响应头、API 消息、Netty 编解码器。 | `MqFrame`, `ProtocolSerdes`, `MqDecoder`, `MqEncoder`, `ProtocolMessages` |
 | `mq-broker` | Server runtime, metadata controller, group coordinator, request handling, metadata sync. / 服务端运行时、元数据 Controller、消费组协调器、请求处理、元数据同步。 | `BrokerServer`, `MqRequestHandler`, `ClusterController`, `GroupCoordinator`, `MetadataSync` |
-| `mq-client` | Producer and Consumer SDK. / 生产者和消费者 SDK。 | `NetworkClient`, `Producer`, `Consumer` |
+| `mq-client` | Producer and Consumer SDK, including per-partition linger auto-batch. / 生产者和消费者 SDK，含按分区 linger 攒批。 | `NetworkClient`, `Producer`, `ProducerConfig`, `Consumer` |
 | `mq-demo` | CLI command entry and end-to-end demo. / 命令行入口和端到端演示。 | `DemoCli`, `BrokerMain`, `MiniMqE2ETest` |
 
 ## 3. Runtime Topology / 运行时拓扑
@@ -108,16 +108,17 @@ sequenceDiagram
     P->>C: METADATA(topic) / 拉取 Topic 元数据
     C-->>P: brokers + partition leaders / Broker 列表与分区 leader
     P->>P: choose partition by explicit id or Murmur2(key) / 按显式分区或 Murmur2(key) 选分区
-    P->>L: PRODUCE(topic, partition, records) / 生产消息
+    P->>P: enqueue by partition; linger or offset()/flush() drains / 按分区入队；linger 或 offset()/flush() 刷出
+    P->>L: PRODUCE(topic, partition, records, acks) / 生产消息（可多条）
     L->>L: ensureLeader(topic, partition) / 校验本节点是 leader
-    L->>Log: append(key, value) / 追加写日志
+    L->>Log: appendBatch(records) / 批量追加写日志
     Log-->>L: baseOffset / 起始 offset
     L-->>P: ProduceResponse(topic, partition, baseOffset) / 生产响应
 ```
 
-Producer 首先向 Controller 拉取 Topic 元数据。如果消息指定了 `partitionId`，Producer 直接使用该分区；如果未指定但有 key，则通过 Kafka 风格 Murmur2 hash 计算分区；如果没有 key，则默认分区 0。随后 Producer 根据分区 leader 连接对应 Broker 并发送 `PRODUCE` 请求。
+Producer 首先向 Controller 拉取 Topic 元数据。如果消息指定了 `partitionId`，Producer 直接使用该分区；如果未指定但有 key，则通过 Kafka 风格 Murmur2 hash 计算分区；如果没有 key，则默认分区 0。`send(record)` 按分区入队并立即返回；同一分区在 `batchSize=50` / `lingerMs=5` 内共享一次 `PRODUCE`，直到调用方读取 `offset()`、调用 `flush()`/`close()`，或 linger 到期。`send().offset()` 仍是单条往返。`acks=ALL` 时 Leader 在 ISR 高水位追上后再响应。随后 Producer 根据分区 leader 连接对应 Broker。
 
-The producer first asks the controller for metadata. If the record has an explicit partition id, that partition is used. If no partition id is present but a key exists, the producer uses Murmur2 hashing. If no key exists, partition 0 is used. The request is then routed to the leader broker.
+The producer first asks the controller for metadata. If the record has an explicit partition id, that partition is used. If no partition id is present but a key exists, the producer uses Murmur2 hashing. If no key exists, partition 0 is used. Sequential `send(record)` calls enqueue per partition and share one Produce until `offset()`, `flush()`, linger, or `close()`. The request is then routed to the leader broker.
 
 ### 4.2 Fetch Flow / 拉取流程
 
@@ -128,21 +129,21 @@ sequenceDiagram
     participant L as Leader Broker / 分区 Leader Broker
     participant Log as PartitionLog / 分区日志
 
-    C->>Ctrl: JOIN_GROUP(group, member, topic) / 加入消费组
+    C->>Ctrl: JOIN_GROUP(group, member, topic, sessionTimeoutMs) / 加入消费组
     Ctrl-->>C: generation, memberId, leaderMemberId, members / 代数、成员 ID、leader 成员、成员列表
     C->>Ctrl: SYNC_GROUP(group, generation, assignment) / 同步分配
     Ctrl-->>C: assigned partitions / 已分配分区
     C->>Ctrl: OFFSET_FETCH(group, topic, partition) / 拉取已提交 offset
     Ctrl-->>C: committed offset or -1 / 已提交 offset 或 -1
-    C->>L: FETCH(topic, partition, offset, maxBytes) / 拉取消息
+    C->>L: FETCH_V2(topic, partition, offset, maxBytes) / 拉取消息
     L->>Log: read(fromOffset, maxBytes) / 从指定 offset 读取
-    Log-->>L: records + highWatermark / 消息与高水位
-    L-->>C: FetchResponse / 拉取响应
+    Log-->>L: records + visible/physical watermarks / 消息与可见/物理水位
+    L-->>C: FetchV2Response / 拉取响应
 ```
 
-Consumer 订阅 Topic 时会加入 Consumer Group。组内 leader 负责根据成员列表和 Topic 分区数计算 Range Assignment，然后通过 `SYNC_GROUP` 写回 Controller。普通成员通过 `SYNC_GROUP` 获取自己的分区列表。消费后，客户端通过 `OFFSET_COMMIT` 提交进度。
+Consumer 订阅 Topic 时会加入 Consumer Group。组内 leader 负责根据成员列表和 Topic 分区数计算 Range Assignment，然后通过 `SYNC_GROUP` 写回 Controller。普通成员通过 `SYNC_GROUP` 获取自己的分区列表。消费后，客户端通过 `OFFSET_COMMIT` 提交进度。每个成员使用 `JOIN_GROUP` 上的 `sessionTimeoutMs`（默认 10 秒）；超时未心跳会被踢出并触发新一代 rebalance。`Consumer.close()` 发送 `LEAVE_GROUP`。`HEARTBEAT` / `OFFSET_COMMIT` 编码带 `generationId`（commit 还带 `memberId`）；解码仍接受省略这些字段的旧 body，但旧客户端在 join 之后会因 generation 0 被协调器拒绝。
 
-When a consumer subscribes, it joins a consumer group. The group leader computes a range assignment and submits it through `SYNC_GROUP`. Every member receives its partition list from the coordinator. After processing records, the consumer commits offsets through `OFFSET_COMMIT`.
+When a consumer subscribes, it joins a consumer group. The group leader computes a range assignment and submits it through `SYNC_GROUP`. Every member receives its partition list from the coordinator. After processing records, the consumer commits offsets through `OFFSET_COMMIT`. Each member uses the `sessionTimeoutMs` from `JOIN_GROUP` (default 10 seconds); missed heartbeats evict that member and advance the group generation. `Consumer.close()` sends `LEAVE_GROUP`. Encode writes `generationId` on `HEARTBEAT` and `memberId` plus `generationId` on `OFFSET_COMMIT`; decode still accepts the shorter legacy bodies, but those defaulted fields fail the coordinator check after a real join.
 
 ## 5. Data Plane And Control Plane / 数据面与控制面
 
@@ -152,8 +153,8 @@ MiniMQ 可以从概念上拆成两个面：
 
 | Plane / 平面 | APIs / API | Description / 说明 |
 | --- | --- | --- |
-| Control plane / 控制面 | `CREATE_TOPIC`, `METADATA`, `JOIN_GROUP`, `SYNC_GROUP`, `HEARTBEAT`, `OFFSET_COMMIT`, `OFFSET_FETCH`, `REGISTER_BROKER` | Handles metadata, group membership, assignments, offsets, and broker registration. / 处理元数据、组成员、分配、offset 和 Broker 注册。 |
-| Data plane / 数据面 | `PRODUCE`, `FETCH` | Handles record writes and reads against partition logs. / 处理分区日志上的消息写入与读取。 |
+| Control plane / 控制面 | `CREATE_TOPIC`, `METADATA`, `JOIN_GROUP`, `SYNC_GROUP`, `HEARTBEAT`, `LEAVE_GROUP`, `OFFSET_COMMIT`, `OFFSET_FETCH`, `REGISTER_BROKER`, `ALTER_TOPIC_CONFIG`, `REASSIGN_PARTITIONS`, `ELECT_PREFERRED_LEADERS` | Handles metadata, group membership, assignments, offsets, broker registration, topic config, and replica placement. / 处理元数据、组成员、分配、offset、Broker 注册、Topic 配置与副本布局。 |
+| Data plane / 数据面 | `PRODUCE`, `PRODUCE_V2`, `FETCH`, `FETCH_V2` | Handles record writes and reads against partition logs. Consumer SDK uses `FETCH_V2`. / 处理分区日志上的消息写入与读取。Consumer SDK 使用 `FETCH_V2`。 |
 
 The currently elected Controller Broker serves controller-scoped APIs. Controller-aware clients discover it through the complete bootstrap list and retry a stale route once. Broker-local status, maintenance, audit, auth, and runtime-metrics APIs target exactly one Broker. Data-plane APIs are served by each partition's Leader. Controller code lives mainly in `ControllerRuntime`, `ClusterController`, and `GroupCoordinator`; data access flows through `MqRequestHandler`, `PartitionManager`, `LogManager`, the WAL/checkpoint layer, and `SegmentedPartitionLog`.
 
@@ -210,9 +211,9 @@ flowchart LR
 
 ## 7. Deployment Shape / 部署形态
 
-MiniMQ 4.0 is launched with etcd endpoints on every Broker. Brokers campaign for one lease-bound Controller role; only the first node of a new cluster uses `--initialize-empty-cluster` (or `--initialize-cluster-from-local` for an explicit 2.x import).
+MiniMQ 5.0.0 is launched with etcd endpoints on every Broker. Brokers campaign for one lease-bound Controller role; only the first node of a new cluster uses `--initialize-empty-cluster` (or `--initialize-cluster-from-local` for an explicit 2.x import).
 
-MiniMQ 4.0 的每个 Broker 都配置 etcd endpoints，并竞选唯一的 lease-bound Controller。全新集群只有首节点使用 `--initialize-empty-cluster`；显式导入 2.x 本地元数据时改用 `--initialize-cluster-from-local`。
+MiniMQ 5.0.0 的每个 Broker 都配置 etcd endpoints，并竞选唯一的 lease-bound Controller。全新集群只有首节点使用 `--initialize-empty-cluster`；显式导入 2.x 本地元数据时改用 `--initialize-cluster-from-local`。
 
 | Broker / 节点 | Example role / 示例角色 | Example port / 示例端口 | Data dir / 数据目录 |
 | --- | --- | ---: | --- |
@@ -231,10 +232,10 @@ The timing contract is `broker heartbeat interval < broker self-fence timeout < 
 1. Replication and clean ISR failover exist, including crash-safe truncation before Leader readiness. MiniMQ still does not perform unclean election; a partition with no online ISR remains frozen. / 已有副本、ISR 内 clean failover 和 Leader ready 前的崩溃安全截断，但仍不执行 unclean election；没有在线 ISR 的分区保持 frozen。
 2. Controller election uses etcd lease/election, a monotonically increasing Controller epoch, leader-identity comparison, and metadata revision CAS. / Controller 选举使用 etcd lease/election、单调 Controller epoch、Leader 身份比较和元数据 revision CAS。
 3. Shared metadata is persisted in etcd and installed by a monotonic watch. The local JSON document remains only as the explicit 2.x import source. / 共享元数据持久化在 etcd 中，并由单调 watch 安装；本地 JSON 仅保留为显式 2.x 导入源。
-4. Consumer group rebalancing is simplified. There is no full Kafka-style rebalance protocol, session management, or cooperative assignment. / 消费组再均衡经过简化，还没有完整 Kafka 风格的 rebalance 协议、会话管理或协作式分配。
+4. Consumer group rebalancing is simplified: each member expires after its `JOIN_GROUP.sessionTimeoutMs` without a heartbeat (default 10 seconds, range 1s..300s), but there is no full Kafka-style rebalance protocol or cooperative assignment. / 消费组再均衡经过简化：每个成员超过自己的 `sessionTimeoutMs` 未心跳会被踢出（默认 10 秒，范围 1s..300s），但没有完整 Kafka 风格的 rebalance 协议或协作式分配。
 5. The client SDK cycles the complete bootstrap list, discovers the current Controller through any Broker, rejects older metadata versions, carries the routed Leader epoch, and retries one stale route. The SDK has no etcd dependency. / 客户端 SDK 轮询完整 bootstrap 列表、通过任意 Broker 发现当前 Controller、拒绝较旧 metadata version、携带路由时的 Leader epoch，并对过期路由重试一次；SDK 不依赖 etcd。
 6. Maintenance report, execution, and metrics are exposed through token-protected admin APIs and single-target CLI commands. Destructive maintenance remains opt-in and Broker-local. / 维护报告、执行和指标已通过令牌保护的管理 API 与单目标 CLI 命令开放；破坏性维护仍需显式触发，并且只作用于本地 Broker。
-7. V3 clients remain wire-compatible because API keys 0-19 retain their positional layouts. V3/V4 mixed Broker clusters are unsupported because only V4 internal replication preserves delayed-delivery state. / API 0-19 的位置布局保持不变，因此 V3 客户端仍兼容；但 V3/V4 Broker 混合集群不受支持，只有 V4 内部复制会保留延迟投递状态。
+7. Keys 0-19 keep their original field order. `HEARTBEAT` and `OFFSET_COMMIT` append optional trailing membership fields: decode accepts legacy bodies, encode always writes the current layout, and a legacy client that omits generation fails coordinator checks after join. V3/V4 mixed Broker clusters are unsupported because only V4 internal replication preserves delayed-delivery state. / API 0-19 保留原字段顺序；`HEARTBEAT` 与 `OFFSET_COMMIT` 在末尾追加可选成员字段：解码接受旧 body，编码始终写当前布局，省略 generation 的旧客户端在 join 后会被协调器拒绝。V3/V4 Broker 混合集群不受支持，只有 V4 内部复制会保留延迟投递状态。
 8. Topic names are portable path-safe identifiers: 1..249 characters from `[A-Za-z0-9._-]`, excluding `.` and `..`. Deletion is a durable `DELETING -> DELETED` state machine, and tombstoned names remain reserved. / Topic 名称是可移植且路径安全的标识符：长度 1..249，只能使用 `[A-Za-z0-9._-]`，且不能是 `.` 或 `..`；删除是持久化的 `DELETING -> DELETED` 状态机，tombstone 名称永久保留。
 
 ## 9. Architecture Glossary / 架构名词表

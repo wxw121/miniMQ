@@ -137,12 +137,26 @@
               <label>Replication factor<input id="replicationFactor" type="number" min="1" value="1" inputmode="numeric"></label>
               <label>Target partitions<input id="targetPartitionCount" type="number" min="2" value="2" inputmode="numeric"></label>
             </div>
+            <div class="field-grid field-grid-three compact-fields">
+              <label>min.insync.replicas
+                <input id="minInSyncReplicas" type="number" min="1" value="1" inputmode="numeric">
+              </label>
+              <label>Assignment
+                <input id="assignment" value="0:0" autocomplete="off">
+              </label>
+              <label>Partition
+                <input id="partition" type="number" min="0" value="0" inputmode="numeric">
+              </label>
+            </div>
             <label class="check-row"><input id="includeDeleted" type="checkbox"><span>Include deleted topics in describe</span></label>
             <div class="button-grid">
               <button type="button" data-endpoint="/api/topics">List topics</button>
               <button type="button" data-endpoint="/api/topic/create">Create topic</button>
               <button type="button" data-endpoint="/api/topic/describe">Describe topic</button>
               <button type="button" data-endpoint="/api/topic/increase">Increase partitions</button>
+              <button type="button" data-endpoint="/api/topic/alter-config">Alter topic config</button>
+              <button type="button" data-endpoint="/api/topic/reassign">Reassign partitions</button>
+              <button type="button" data-endpoint="/api/topic/elect-preferred">Elect preferred leaders</button>
               <button class="danger-action" type="button" data-endpoint="/api/topic/delete">Delete topic</button>
             </div>
           </section>

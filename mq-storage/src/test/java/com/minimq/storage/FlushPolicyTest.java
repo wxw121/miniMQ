@@ -48,7 +48,8 @@ class FlushPolicyTest {
                 () -> new LogManagerConfig(FlushPolicy.always(), -1));
         assertThrows(IllegalArgumentException.class,
                 () -> new LogManagerConfig(null, 0));
-        assertEquals(FlushPolicy.always(), LogManagerConfig.defaults().flushPolicy());
+        assertEquals(FlushPolicy.everyNAppends(100), LogManagerConfig.defaults().flushPolicy());
+        assertEquals(LogManagerConfig.defaultFlushPolicy(), LogManagerConfig.defaults().flushPolicy());
         assertEquals(0, LogManagerConfig.defaults().checkpointEveryNAppends());
     }
 }

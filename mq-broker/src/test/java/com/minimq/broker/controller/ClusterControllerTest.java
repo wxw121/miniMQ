@@ -65,6 +65,7 @@ class ClusterControllerTest {
         assertEquals(7L, second.topics.get("orders").partitions.get(0).leaderEpoch);
         assertEquals(11L, second.topics.get("orders").partitions.get(0).leaderEpochStartOffset);
         assertFalse(second.topics.get("orders").partitions.get(0).leaderReady);
+        assertFalse(second.topics.get("orders").partitions.get(0).activationRequired);
         assertTrue(controller.metadata(new MetadataRequest("orders")).metadataVersion() > 0L);
     }
 
@@ -206,6 +207,206 @@ class ClusterControllerTest {
         assertEquals(List.of(0, 1, 2), partition.isrBrokerIds());
         assertEquals(Map.of(0, 0L, 1, 0L, 2, 0L),
                 controller.snapshot().topics.get("orders").partitions.get(0).replicaLogEndOffsets);
+        assertEquals(1, controller.snapshot().topics.get("orders").effectiveMinInSyncReplicas());
+    }
+
+    @Test
+    void createTopicRejectsMinInSyncGreaterThanReplicationFactor() {
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
+        assertEquals(
+                ErrorCode.INVALID_REQUEST,
+                controller.createTopic(new CreateTopicRequest("orders", 1, 2, 3)));
+        assertEquals(
+                ErrorCode.NONE,
+                controller.createTopic(new CreateTopicRequest("orders", 1, 2, 2)));
+        assertEquals(2, controller.getTopic("orders").minInSyncReplicas);
+    }
+
+    @Test
+    void alterTopicConfigUpdatesMinInSyncAndRejectsAboveReplicationFactor() {
+        ClusterController controller = controllerWithReplicatedTopic();
+        assertEquals(
+                ErrorCode.NONE,
+                controller.alterTopicConfig("orders", 2).errorCode());
+        assertEquals(2, controller.getTopic("orders").minInSyncReplicas);
+        assertEquals(
+                ErrorCode.INVALID_REQUEST,
+                controller.alterTopicConfig("orders", 3).errorCode());
+        assertEquals(
+                ErrorCode.INVALID_REQUEST,
+                controller.alterTopicConfig("orders", 0).errorCode());
+        long version = controller.metadataVersion();
+        assertEquals(ErrorCode.NONE, controller.alterTopicConfig("orders", 2).errorCode());
+        assertEquals(version, controller.metadataVersion());
+        assertEquals(ErrorCode.UNKNOWN_TOPIC, controller.alterTopicConfig("missing", 1).errorCode());
+    }
+
+    @Test
+    void reassignPartitionsMovesReplicaSetWithoutUncleanLeaderChange() {
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
+        controller.registerBroker(new RegisterBrokerRequest(2, "localhost", 9094));
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("orders", 1, 2)));
+        var added = controller.reassignPartitions(
+                "orders",
+                List.of(new com.minimq.protocol.message.ProtocolMessages.PartitionReplicaAssignment(
+                        0, List.of(0, 1, 2))));
+        assertEquals(ErrorCode.NONE, added.errorCode());
+        assertEquals(List.of(0), added.changedPartitionIds());
+        ClusterMetadata.PartitionEntry expanded =
+                controller.snapshot().topics.get("orders").partitions.get(0);
+        assertEquals(List.of(0, 1, 2), expanded.replicaBrokerIds);
+        assertEquals(0, expanded.leaderBrokerId);
+        assertTrue(expanded.isrBrokerIds.contains(0));
+        assertTrue(expanded.isrBrokerIds.contains(2));
+
+        var moved = controller.reassignPartitions(
+                "orders",
+                List.of(new com.minimq.protocol.message.ProtocolMessages.PartitionReplicaAssignment(
+                        0, List.of(1, 2))));
+        assertEquals(ErrorCode.NONE, moved.errorCode());
+        ClusterMetadata.PartitionEntry reassigned =
+                controller.snapshot().topics.get("orders").partitions.get(0);
+        assertEquals(List.of(1, 2), reassigned.replicaBrokerIds);
+        assertEquals(1, reassigned.leaderBrokerId);
+        assertTrue(reassigned.leaderEpoch > 0);
+        assertFalse(reassigned.leaderReady);
+        assertEquals(ErrorCode.UNKNOWN_BROKER, controller.reassignPartitions(
+                "orders",
+                List.of(new com.minimq.protocol.message.ProtocolMessages.PartitionReplicaAssignment(
+                        0, List.of(9)))).errorCode());
+        assertEquals(ErrorCode.INVALID_REQUEST, controller.reassignPartitions(
+                "orders",
+                List.of(new com.minimq.protocol.message.ProtocolMessages.PartitionReplicaAssignment(
+                        0, List.of(0)))).errorCode());
+    }
+
+    @Test
+    void electPreferredLeadersMovesToFirstReplicaWhenInIsr() {
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("orders", 1, 2)));
+        controller.updateMetadata(metadata -> {
+            var partition = metadata.topics.get("orders").partitions.get(0);
+            partition.replicaBrokerIds = new ArrayList<>(List.of(1, 0));
+            partition.leaderBrokerId = 0;
+            partition.isrBrokerIds = new ArrayList<>(List.of(0, 1));
+            return null;
+        });
+        var elected = controller.electPreferredLeaders("orders", List.of());
+        assertEquals(ErrorCode.NONE, elected.errorCode());
+        assertEquals(List.of(0), elected.electedPartitionIds());
+        ClusterMetadata.PartitionEntry partition =
+                controller.snapshot().topics.get("orders").partitions.get(0);
+        assertEquals(1, partition.leaderBrokerId);
+        assertFalse(partition.leaderReady);
+        assertEquals(
+                ErrorCode.NONE,
+                controller.electPreferredLeaders("orders", List.of()).errorCode());
+        assertEquals(
+                ErrorCode.UNKNOWN_PARTITION,
+                controller.electPreferredLeaders("orders", List.of(9)).errorCode());
+    }
+
+    @Test
+    void reassignAndElectRejectFrozenOfflineLaggingAndRecoveringCases() {
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
+        controller.registerBroker(new RegisterBrokerRequest(2, "localhost", 9094));
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("orders", 1, 2)));
+        assertEquals(ErrorCode.NONE, controller.updateReplicaLogEndOffset("orders", 0, 0, 10L));
+        assertEquals(ErrorCode.NONE, controller.updateReplicaLogEndOffset("orders", 0, 1, 10L));
+
+        var expanded = controller.reassignPartitions(
+                "orders",
+                List.of(new com.minimq.protocol.message.ProtocolMessages.PartitionReplicaAssignment(
+                        0, List.of(0, 1, 2))));
+        assertEquals(ErrorCode.NONE, expanded.errorCode());
+        assertFalse(controller.snapshot().topics.get("orders").partitions.get(0)
+                .isrBrokerIds.contains(2));
+
+        assertEquals(ErrorCode.NONE, controller.alterTopicConfig("orders", 2).errorCode());
+        assertEquals(ErrorCode.INVALID_REQUEST, controller.reassignPartitions(
+                "orders",
+                List.of(new com.minimq.protocol.message.ProtocolMessages.PartitionReplicaAssignment(
+                        0, List.of(0)))).errorCode());
+        assertEquals(ErrorCode.UNKNOWN_PARTITION, controller.reassignPartitions(
+                "orders",
+                List.of(new com.minimq.protocol.message.ProtocolMessages.PartitionReplicaAssignment(
+                        9, List.of(0, 1)))).errorCode());
+        assertEquals(ErrorCode.UNKNOWN_TOPIC, controller.reassignPartitions(
+                "missing",
+                List.of(new com.minimq.protocol.message.ProtocolMessages.PartitionReplicaAssignment(
+                        0, List.of(0, 1)))).errorCode());
+
+        controller.updateMetadata(metadata -> {
+            metadata.brokers.get(2).online = false;
+            return null;
+        });
+        assertEquals(ErrorCode.INVALID_REQUEST, controller.reassignPartitions(
+                "orders",
+                List.of(new com.minimq.protocol.message.ProtocolMessages.PartitionReplicaAssignment(
+                        0, List.of(0, 1, 2)))).errorCode());
+        controller.updateMetadata(metadata -> {
+            metadata.brokers.get(2).online = true;
+            return null;
+        });
+
+        controller.updateMetadata(metadata -> {
+            metadata.topics.get("orders").partitions.get(0).frozen = true;
+            return null;
+        });
+        assertEquals(ErrorCode.INVALID_REQUEST, controller.reassignPartitions(
+                "orders",
+                List.of(new com.minimq.protocol.message.ProtocolMessages.PartitionReplicaAssignment(
+                        0, List.of(1, 0)))).errorCode());
+        assertEquals(ErrorCode.INVALID_REQUEST,
+                controller.electPreferredLeaders("orders", List.of(0)).errorCode());
+        assertEquals(ErrorCode.NONE,
+                controller.electPreferredLeaders("orders", List.of()).errorCode());
+
+        controller.updateMetadata(metadata -> {
+            metadata.topics.get("orders").partitions.get(0).frozen = false;
+            return null;
+        });
+        var preferredFirst = controller.reassignPartitions(
+                "orders",
+                List.of(new com.minimq.protocol.message.ProtocolMessages.PartitionReplicaAssignment(
+                        0, List.of(1, 0))));
+        assertEquals(ErrorCode.NONE, preferredFirst.errorCode());
+        controller.updateMetadata(metadata -> {
+            var partition = metadata.topics.get("orders").partitions.get(0);
+            partition.replicaLogEndOffsets.put(1, 0L);
+            partition.isrBrokerIds = new ArrayList<>(List.of(0));
+            return null;
+        });
+        assertEquals(ErrorCode.INVALID_REQUEST,
+                controller.electPreferredLeaders("orders", List.of(0)).errorCode());
+        assertEquals(ErrorCode.NONE,
+                controller.electPreferredLeaders("orders", List.of()).errorCode());
+        assertEquals(ErrorCode.UNKNOWN_TOPIC,
+                controller.electPreferredLeaders("missing", List.of()).errorCode());
+
+        var sameSet = controller.reassignPartitions(
+                "orders",
+                List.of(new com.minimq.protocol.message.ProtocolMessages.PartitionReplicaAssignment(
+                        0, List.of(1, 0))));
+        assertEquals(ErrorCode.NONE, sameSet.errorCode());
+        assertTrue(sameSet.changedPartitionIds().isEmpty());
+
+        controller.beginRecovery(2_000L);
+        assertEquals(ErrorCode.CONTROLLER_NOT_READY, controller.alterTopicConfig("orders", 1).errorCode());
+        assertEquals(ErrorCode.CONTROLLER_NOT_READY, controller.reassignPartitions(
+                "orders",
+                List.of(new com.minimq.protocol.message.ProtocolMessages.PartitionReplicaAssignment(
+                        0, List.of(0, 1)))).errorCode());
+        assertEquals(ErrorCode.CONTROLLER_NOT_READY,
+                controller.electPreferredLeaders("orders", List.of()).errorCode());
     }
 
     @Test
@@ -527,8 +728,72 @@ class ClusterControllerTest {
         assertEquals(1, partition.leaderBrokerId());
         assertTrue(partition.frozen());
         assertFalse(partition.leaderReady());
+        assertTrue(controller.snapshot().topics.get("orders").partitions.get(0).activationRequired);
         assertThrows(IllegalArgumentException.class,
                 () -> controller.expireLeaderActivationTimeouts(0));
+    }
+
+    @Test
+    void activationTimeoutFreezeRestoreRequiresLeaderActivation() {
+        AtomicLong now = new AtomicLong();
+        ClusterController controller = new ClusterController(
+                new MetadataStore(tempDir), 5_000L, now::get);
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
+        controller.createTopic(new CreateTopicRequest("orders", 1, 2));
+        assertEquals(ErrorCode.NONE, controller.markBrokerOffline(0));
+
+        assertEquals(0, controller.expireLeaderActivationTimeouts(2_000));
+        now.set(TimeUnit.MILLISECONDS.toNanos(2_001));
+        assertEquals(1, controller.expireLeaderActivationTimeouts(2_000));
+        now.set(TimeUnit.MILLISECONDS.toNanos(7_002));
+        assertTrue(controller.expireBrokerLease(1, 1L));
+
+        var recovered = controller.registerBroker(new RegisterBrokerRequest(1, "localhost", 9093));
+        assertEquals(ErrorCode.NONE, recovered.errorCode());
+
+        PartitionMetadata restored = controller.metadata(new MetadataRequest("orders"))
+                .topics().get(0).partitions().get(0);
+        assertFalse(restored.frozen());
+        assertFalse(restored.leaderReady());
+        assertEquals(List.of(1), restored.isrBrokerIds());
+        assertFalse(controller.snapshot().topics.get("orders").partitions.get(0).activationRequired);
+    }
+
+    @Test
+    void noteCommittedLeaderReadyUnblocksLocalEpochValidation() {
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.createTopic(new CreateTopicRequest("orders", 1));
+        controller.updateMetadata(metadata -> {
+            var partition = metadata.topics.get("orders").partitions.get(0);
+            partition.leaderReady = false;
+            return null;
+        });
+
+        assertEquals(ErrorCode.LEADER_NOT_READY, controller.validateLeaderEpoch("orders", 0, 0L));
+        controller.noteCommittedLeaderReady("orders", 0, 99L);
+        assertEquals(ErrorCode.LEADER_NOT_READY, controller.validateLeaderEpoch("orders", 0, 0L));
+        controller.noteCommittedLeaderReady("orders", 0, 0L);
+        assertEquals(ErrorCode.NONE, controller.validateLeaderEpoch("orders", 0, 0L));
+    }
+
+    @Test
+    void noteCommittedLeaderReadyIgnoresFrozenPartitions() {
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        controller.createTopic(new CreateTopicRequest("orders", 1));
+        controller.updateMetadata(metadata -> {
+            var partition = metadata.topics.get("orders").partitions.get(0);
+            partition.frozen = true;
+            partition.leaderReady = false;
+            partition.isrBrokerIds = new ArrayList<>();
+            return null;
+        });
+
+        controller.noteCommittedLeaderReady("orders", 0, 0L);
+        assertEquals(ErrorCode.LEADER_NOT_READY, controller.validateLeaderEpoch("orders", 0, 0L));
+        assertTrue(controller.snapshot().topics.get("orders").partitions.get(0).frozen);
     }
 
     @Test
@@ -623,15 +888,20 @@ class ClusterControllerTest {
     }
 
     @Test
-    void markBrokerOfflineRejectsLastIsrLeaderWithoutMutatingState() {
+    void markBrokerOfflineFreezesLastIsrLeader() {
         ClusterController controller = new ClusterController(new MetadataStore(tempDir));
         controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
         controller.createTopic(new com.minimq.protocol.message.ProtocolMessages.CreateTopicRequest(
                 "orders", 1, 1));
 
-        assertEquals(ErrorCode.INVALID_REQUEST, controller.markBrokerOffline(0));
-        assertTrue(controller.getBroker(0).online);
-        assertEquals(0, controller.getLeaderBrokerId("orders", 0));
+        assertEquals(ErrorCode.NONE, controller.markBrokerOffline(0));
+        assertFalse(controller.getBroker(0).online);
+        PartitionMetadata frozen = controller.metadata(new MetadataRequest("orders"))
+                .topics().get(0).partitions().get(0);
+        assertTrue(frozen.frozen());
+        assertTrue(frozen.isrBrokerIds().isEmpty());
+        assertEquals(0, frozen.leaderBrokerId());
+        assertFalse(frozen.leaderReady());
     }
 
     @Test
@@ -753,7 +1023,9 @@ class ClusterControllerTest {
         PartitionMetadata active = controller.metadata(new MetadataRequest("orders"))
                 .topics().get(0).partitions().get(0);
         assertFalse(active.frozen());
+        assertTrue(active.leaderReady());
         assertEquals(List.of(0), active.isrBrokerIds());
+        assertFalse(controller.snapshot().topics.get("orders").partitions.get(0).activationRequired);
     }
 
     @Test
@@ -828,6 +1100,19 @@ class ClusterControllerTest {
         assertFalse(controller.isRecovering());
         assertTrue(controller.getBroker(0).online);
         assertFalse(controller.getBroker(1).online);
+    }
+
+    @Test
+    void recoveryWindowRejectsTopicDeletion() {
+        ClusterController controller = new ClusterController(new MetadataStore(tempDir));
+        controller.registerBroker(new RegisterBrokerRequest(0, "localhost", 9092));
+        assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("orders", 1, 1)));
+
+        controller.beginRecovery(2_000L);
+
+        assertEquals(ErrorCode.CONTROLLER_NOT_READY, controller.deleteTopic("orders", 1L));
+        assertEquals(1, controller.metadata(new MetadataRequest("orders")).topics().size());
+        assertFalse(controller.snapshot().topicTombstones.containsKey("orders"));
     }
 
     @Test

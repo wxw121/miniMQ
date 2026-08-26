@@ -589,7 +589,8 @@ class ProducerNotLeaderRetryTest {
         private final Queue<MetadataV2Response> metadataV2Responses = new ArrayDeque<>();
 
         private BrokerClientBackedProducer(Queue<NetworkClient> brokerClients) {
-            super("127.0.0.1:1", "producer-real-broker-cache", ignored -> brokerClients.remove());
+            super("127.0.0.1:1", "producer-real-broker-cache", ignored -> brokerClients.remove(),
+                    new ProducerConfig(50, 0L));
         }
 
         private void enqueueMetadata(MetadataResponse metadata) {
@@ -658,7 +659,7 @@ class ProducerNotLeaderRetryTest {
         private long currentTimeNanos = TimeUnit.SECONDS.toNanos(1L);
 
         private TestableProducer(String bootstrapServers, String clientId) {
-            super(bootstrapServers, clientId);
+            super(bootstrapServers, clientId, NetworkClient::new, new ProducerConfig(50, 0L));
         }
 
         private void enqueueMetadata(MetadataResponse metadata) {

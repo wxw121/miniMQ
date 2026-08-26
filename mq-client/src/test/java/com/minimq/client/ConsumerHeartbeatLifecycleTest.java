@@ -4,6 +4,8 @@ import com.minimq.broker.BrokerConfig;
 import com.minimq.broker.support.BrokerTestHarness;
 import com.minimq.protocol.ApiKeys;
 import com.minimq.protocol.message.ProtocolMessages.CreateTopicAdminRequest;
+import com.minimq.protocol.message.ProtocolMessages.GroupStatusRequest;
+import com.minimq.protocol.message.ProtocolMessages.GroupStatusResponse;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
@@ -67,6 +69,37 @@ class ConsumerHeartbeatLifecycleTest {
                     heartbeatCountAfter(broker, 4, TimeUnit.SECONDS),
                     "a heartbeat executor created by the first subscribe survived close");
         }
+    }
+
+    @Test
+    void closeSendsLeaveGroupAndDropsMember() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("consumer-leave-on-close");
+        try (BrokerTestHarness broker = BrokerTestHarness.startController(dataDir);
+             NetworkClient admin = new NetworkClient("leave-on-close-admin")) {
+            admin.connect("127.0.0.1", broker.port());
+            admin.ensureSuccess(admin.send(
+                    ApiKeys.CREATE_TOPIC_ADMIN,
+                    new CreateTopicAdminRequest(
+                            BrokerTestHarness.ADMIN_TOKEN, "orders", 1, 1)));
+            Consumer consumer = new Consumer(
+                    broker.bootstrapServers(), "leave-group", "leave-consumer");
+            consumer.subscribe("orders");
+            GroupStatusResponse before = groupStatus(admin, "leave-group");
+            assertEquals(1, before.members().total());
+            consumer.close();
+
+            GroupStatusResponse after = groupStatus(admin, "leave-group");
+            assertEquals(0, after.members().total());
+        }
+    }
+
+    private static GroupStatusResponse groupStatus(NetworkClient admin, String groupId)
+            throws InterruptedException {
+        var response = admin.send(
+                ApiKeys.GROUP_STATUS,
+                new GroupStatusRequest(BrokerTestHarness.ADMIN_TOKEN, groupId, null, 10, 10));
+        admin.ensureSuccess(response);
+        return (GroupStatusResponse) response.body();
     }
 
     private static boolean awaitHeartbeat(

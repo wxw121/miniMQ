@@ -15,6 +15,8 @@ class ClientValidationTest {
     void rejectsInvalidBootstrapServers() {
         assertThrows(IllegalArgumentException.class, () -> new Producer("localhost", "p1"));
         assertThrows(IllegalArgumentException.class, () -> new Consumer("localhost", "g1", "c1"));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Consumer("localhost:9092", "g1", "c1", 999));
     }
 
     @Test

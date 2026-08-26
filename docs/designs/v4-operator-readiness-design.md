@@ -1,7 +1,7 @@
 # V4.0 Operator Readiness Design
 
 Date: 2026-07-21
-Status: Implemented in the working tree; final V4.0.0 release verification is tracked separately. This document is the decision-complete V4 contract.
+Status: V4 contract implemented. The current working tree is 5.0.0: V5 appends API keys 38-41 and error codes 20-21, and later defaults add client linger auto-batch and `everyNAppends(100)` flush. See [v5-producer-acks-design.md](v5-producer-acks-design.md) and [test-report-2026-08-14-batch-flush-defaults.md](../test-report-2026-08-14-batch-flush-defaults.md). This document remains the V4 decision record; do not treat its API/error-code ceiling as the live tree.
 
 ## Goal
 
