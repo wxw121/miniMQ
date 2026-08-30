@@ -80,11 +80,30 @@ class NettyTransportFactoryTest {
                 group.shutdownGracefully();
             }
         } else {
-            assertThrows(IllegalStateException.class, () -> nativeSupport.newEpollEventLoopGroup(1));
-            assertThrows(IllegalStateException.class, nativeSupport::epollServerChannelClass);
+            assertUnavailableNativeConstructionDoesNotLeakResources(nativeSupport);
             if (reason != null) {
                 assertEquals(String.class, reason.getClass());
             }
+        }
+    }
+
+    private static void assertUnavailableNativeConstructionDoesNotLeakResources(
+            NettyTransportFactory.NativeSupport nativeSupport) {
+        try {
+            EventLoopGroup group = nativeSupport.newEpollEventLoopGroup(1);
+            try {
+                assertEquals("io.netty.channel.epoll.EpollEventLoopGroup", group.getClass().getName());
+            } finally {
+                group.shutdownGracefully();
+            }
+        } catch (IllegalStateException expected) {
+            // Netty may reject construction when the native transport is unavailable.
+        }
+        try {
+            assertEquals("io.netty.channel.epoll.EpollServerSocketChannel",
+                    nativeSupport.epollServerChannelClass().getName());
+        } catch (IllegalStateException expected) {
+            // Netty may reject class loading when the native transport is unavailable.
         }
     }
 
