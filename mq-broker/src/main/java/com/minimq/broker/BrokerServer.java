@@ -36,6 +36,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Broker 网络服务入口，负责启动 Netty、注册 Controller，并暴露 MiniMQ 协议处理链。
@@ -43,6 +44,7 @@ import java.util.concurrent.ExecutorService;
 public class BrokerServer {
     private static final Logger log = LoggerFactory.getLogger(BrokerServer.class);
     private static final long STARTUP_BARRIER_TIMEOUT_MS = 15_000L;
+    private static final long SHUTDOWN_TIMEOUT_SECONDS = 5L;
 
     private final BrokerConfig config;
     private final long startedAtEpochMs;
@@ -330,7 +332,7 @@ public class BrokerServer {
             replicaStateReporter.close();
         }
         if (channelFuture != null) {
-            channelFuture.channel().close().sync();
+            channelFuture.channel().close().await(SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         }
         if (produceAckExecutor != null) {
             produceAckExecutor.shutdownNow();
@@ -340,14 +342,19 @@ public class BrokerServer {
             maintenanceAdminService.close();
         }
         if (bossGroup != null) {
-            bossGroup.shutdownGracefully().sync();
+            shutdownEventLoopGroup(bossGroup);
         }
         if (workerGroup != null) {
-            workerGroup.shutdownGracefully().sync();
+            shutdownEventLoopGroup(workerGroup);
         }
         if (partitionManager != null) {
             partitionManager.close();
         }
         stopped = true;
+    }
+
+    private static void shutdownEventLoopGroup(EventLoopGroup group) throws InterruptedException {
+        group.shutdownGracefully(0, SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                .await(SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
     }
 }

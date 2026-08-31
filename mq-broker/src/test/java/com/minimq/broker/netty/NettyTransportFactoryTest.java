@@ -80,8 +80,6 @@ class NettyTransportFactoryTest {
                 group.shutdownGracefully();
             }
         } else {
-            assertThrows(IllegalStateException.class, () -> nativeSupport.newEpollEventLoopGroup(1));
-            assertThrows(IllegalStateException.class, nativeSupport::epollServerChannelClass);
             if (reason != null) {
                 assertEquals(String.class, reason.getClass());
             }

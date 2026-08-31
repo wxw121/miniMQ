@@ -10,6 +10,7 @@ import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -872,6 +873,7 @@ class MiniMqWebAppTest {
     }
 
     @Test
+    @Timeout(15)
     void controllerRoutesUseTheCompleteBootstrapListAndDiscoverThroughFollower() throws Exception {
         Path controllerDir = BrokerTestHarness.newDataDir("web-controller-routing-controller");
         Path followerDir = BrokerTestHarness.newDataDir("web-controller-routing-follower");

@@ -5,8 +5,11 @@ import io.netty.channel.nio.NioEventLoopGroup;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 final class ReplicaConnectionPool implements AutoCloseable {
+    private static final long SHUTDOWN_TIMEOUT_SECONDS = 5;
+
     private final EventLoopGroup group = new NioEventLoopGroup(1);
     private final Map<LeaderKey, LeaderReplicaClient> clients = new HashMap<>();
 
@@ -46,7 +49,8 @@ final class ReplicaConnectionPool implements AutoCloseable {
             }
             clients.clear();
         } finally {
-            group.shutdownGracefully().sync();
+            group.shutdownGracefully(0, SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                    .await(SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         }
     }
 

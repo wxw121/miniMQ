@@ -14,6 +14,7 @@ import com.minimq.protocol.message.ProtocolMessages.MetadataRequest;
 import com.minimq.protocol.message.ProtocolMessages.MetadataResponse;
 import com.minimq.protocol.message.ProtocolMessages.RegisterBrokerRequest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
@@ -47,6 +48,7 @@ class ReplicaStateReporterTest {
     }
 
     @Test
+    @Timeout(10)
     void followerReporterUpdatesRemoteControllerMetadata() throws Exception {
         Path controllerDir = BrokerTestHarness.newDataDir("leo-reporter-controller");
         try (BrokerTestHarness controller = BrokerTestHarness.startController(
