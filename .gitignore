@@ -25,3 +25,13 @@ Thumbs.db
 .npm-cache/
 .playwright-cli/
 .m2/
+
+# Historical version documentation is retained locally but not published.
+docs/designs/
+docs/plans/
+docs/superpowers/
+docs/test-report-*.md
+docs/code-review-*.md
+docs/handoff-*.md
+docs/known-issues-*.md
+docs/assets/test-results/

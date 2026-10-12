@@ -6,7 +6,7 @@ This roadmap summarizes the completed V4 Operator Readiness baseline, the curren
 
 ## 1. Current State
 
-MiniMQ 5.0.0 is open. V4 Operator Readiness is the completed baseline; V5 adds producer acknowledgements, `min.insync.replicas`, a broker-scoped produce-ack executor, `LEAVE_GROUP`, per-member session timeouts, topic config changes, partition reassignment, and preferred-leader election. Client linger/auto-batch (`batchSize=50`, `lingerMs=5`) and default storage flush `everyNAppends(100)` are also in source. Latest evidence: [test-report-2026-08-14-batch-flush-defaults.md](test-report-2026-08-14-batch-flush-defaults.md) (823 tests, 91.78% overall line coverage).
+MiniMQ 5.0.0 is open. V4 Operator Readiness is the completed baseline; V5 adds producer acknowledgements, `min.insync.replicas`, a broker-scoped produce-ack executor, `LEAVE_GROUP`, per-member session timeouts, topic config changes, partition reassignment, and preferred-leader election. Client linger/auto-batch (`batchSize=50`, `lingerMs=5`) and default storage flush `everyNAppends(100)` are also in source. Run the [testing guide](testing.md) commands to obtain current verification results.
 
 Current implemented capabilities include:
 
@@ -32,26 +32,16 @@ Current policy:
 
 - Check Docker API access before running any `-Petcd-it` command.
 - If Docker access is available, run the real-etcd Failsafe profile and record fresh results.
-- If the same environment blocker remains unresolved after five bounded attempts, document it in a known-issues file and continue with independent work.
+- If the same environment blocker remains unresolved after five bounded attempts, record it in the issue tracker and continue with independent work.
 - Do not mark the real-etcd gate complete until the focused Failsafe tests run successfully.
 
 ## 3. Current Major Version: V5.0 Producer Acknowledgements And Group Hardening
 
-V5.0 adds `LEADER` and `ALL` (current-ISR) produce acknowledgements, plus group-membership hardening. Design and plan:
-
-- [V5.0 Producer Acknowledgements Design](designs/v5-producer-acks-design.md)
-- [V5.0 Producer Acknowledgements Implementation Plan](plans/v5-producer-acks-implementation.md)
-
-Default produce remains Leader-local, matching V4. `ALL` waits on a dedicated executor until the current ISR high watermark meets the post-append Leader LEO and `isr.size() >= min.insync.replicas`, or returns `REQUEST_TIMED_OUT` / `NOT_ENOUGH_REPLICAS`. Consumers leave with `LEAVE_GROUP` and expire on a per-member session timeout. Operators can change `min.insync.replicas`, reassign partition replicas, and elect the preferred leader. Transactions and exactly-once stay out of scope.
+V5.0 adds `LEADER` and `ALL` (current-ISR) produce acknowledgements, plus group-membership hardening. Default produce remains Leader-local, matching V4. `ALL` waits on a dedicated executor until the current ISR high watermark meets the post-append Leader LEO and `isr.size() >= min.insync.replicas`, or returns `REQUEST_TIMED_OUT` / `NOT_ENOUGH_REPLICAS`. Consumers leave with `LEAVE_GROUP` and expire on a per-member session timeout. Operators can change `min.insync.replicas`, reassign partition replicas, and elect the preferred leader. Transactions and exactly-once stay out of scope.
 
 ## 3a. Previous Major Version: V4.0 Operator Readiness
 
 V4.0 is now the current consolidated operator-readiness implementation, not a documentation-only plan. It folds the previously separate release-gate, multi-node operations, consumer-lag, topic-admin, failover-audit, metrics, local-demo, scoped-permission, retry-topic, dead-letter-topic, and required delayed-message work into one major version.
-
-Authoritative planning documents:
-
-- [V4.0 Operator Readiness Design](designs/v4-operator-readiness-design.md)
-- [V4.0 Operator Readiness Implementation Plan](plans/v4-operator-readiness-implementation.md)
 
 ### V4.0 Implemented Scope
 
@@ -92,7 +82,7 @@ Recommended later topics:
 
 1. Keep resource use bounded and close all brokers, clients, event loops, executors, and Docker resources started by tests or demos.
 2. Record unresolved Docker/real-etcd blockers after five bounded attempts instead of repeatedly retrying the same blocked path.
-3. Keep README.md, docs/README.md, docs/design.md, docs/architecture.md, docs/testing.md, and test reports synchronized from source and tests.
+3. Keep README.md, docs/README.md, docs/design.md, docs/architecture.md, and docs/testing.md synchronized with source and tests.
 
 ## 6. Risk Register
 
@@ -114,4 +104,4 @@ A V5.0 feature is done only when:
 4. CLI behavior includes command parsing and output tests.
 5. Documentation and examples are synchronized.
 6. Resource cleanup is verified for tests and demos that start brokers, clients, executors, event loops, or Docker resources.
-7. Verification commands and exit codes are recorded in a dated test report.
+7. Verification commands and exit codes are available from the CI run or the developer environment that performed the verification.

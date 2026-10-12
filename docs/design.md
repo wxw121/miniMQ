@@ -597,9 +597,9 @@ Partition metadata now includes `leaderEpoch`, `leaderEpochStartOffset`, and `le
 
 分区元数据新增 `leaderEpoch`、`leaderEpochStartOffset` 和 `leaderReady`；三个数据 API 都要求精确 epoch。提升后的 Leader 先持久化 epoch 证明、崩溃安全截断到恢复点，再发送 `LEADER_READY`，最后开放数据面。WAL 重放识别已提交截断，分叉尾部不会在重启后复活。unclean election 仍明确不支持。
 
-Known limitations fixed in follow-up `2.3.1` are tracked in `docs/code-review-2026-07-17-v2.3-replication.md`.
+The current source and tests are authoritative for this behavior.
 
-已知限制与 `2.3.1` 计划修复项见 `docs/code-review-2026-07-17-v2.3-replication.md`。
+当前行为以源码和测试为准。
 
 ### 11.3 V3.1 Operational Resilience / 运行时韧性
 
@@ -658,9 +658,9 @@ The local scripts own one run directory through `.minimq-run-directory`, record 
 
 ### 12.1 V5 Produce Acks, Groups, And Defaults / V5 生产确认、消费组与默认值
 
-V5 keeps frame version 1 and appends API keys 38-41 plus error codes `NOT_ENOUGH_REPLICAS=20` and `REQUEST_TIMED_OUT=21`. Produce trailing `acks` / `ackTimeoutMs` default to `LEADER` / 5000 ms. `ALL` waits on a dedicated executor until the current ISR high watermark meets the post-append Leader LEO and `isr.size() >= min.insync.replicas`. Members leave with `LEAVE_GROUP` and expire on per-member `sessionTimeoutMs`. Later 5.0.0 defaults (not new wire keys) add client linger auto-batch and `FlushPolicy.everyNAppends(100)`. Full contract: [v5-producer-acks-design.md](designs/v5-producer-acks-design.md).
+V5 keeps frame version 1 and appends API keys 38-41 plus error codes `NOT_ENOUGH_REPLICAS=20` and `REQUEST_TIMED_OUT=21`. Produce trailing `acks` / `ackTimeoutMs` default to `LEADER` / 5000 ms. `ALL` waits on a dedicated executor until the current ISR high watermark meets the post-append Leader LEO and `isr.size() >= min.insync.replicas`. Members leave with `LEAVE_GROUP` and expire on per-member `sessionTimeoutMs`. Later 5.0.0 defaults (not new wire keys) add client linger auto-batch and `FlushPolicy.everyNAppends(100)`.
 
-V5 保持 frame version 1，追加 API 38-41 以及错误码 `NOT_ENOUGH_REPLICAS=20`、`REQUEST_TIMED_OUT=21`。Produce 尾字段 `acks` / `ackTimeoutMs` 默认 `LEADER` / 5000 ms。`ALL` 在专用线程池上等待当前 ISR 高水位达到追加后的 Leader LEO，且 `isr.size() >= min.insync.replicas`。成员通过 `LEAVE_GROUP` 离开，并按各自的 `sessionTimeoutMs` 过期。之后的 5.0.0 默认值（不是新协议 key）增加客户端 linger 攒批和 `FlushPolicy.everyNAppends(100)`。完整契约见 [v5-producer-acks-design.md](designs/v5-producer-acks-design.md)。
+V5 保持 frame version 1，追加 API 38-41 以及错误码 `NOT_ENOUGH_REPLICAS=20`、`REQUEST_TIMED_OUT=21`。Produce 尾字段 `acks` / `ackTimeoutMs` 默认 `LEADER` / 5000 ms。`ALL` 在专用线程池上等待当前 ISR 高水位达到追加后的 Leader LEO，且 `isr.size() >= min.insync.replicas`。成员通过 `LEAVE_GROUP` 离开，并按各自的 `sessionTimeoutMs` 过期。之后的 5.0.0 默认值（不是新协议 key）增加客户端 linger 攒批和 `FlushPolicy.everyNAppends(100)`。
 
 ## 13. Design Tradeoffs / 设计取舍
 
