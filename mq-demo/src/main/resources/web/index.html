@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MiniMQ Operator Console</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand-block">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div>
+        <strong>MiniMQ</strong>
+        <span>Operator Console</span>
+      </div>
+    </div>
+    <div class="connection-block">
+      <span id="connectionSummary">Loading configuration…</span>
+      <strong id="connectionState" data-state="loading">Connecting</strong>
+    </div>
+  </header>
+
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Primary navigation">
+      <p class="nav-label">Management</p>
+      <nav class="primary-nav">
+        <button type="button" data-view-target="overview" aria-current="page">Overview</button>
+        <button type="button" data-view-target="messages">Messages</button>
+        <button type="button" data-view-target="topics">Topics</button>
+        <button type="button" data-view-target="groups">Consumer groups</button>
+        <button type="button" data-view-target="brokers">Brokers</button>
+        <button type="button" data-view-target="tools">Tools</button>
+      </nav>
+      <div class="sidebar-foot">
+        <span>MiniMQ 4.0</span>
+        <span>Local operator UI</span>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <section class="context-bar" aria-label="Request context">
+        <label>Broker target
+          <select id="operatorBroker" aria-label="Broker target"></select>
+        </label>
+        <label>Topic
+          <input id="topic" data-testid="topic" value="web-orders" autocomplete="off">
+        </label>
+        <label>Result limit
+          <input id="limit" type="number" min="1" max="1000" value="100" inputmode="numeric">
+        </label>
+        <label>Partition limit
+          <input id="partitionLimit" type="number" min="1" max="1000" value="100" inputmode="numeric">
+        </label>
+      </section>
+
+      <section class="console-view" data-view="overview">
+        <div class="page-heading">
+          <div><p class="eyebrow">Cluster</p><h1>Overview</h1></div>
+          <p>Inspect health, runtime activity, authorization, and failover history.</p>
+        </div>
+        <div class="metric-strip" aria-label="Console status">
+          <div><span>Configuration</span><strong id="overviewConfiguration">Loading</strong></div>
+          <div><span>Selected broker</span><strong id="overviewBroker">—</strong></div>
+          <div><span>Last request</span><strong id="overviewLastRequest">None</strong></div>
+        </div>
+        <section class="content-panel">
+          <div class="panel-heading"><div><h2>Cluster inspection</h2><p>Run a focused operator query against the selected broker.</p></div></div>
+          <div class="action-list">
+            <button type="button" data-endpoint="/api/ops-status"><span>Ops status</span><small>Broker and partition readiness</small></button>
+            <button type="button" data-endpoint="/api/runtime-metrics"><span>Runtime metrics</span><small>Counters, latency, and lag</small></button>
+            <button type="button" data-endpoint="/api/auth-status"><span>Auth status</span><small>Operator authorization state</small></button>
+            <button type="button" data-endpoint="/api/failover-audit"><span>Failover audit</span><small>Recent leadership events</small></button>
+          </div>
+        </section>
+      </section>
+
+      <section class="console-view" data-view="messages" hidden>
+        <div class="page-heading">
+          <div><p class="eyebrow">Workflows</p><h1>Messages</h1></div>
+          <p>Create a topic, publish a message, and consume it in one operator flow.</p>
+        </div>
+        <div class="two-column-layout">
+          <section class="content-panel">
+            <div class="panel-heading"><div><h2>Main flow</h2><p>Run against a real broker or use the local mock fallback.</p></div></div>
+            <div class="field-grid field-grid-two">
+              <label>Mode
+                <select id="mode" data-testid="mode">
+                  <option value="auto">Auto / real with mock fallback</option>
+                  <option value="real">Real broker</option>
+                  <option value="mock">Mock demo</option>
+                </select>
+              </label>
+              <label>Consumer group<input id="groupId" value="web-ui-group" autocomplete="off"></label>
+              <label>Partitions<input id="partitions" type="number" min="1" value="1" inputmode="numeric"></label>
+              <label>Message key<input id="key" value="web-key" autocomplete="off"></label>
+              <label>Message<input id="message" data-testid="message" value="hello-minimq" autocomplete="off"></label>
+            </div>
+            <button class="primary-action" id="runFlow" data-testid="run-flow" type="button">Run flow</button>
+          </section>
+          <section class="flow-result" aria-live="polite">
+            <div class="panel-heading"><div><h2>Flow result</h2><p>Latest create, produce, and consume response.</p></div></div>
+            <p id="flowError" class="request-error" hidden></p>
+            <div class="metric-strip compact">
+              <div><span>Status</span><strong id="status">IDLE</strong></div>
+              <div><span>Mode</span><strong id="modeResult">—</strong></div>
+              <div><span>Offset</span><strong id="offset">—</strong></div>
+            </div>
+            <details class="raw-result flow-raw-result">
+              <summary>Raw JSON</summary>
+              <pre id="flowRawJson" data-testid="log">Waiting for the main flow.</pre>
+            </details>
+          </section>
+        </div>
+        <section class="content-panel">
+          <div class="panel-heading"><div><h2>Special delivery</h2><p>Publish delayed, retry, or dead-letter messages using the main flow values.</p></div></div>
+          <div class="inline-form">
+            <label>Deliver at epoch ms<input id="deliverAtEpochMs" type="number" min="0" inputmode="numeric"></label>
+            <div class="button-group">
+              <button type="button" data-endpoint="/api/delayed-produce">Delayed produce</button>
+              <button type="button" data-endpoint="/api/retry-produce">Retry produce</button>
+              <button type="button" data-endpoint="/api/dead-letter-produce">Dead-letter produce</button>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="console-view" data-view="topics" hidden>
+        <div class="page-heading">
+          <div><p class="eyebrow">Resources</p><h1>Topics</h1></div>
+          <p>Inspect topic inventory, change partitioning, and configure reliability links.</p>
+        </div>
+        <div class="two-column-layout">
+          <section class="content-panel">
+            <div class="panel-heading"><div><h2>Topic management</h2><p>Actions use the topic name from the Messages view.</p></div></div>
+            <div class="field-grid field-grid-two">
+              <label>Replication factor<input id="replicationFactor" type="number" min="1" value="1" inputmode="numeric"></label>
+              <label>Target partitions<input id="targetPartitionCount" type="number" min="2" value="2" inputmode="numeric"></label>
+            </div>
+            <div class="field-grid field-grid-three compact-fields">
+              <label>min.insync.replicas
+                <input id="minInSyncReplicas" type="number" min="1" value="1" inputmode="numeric">
+              </label>
+              <label>Assignment
+                <input id="assignment" value="0:0" autocomplete="off">
+              </label>
+              <label>Partition
+                <input id="partition" type="number" min="0" value="0" inputmode="numeric">
+              </label>
+            </div>
+            <label class="check-row"><input id="includeDeleted" type="checkbox"><span>Include deleted topics in describe</span></label>
+            <div class="button-grid">
+              <button type="button" data-endpoint="/api/topics">List topics</button>
+              <button type="button" data-endpoint="/api/topic/create">Create topic</button>
+              <button type="button" data-endpoint="/api/topic/describe">Describe topic</button>
+              <button type="button" data-endpoint="/api/topic/increase">Increase partitions</button>
+              <button type="button" data-endpoint="/api/topic/alter-config">Alter topic config</button>
+              <button type="button" data-endpoint="/api/topic/reassign">Reassign partitions</button>
+              <button type="button" data-endpoint="/api/topic/elect-preferred">Elect preferred leaders</button>
+              <button class="danger-action" type="button" data-endpoint="/api/topic/delete">Delete topic</button>
+            </div>
+          </section>
+          <section class="content-panel">
+            <div class="panel-heading"><div><h2>Reliability links</h2><p>Associate retry and dead-letter topics with the current source topic.</p></div></div>
+            <div class="field-grid">
+              <label>Retry topic<input id="retryTopic" value="web-orders-retry" autocomplete="off"></label>
+              <label>Dead-letter topic<input id="deadLetterTopic" value="web-orders-dlq" autocomplete="off"></label>
+            </div>
+            <div class="check-grid">
+              <label class="check-row"><input id="clearRetry" type="checkbox"><span>Clear retry link</span></label>
+              <label class="check-row"><input id="clearDeadLetter" type="checkbox"><span>Clear dead-letter link</span></label>
+            </div>
+            <button class="primary-action" type="button" data-endpoint="/api/topic/reliability">Apply reliability links</button>
+          </section>
+        </div>
+      </section>
+
+      <section class="console-view" data-view="groups" hidden>
+        <div class="page-heading">
+          <div><p class="eyebrow">Consumption</p><h1>Consumer groups</h1></div>
+          <p>Inspect members, assignments, and partition state for the current group and topic.</p>
+        </div>
+        <section class="content-panel narrow-panel">
+          <div class="panel-heading"><div><h2>Group status</h2><p>Uses the consumer group and topic configured in Messages.</p></div></div>
+          <button class="primary-action" type="button" data-endpoint="/api/group-status">Load group status</button>
+        </section>
+      </section>
+
+      <section class="console-view" data-view="brokers" hidden>
+        <div class="page-heading">
+          <div><p class="eyebrow">Cluster</p><h1>Brokers</h1></div>
+          <p>Inspect the selected target or mark a broker offline.</p>
+        </div>
+        <section class="content-panel narrow-panel">
+          <div class="panel-heading"><div><h2>Broker control</h2><p>Marking a broker offline changes cluster availability and requires confirmation. MiniMQ rejects taking the last in-sync leader offline; keep another online broker available.</p></div></div>
+          <div class="inline-form">
+            <label>Broker ID<input id="brokerId" type="number" min="0" value="0" inputmode="numeric"></label>
+            <button class="danger-action" type="button" data-endpoint="/api/broker/offline">Mark broker offline</button>
+          </div>
+        </section>
+      </section>
+
+      <section class="console-view" data-view="tools" hidden>
+        <div class="page-heading">
+          <div><p class="eyebrow">Configuration</p><h1>Tools</h1></div>
+          <p>Review the server-provided connection and inspect the latest raw response.</p>
+        </div>
+        <section class="content-panel narrow-panel">
+          <div class="panel-heading"><div><h2>Connection</h2><p>The server controls which bootstrap targets the browser may use.</p></div></div>
+          <label>Bootstrap servers<input id="bootstrapServers" data-testid="bootstrap" value="" autocomplete="off"></label>
+        </section>
+      </section>
+
+      <section class="result-surface" aria-live="polite" aria-labelledby="operator-output-title">
+        <header class="result-header">
+          <div><span id="operatorEndpoint">No request</span><h2 id="operator-output-title">Operator result</h2></div>
+          <strong id="operatorStatus" data-state="idle">IDLE</strong>
+        </header>
+        <p id="requestError" class="request-error" hidden></p>
+        <div id="structuredResult" class="structured-result empty-state">Run an operator action to see its result.</div>
+        <details class="raw-result">
+          <summary>Raw JSON</summary>
+          <pre id="rawJson" data-testid="operator-log">No operator result.</pre>
+        </details>
+      </section>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

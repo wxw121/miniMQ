@@ -1,0 +1,437 @@
+package com.minimq.storage;
+
+import com.minimq.common.model.Record;
+
+import java.io.IOException;
+import java.nio.channels.FileChannel;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * One physical log segment and its sparse offset index.
+ */
+final class SegmentFile implements AutoCloseable {
+    private final SegmentDescriptor descriptor;
+    private final Path logPath;
+    private final FileChannel logChannel;
+    private final SparseOffsetIndex index;
+    private final SegmentedLogConfig config;
+    private long recordCount;
+    private long firstOffset = -1;
+    private long lastOffset = -1;
+    private boolean closed;
+
+    private SegmentFile(
+            SegmentDescriptor descriptor,
+            Path logPath,
+            FileChannel logChannel,
+            SparseOffsetIndex index,
+            SegmentedLogConfig config) {
+        this.descriptor = descriptor;
+        this.logPath = logPath;
+        this.logChannel = logChannel;
+        this.index = index;
+        this.config = config;
+    }
+
+    static SegmentFile create(Path partitionDir, SegmentDescriptor descriptor, SegmentedLogConfig config)
+            throws IOException {
+        Files.createDirectories(partitionDir);
+        Path logPath = logPath(partitionDir, descriptor.baseOffset());
+        FileChannel logChannel = FileChannel.open(logPath,
+                StandardOpenOption.CREATE,
+                StandardOpenOption.READ,
+                StandardOpenOption.WRITE);
+        try {
+            SparseOffsetIndex index = SparseOffsetIndex.open(indexPath(partitionDir, descriptor.baseOffset()));
+            return new SegmentFile(descriptor, logPath, logChannel, index, config);
+        } catch (IOException | RuntimeException failure) {
+            logChannel.close();
+            throw failure;
+        }
+    }
+
+    static SegmentFile open(
+            Path partitionDir,
+            SegmentDescriptor descriptor,
+            boolean active,
+            SegmentedLogConfig config) throws IOException {
+        Path logPath = logPath(partitionDir, descriptor.baseOffset());
+        if (!Files.exists(logPath)) {
+            throw new IOException("Missing segment log " + logPath);
+        }
+        FileChannel logChannel = FileChannel.open(logPath, StandardOpenOption.READ, StandardOpenOption.WRITE);
+        try {
+            List<SparseOffsetIndex.IndexEntry> expectedIndex = new ArrayList<>();
+            long fileSize = logChannel.size();
+            long previousOffset = -1;
+            long recordCount = 0;
+            long firstOffset = -1;
+            long lastOffset = -1;
+            logChannel.position(0);
+            while (logChannel.position() < fileSize) {
+                long recordStart = logChannel.position();
+                PartitionLogRecordCodec.DecodedRecord decoded;
+                try {
+                    decoded = PartitionLogRecordCodec.read(logChannel, recordStart, fileSize);
+                } catch (PartitionLogRecordCodec.IncompleteRecordException incomplete) {
+                    if (!active) {
+                        throw new IOException("Corrupt sealed segment " + logPath + ": incomplete tail", incomplete);
+                    }
+                    logChannel.truncate(recordStart);
+                    fileSize = recordStart;
+                    break;
+                }
+                long offset = decoded.record().offset();
+                if (offset <= previousOffset) {
+                    throw new IOException("Corrupt segment " + logPath + ": non-increasing offset " + offset);
+                }
+                if (recordCount == 0) {
+                    firstOffset = offset;
+                }
+                if (recordCount % config.sparseIndexIntervalRecords() == 0) {
+                    expectedIndex.add(new SparseOffsetIndex.IndexEntry(offset, recordStart));
+                }
+                previousOffset = offset;
+                lastOffset = offset;
+                recordCount++;
+            }
+
+            SparseOffsetIndex index = rebuildIndex(partitionDir, descriptor.baseOffset(), expectedIndex);
+            SegmentFile segment = new SegmentFile(descriptor, logPath, logChannel, index, config);
+            segment.recordCount = recordCount;
+            segment.firstOffset = firstOffset;
+            segment.lastOffset = lastOffset;
+            logChannel.position(fileSize);
+            return segment;
+        } catch (IOException | RuntimeException failure) {
+            logChannel.close();
+            throw failure;
+        }
+    }
+
+    long baseOffset() {
+        return descriptor.baseOffset();
+    }
+
+    long createdAtEpochMs() {
+        return descriptor.createdAtEpochMs();
+    }
+
+    long firstOffset() {
+        return firstOffset;
+    }
+
+    long lastOffset() {
+        return lastOffset;
+    }
+
+    long nextOffset() {
+        return lastOffset < 0 ? descriptor.baseOffset() : lastOffset + 1;
+    }
+
+    boolean hasRecords() {
+        return recordCount > 0;
+    }
+
+    synchronized long size() {
+        try {
+            ensureOpen();
+            return logChannel.size();
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to read segment size " + logPath, e);
+        }
+    }
+
+    synchronized void append(long offset, byte[] key, byte[] value) throws IOException {
+        ensureOpen();
+        if (offset < descriptor.baseOffset() || offset <= lastOffset) {
+            throw new IOException("Invalid append offset " + offset + " for segment " + logPath);
+        }
+        long position = logChannel.size();
+        try {
+            logChannel.position(position);
+            PartitionLogRecordCodec.write(logChannel, offset, key, value);
+            if (recordCount % config.sparseIndexIntervalRecords() == 0) {
+                index.append(offset, position);
+            }
+        } catch (IOException | RuntimeException failure) {
+            rollbackAppend(position, failure);
+            throw failure;
+        }
+        if (recordCount == 0) {
+            firstOffset = offset;
+        }
+        lastOffset = offset;
+        recordCount++;
+    }
+
+    synchronized void truncateTo(long offset) throws IOException {
+        ensureOpen();
+        if (offset < descriptor.baseOffset() || offset > nextOffset()) {
+            throw new IllegalArgumentException("truncate offset outside segment range: " + offset);
+        }
+        if (offset == nextOffset()) {
+            return;
+        }
+        List<SparseOffsetIndex.IndexEntry> replacementIndex = new ArrayList<>();
+        long fileSize = logChannel.size();
+        long truncatePosition = 0;
+        long retainedCount = 0;
+        long retainedFirst = -1;
+        long retainedLast = -1;
+        logChannel.position(0);
+        while (logChannel.position() < fileSize) {
+            long recordStart = logChannel.position();
+            PartitionLogRecordCodec.DecodedRecord decoded =
+                    PartitionLogRecordCodec.read(logChannel, recordStart, fileSize);
+            long recordOffset = decoded.record().offset();
+            if (recordOffset >= offset) {
+                truncatePosition = recordStart;
+                break;
+            }
+            if (retainedCount == 0) {
+                retainedFirst = recordOffset;
+            }
+            if (retainedCount % config.sparseIndexIntervalRecords() == 0) {
+                replacementIndex.add(new SparseOffsetIndex.IndexEntry(recordOffset, recordStart));
+            }
+            retainedLast = recordOffset;
+            retainedCount++;
+            truncatePosition = logChannel.position();
+        }
+        logChannel.truncate(truncatePosition);
+        logChannel.position(truncatePosition);
+        logChannel.force(false);
+        index.replace(replacementIndex);
+        index.flush();
+        recordCount = retainedCount;
+        firstOffset = retainedFirst;
+        lastOffset = retainedLast;
+    }
+
+    private void rollbackAppend(long position, Exception failure) {
+        try {
+            logChannel.truncate(position);
+            logChannel.position(position);
+            logChannel.force(false);
+        } catch (IOException rollback) {
+            failure.addSuppressed(rollback);
+        }
+    }
+
+    synchronized List<Record> read(long fromOffset, int maxBytes) throws IOException {
+        ensureOpen();
+        if (maxBytes <= 0) {
+            return List.of();
+        }
+        List<Record> records = new ArrayList<>();
+        int bytesRead = 0;
+        long fileSize = logChannel.size();
+        logChannel.position(index.floorPosition(fromOffset));
+        while (logChannel.position() < fileSize) {
+            long recordStart = logChannel.position();
+            PartitionLogRecordCodec.DecodedRecord decoded =
+                    PartitionLogRecordCodec.read(logChannel, recordStart, fileSize);
+            if (decoded.record().offset() < fromOffset) {
+                continue;
+            }
+            if (!records.isEmpty() && bytesRead + decoded.encodedBytes() > maxBytes) {
+                break;
+            }
+            records.add(decoded.record());
+            bytesRead += decoded.encodedBytes();
+        }
+        return records;
+    }
+
+    record PlannedRead(int recordCount, int recordBytes, FileRegionSlice slice) {
+    }
+
+    synchronized PlannedRead planRead(
+            long fromOffset, int maxBytes, long highWatermark, boolean allowOversizedFirst) throws IOException {
+        ensureOpen();
+        if (maxBytes <= 0 || !hasRecords() || firstOffset >= highWatermark || lastOffset < fromOffset) {
+            return new PlannedRead(0, 0, null);
+        }
+        long fileSize = logChannel.size();
+        long position = index.floorPosition(fromOffset);
+        long sliceStart = -1;
+        long sliceEnd = -1;
+        int recordCount = 0;
+        int recordBytes = 0;
+        while (position < fileSize) {
+            PartitionLogRecordCodec.ScannedRecord scanned =
+                    PartitionLogRecordCodec.scan(logChannel, position, fileSize);
+            position = scanned.nextPosition();
+            if (scanned.offset() >= highWatermark) {
+                break;
+            }
+            if (scanned.offset() < fromOffset) {
+                continue;
+            }
+            if (recordBytes + scanned.encodedBytes() > maxBytes
+                    && (recordCount > 0 || !allowOversizedFirst)) {
+                break;
+            }
+            if (sliceStart < 0) {
+                sliceStart = scanned.startPosition();
+            }
+            sliceEnd = scanned.nextPosition();
+            recordCount++;
+            recordBytes += scanned.encodedBytes();
+        }
+        FileRegionSlice slice = recordCount == 0
+                ? null
+                : new FileRegionSlice(logPath, sliceStart, sliceEnd - sliceStart);
+        return new PlannedRead(recordCount, recordBytes, slice);
+    }
+
+    synchronized Record recordAt(long offset) throws IOException {
+        for (Record record : read(offset, Integer.MAX_VALUE)) {
+            if (record.offset() == offset) {
+                return record;
+            }
+            if (record.offset() > offset) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    synchronized void flush() {
+        try {
+            ensureOpen();
+            logChannel.force(false);
+            index.flush();
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to flush segment " + logPath, e);
+        }
+    }
+
+    @Override
+    public synchronized void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
+        RuntimeException failure = null;
+        try {
+            if (logChannel.isOpen()) {
+                logChannel.force(false);
+            }
+        } catch (IOException e) {
+            failure = new IllegalStateException("Failed to close segment " + logPath, e);
+        }
+        try {
+            index.close();
+        } catch (RuntimeException e) {
+            if (failure == null) {
+                failure = e;
+            } else {
+                failure.addSuppressed(e);
+            }
+        }
+        try {
+            logChannel.close();
+        } catch (IOException e) {
+            RuntimeException closeFailure = new IllegalStateException("Failed to close segment " + logPath, e);
+            if (failure == null) {
+                failure = closeFailure;
+            } else {
+                failure.addSuppressed(closeFailure);
+            }
+        }
+        if (failure != null) {
+            throw failure;
+        }
+    }
+
+    synchronized boolean isClosed() {
+        return closed;
+    }
+
+    static Path logPath(Path partitionDir, long baseOffset) {
+        return partitionDir.resolve(String.format("%020d.log", baseOffset));
+    }
+
+    static Path indexPath(Path partitionDir, long baseOffset) {
+        return partitionDir.resolve(String.format("%020d.index", baseOffset));
+    }
+
+    static Path cleanedLogPath(Path partitionDir, long baseOffset) {
+        return partitionDir.resolve(String.format("%020d.cleaned.log", baseOffset));
+    }
+
+    static Path cleanedIndexPath(Path partitionDir, long baseOffset) {
+        return partitionDir.resolve(String.format("%020d.cleaned.index", baseOffset));
+    }
+
+    static Path obsoleteLogPath(Path partitionDir, long baseOffset) {
+        return partitionDir.resolve(String.format("%020d.obsolete.log", baseOffset));
+    }
+
+    static Path obsoleteIndexPath(Path partitionDir, long baseOffset) {
+        return partitionDir.resolve(String.format("%020d.obsolete.index", baseOffset));
+    }
+
+    static void writeCleaned(
+            Path partitionDir,
+            long baseOffset,
+            List<Record> records,
+            SegmentedLogConfig config) throws IOException {
+        Path logPath = cleanedLogPath(partitionDir, baseOffset);
+        Path indexPath = cleanedIndexPath(partitionDir, baseOffset);
+        Files.deleteIfExists(logPath);
+        Files.deleteIfExists(indexPath);
+        try (FileChannel logChannel = FileChannel.open(logPath,
+                StandardOpenOption.CREATE_NEW,
+                StandardOpenOption.READ,
+                StandardOpenOption.WRITE);
+             SparseOffsetIndex index = SparseOffsetIndex.open(indexPath)) {
+            long previousOffset = -1;
+            long recordCount = 0;
+            for (Record record : records) {
+                if (record.offset() < baseOffset || record.offset() <= previousOffset) {
+                    throw new IOException("Invalid compacted record offset " + record.offset());
+                }
+                long position = logChannel.size();
+                PartitionLogRecordCodec.write(logChannel, record.offset(), record.key(), record.value());
+                if (recordCount % config.sparseIndexIntervalRecords() == 0) {
+                    index.append(record.offset(), position);
+                }
+                previousOffset = record.offset();
+                recordCount++;
+            }
+            logChannel.force(false);
+            index.flush();
+        }
+    }
+
+    private static SparseOffsetIndex rebuildIndex(
+            Path partitionDir,
+            long baseOffset,
+            List<SparseOffsetIndex.IndexEntry> expectedIndex) throws IOException {
+        Path indexPath = indexPath(partitionDir, baseOffset);
+        try (SparseOffsetIndex index = SparseOffsetIndex.open(indexPath)) {
+            index.replace(expectedIndex);
+            index.flush();
+        } catch (IOException corruptIndex) {
+            Files.deleteIfExists(indexPath);
+            try (SparseOffsetIndex rebuilt = SparseOffsetIndex.open(indexPath)) {
+                rebuilt.replace(expectedIndex);
+                rebuilt.flush();
+            }
+        }
+        return SparseOffsetIndex.open(indexPath);
+    }
+
+    private void ensureOpen() throws IOException {
+        if (closed || !logChannel.isOpen()) {
+            throw new IOException("Segment is closed " + logPath);
+        }
+    }
+}

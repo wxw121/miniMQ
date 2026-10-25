@@ -1,0 +1,37 @@
+# Maven build output
+target/
+*/target/
+
+# Maven Shade generated file
+dependency-reduced-pom.xml
+
+# Runtime data and logs
+data/
+*.log
+hs_err_pid*
+replay_pid*
+
+# IDE and editor files
+.idea/
+.vscode/
+*.iml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+.run/
+.worktrees/
+.npm-cache/
+.playwright-cli/
+.m2/
+
+# Historical version documentation is retained locally but not published.
+docs/designs/
+docs/plans/
+docs/superpowers/
+docs/test-report-*.md
+docs/code-review-*.md
+docs/handoff-*.md
+docs/known-issues-*.md
+docs/assets/test-results/
