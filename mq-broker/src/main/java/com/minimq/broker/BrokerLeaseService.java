@@ -18,6 +18,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
+/** 负责 Broker 的租约注册、续约、自我隔离和重新注册。 */
 public final class BrokerLeaseService implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(BrokerLeaseService.class);
 
@@ -32,6 +33,7 @@ public final class BrokerLeaseService implements AutoCloseable {
     private final AtomicBoolean closed = new AtomicBoolean();
     private ControllerClient client;
     private long brokerEpoch = -1L;
+    // 从已确认请求的发起时刻计时，避免响应延迟把本地隔离时间推迟到 Controller 租约到期之后。
     private long lastConfirmedRequestStartNanos = Long.MIN_VALUE;
     private boolean selfFenceRecorded;
     private boolean activationHeld;
@@ -145,6 +147,10 @@ public final class BrokerLeaseService implements AutoCloseable {
         }
     }
 
+    /**
+     * 启动期间先注册和续租，同时保持数据面关闭，直到本地 Topic 删除状态追上集群元数据。
+     * 这样可以避免在清理完成前向客户端暴露已删除 Topic 的本地数据。
+     */
     public synchronized void holdActivation() {
         if (brokerEpoch >= 0L) {
             throw new IllegalStateException("Broker lease is already initialized");
@@ -152,6 +158,7 @@ public final class BrokerLeaseService implements AutoCloseable {
         activationHeld = true;
     }
 
+    /** 初始删除协调完成后，确认租约仍有效且存储可用，再开放数据面。 */
     public synchronized void activateAfterStartupBarrier() {
         if (!activationHeld) {
             throw new IllegalStateException("Broker activation is not held");
@@ -183,6 +190,7 @@ public final class BrokerLeaseService implements AutoCloseable {
             return;
         }
         if (guard.hasStickyStorageFence()) {
+            // 删除清理失败触发的存储隔离不能靠重新注册解除。
             return;
         }
         if (activationHeld) {
@@ -270,6 +278,7 @@ public final class BrokerLeaseService implements AutoCloseable {
                     "Broker self-fence timeout must be less than Controller lease timeout");
         }
         if (!controllerRole.isActive()) {
+            // 远程注册可能伴随元数据同步，开放服务前再确认一次当前 epoch 的租约。
             confirmedRequestStart = nanoTime.getAsLong();
             controllerClient(config.brokerSelfFenceTimeoutMs()).heartbeatBroker(
                     new BrokerHeartbeatRequest(config.brokerId(), brokerEpoch),

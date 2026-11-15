@@ -300,17 +300,17 @@ V2.1.0 布局为：
 
 ### 4.5 V2.1.1 Retention, Compaction, And Read Snapshots / V2.1.1 保留策略、压缩与读快照
 
-V2.1.1 adds `LogMaintenanceConfig`, `RetentionPolicy`, and `CompactionPolicy` around the segmented layout. Retention deletes only fully sealed segments, never the active segment, and advances `logStartOffset` through an atomic catalog update after old files are moved to cleanup paths. Time-based and size-based retention can be enabled independently.
+V2.1.1 adds `LogMaintenanceConfig`, `RetentionPolicy`, and `CompactionPolicy` around the segmented layout. Retention publishes a catalog that excludes the selected sealed segments and advances `logStartOffset` before closing and deleting those files. The active segment stays in the catalog. Time-based and size-based retention can be enabled independently.
 
-V2.1.1 在分段布局外增加 `LogMaintenanceConfig`、`RetentionPolicy` 和 `CompactionPolicy`。保留策略只删除完整 sealed segment，不删除活跃 segment，并在旧文件移动到清理路径后通过原子 catalog 更新推进 `logStartOffset`。按时间和按容量保留可以独立启用。
+V2.1.1 在分段布局外增加 `LogMaintenanceConfig`、`RetentionPolicy` 和 `CompactionPolicy`。执行保留策略时，先发布新 catalog，将选中的已封存日志段移出目录并推进 `logStartOffset`，再关闭和删除这些文件。活跃日志段始终留在目录中。按时间和按容量保留可以独立启用。
 
-Compaction also runs only on sealed segments. It rewrites a bounded set of sealed segments into cleaned segment files, keeps the latest value for each non-null key, preserves null-key records, and allows offset holes because compacted logs retain logical offsets instead of rewriting them. The compacted catalog is published atomically, and startup cleanup removes interrupted `.cleaned`, `.obsolete`, and temporary catalog files before opening traffic.
+Compaction also runs only on sealed segments. It rewrites a bounded set of sealed segments into cleaned segment files, keeps the latest value for each non-null key, preserves null-key records, and retains logical offsets, which can leave gaps. It publishes the new catalog before replacing segment files. On startup, if a segment in the catalog is missing its live log file, recovery tries its `.cleaned` file first, then its `.obsolete` file. Remaining maintenance artifacts and temporary catalog files are cleaned up before opening traffic.
 
-压缩同样只作用于 sealed segment。它会把有界数量的 sealed segment 重写为 cleaned segment 文件，保留每个非 null key 的最新值，保留 null-key 记录，并允许 offset 空洞，因为压缩后的日志保留逻辑 offset 而不是重新编号。压缩后的 catalog 原子发布；启动清理会在开放流量前移除中断遗留的 `.cleaned`、`.obsolete` 和临时 catalog 文件。
+压缩同样只作用于已封存日志段。它在单次维护预算内重写日志段，保留每个非 null key 的最新值和所有 null-key 记录。记录保留原有逻辑 offset，因此可能出现空洞。压缩先发布新 catalog，再替换日志段文件。启动时，如果 catalog 引用的日志段缺少正式日志文件，恢复会优先尝试 `.cleaned` 文件，其次尝试 `.obsolete` 文件。剩余维护产物和临时 catalog 文件会在开放流量前清理。
 
-Readers use active read snapshots during maintenance. Segment files scheduled for deletion wait until in-flight reads exit, so a fetch that started before retention or compaction sees a consistent segment view. WAL replay skips records below the catalog `logStartOffset`, preventing retained-away offsets from being resurrected during broker restart.
+Retention and compaction skip the current pass while a read snapshot is active. Once maintenance begins, new readers wait for it to finish. A zero-copy `FetchPlan` holds its snapshot until it is closed, including while a response is being written asynchronously. WAL replay skips records below the catalog `logStartOffset`, preventing retained-away offsets from being resurrected during broker restart.
 
-读取路径在维护期间使用活跃读快照。计划删除的 segment 文件会等待正在进行的读取退出，因此保留策略或压缩开始前发起的 fetch 能看到一致的 segment 视图。WAL replay 会跳过低于 catalog `logStartOffset` 的记录，避免 Broker 重启时把已经按保留策略删除的 offset 重新恢复出来。
+有活跃读快照时，保留和压缩会跳过本轮。维护开始后，新读请求等待本轮结束。零拷贝 `FetchPlan` 持有读快照直至关闭，持有期包括异步写出响应的过程。WAL 重放会跳过低于 catalog `logStartOffset` 的记录，避免 Broker 重启时恢复已按保留策略删除的记录。
 
 ### 4.6 V2.1.2 Maintenance Observability And Controls / V2.1.2 维护可观测性与控制
 
@@ -606,7 +606,7 @@ The current source and tests are authoritative for this behavior.
 V3.1 adds small runtime protection primitives around the existing broker request boundary without changing the wire protocol version:
 
 - `BrokerRuntimeMetrics` records request counts by API key, response counts by `ErrorCode`, per-API latency totals/counts, and throttled request counts. `BrokerServer.runtimeMetrics()` exposes immutable snapshots for tests and future operator endpoints.
-- `RequestThrottler` enforces `--max-in-flight-requests` at `MqRequestHandler.channelRead0`. The default value is `0`, which disables throttling and preserves existing behavior; rejected requests return `THROTTLED`.
+- `RequestThrottler` enforces a shared `--max-in-flight-requests` limit across all connections on a Broker at `MqRequestHandler.channelRead0`. The default value of `0` disables throttling. Rejected requests return `THROTTLED`.
 - `CircuitBreaker` protects repeated Controller update failures in `ReplicaStateReporter`. When the breaker is open, the reporter returns `CONTROLLER_NOT_READY` instead of repeatedly hitting an unhealthy Controller path.
 - `BrokerAvailabilityGuard.State.STORAGE_DEGRADED` rejects `PRODUCE` and destructive maintenance runs with `MAINTENANCE_BUSY`, while allowing `FETCH`, metadata, discovery, and maintenance metrics/reporting for diagnosis.
 

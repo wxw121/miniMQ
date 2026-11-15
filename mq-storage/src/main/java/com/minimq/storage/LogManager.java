@@ -19,7 +19,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 日志管理器，按 TopicPartition 创建和缓存 FilePartitionLog。
+ * 按主题和分区打开并缓存 {@link SegmentedPartitionLog}，协调 WAL、刷盘和检查点恢复。
+ * 读取旧版单文件日志时使用 {@link FilePartitionLog} 将原有记录迁移到分段目录。
  */
 public class LogManager implements AutoCloseable {
     private static final System.Logger log = System.getLogger(LogManager.class.getName());
@@ -211,6 +212,7 @@ public class LogManager implements AutoCloseable {
                     }
                     successfulAppends.incrementAndGet();
                 }
+                // 批次内逐条累计成功追加数，整批完成后才按累计值检查检查点和维护条件。
                 appends = successfulAppends.get();
                 walFlushNeeded = flushPartitionIfNeeded(log, appends);
             }
@@ -712,6 +714,7 @@ public class LogManager implements AutoCloseable {
                 highWatermarks,
                 deliverySchedule.snapshotByPartitionKey(),
                 deliverySchedule.visibleWatermarkSnapshotByPartitionKey()));
+        // 检查点保存成功前保留旧日志，迁移中断时仍可使用原文件恢复。
         cleanupMigratedLegacyFiles();
     }
 
@@ -830,6 +833,7 @@ public class LogManager implements AutoCloseable {
     }
 
     private void migrateLegacyLog(String partitionKey, Path legacyFile, Path segmentsDir) throws IOException {
+        // 先在临时目录按原偏移量复制并刷盘，完成后再移动到正式目录，避免打开迁移到一半的日志。
         Path stagingDir = segmentsDir.resolveSibling(partitionKey + ".migrating");
         deleteRecursively(stagingDir);
         try (FilePartitionLog legacy = new FilePartitionLog(legacyFile);

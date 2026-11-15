@@ -1,0 +1,235 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" role="img" aria-labelledby="title description" xml:lang="en">
+<title id="title">MiniMQ System Architecture</title>
+<desc id="description">Five layers show a browser, CLI and Java application using the HTTP demo and SDK, a three-broker MiniMQ cluster, per-broker on-disk logs and a three-member etcd cluster. A numbered publish path runs from HTTP through controller discovery and the partition leader to WAL, segmented log and policy-driven disk flush. Solid arrows show request and response or local I/O, dashed arrows show asynchronous metadata watch events.</desc>
+<defs>
+  <marker id="end" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto">
+    <path d="M0 0L10 5 0 10Z" fill="#526982"/>
+  </marker>
+  <marker id="end-primary" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto">
+    <path d="M0 0L10 5 0 10Z" fill="#25609b"/>
+  </marker>
+  <marker id="end-async" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto">
+    <path d="M0 0L10 5 0 10Z" fill="#8666a5"/>
+  </marker>
+  <symbol id="browser" viewBox="0 0 24 24">
+    <rect x="2.5" y="4" width="19" height="16" rx="2"/><path d="M3 9h18M6 6.5h.01m3 0h.01"/>
+  </symbol>
+  <symbol id="terminal" viewBox="0 0 24 24">
+    <rect x="2.5" y="4" width="19" height="16" rx="2"/><path d="m6 9 3 3-3 3m6 0h5"/>
+  </symbol>
+  <symbol id="code" viewBox="0 0 24 24">
+    <path d="m7 7-4 5 4 5m10-10 4 5-4 5m-3-13-4 16"/>
+  </symbol>
+  <symbol id="box" viewBox="0 0 24 24">
+    <path d="m12 2.8 8.5 4.8v8.8L12 21.2l-8.5-4.8V7.6L12 2.8Z M4 7.9l8 4.5 8-4.5M12 12.4v8M7.6 5.3l8.7 4.9"/>
+  </symbol>
+  <symbol id="server" viewBox="0 0 24 24">
+    <rect x="3" y="3.5" width="18" height="6.5" rx="1.5"/><rect x="3" y="14" width="18" height="6.5" rx="1.5"/>
+    <path d="M6.5 6.75h.01m0 10.5h.01M11 6.75h6.5m-6.5 10.5h6.5"/>
+  </symbol>
+  <symbol id="network" viewBox="0 0 24 24">
+    <path d="m10.6 7.5-5 8m7.8-8 5 8M7.7 18h8.6"/><circle cx="12" cy="5.2" r="2.5"/><circle cx="5.2" cy="18" r="2.5"/><circle cx="18.8" cy="18" r="2.5"/>
+  </symbol>
+  <symbol id="disk" viewBox="0 0 24 24">
+    <ellipse cx="12" cy="5.7" rx="8.2" ry="3.2"/><path d="M3.8 5.7v12.6c0 1.8 3.7 3.2 8.2 3.2s8.2-1.4 8.2-3.2V5.7M3.8 12c0 1.8 3.7 3.2 8.2 3.2s8.2-1.4 8.2-3.2"/>
+  </symbol>
+  <symbol id="layers" viewBox="0 0 24 24">
+    <path d="m12 3 9 5-9 5-9-5 9-5Zm-9 9 9 5 9-5M3 16l9 5 9-5"/>
+  </symbol>
+  <style>
+    text { font-family: 'Segoe UI', Inter, Arial, sans-serif; fill: #172b45; }
+    .headline { font-size: 49px; font-weight: 730; letter-spacing: -1.2px; }
+    .subtitle { font-size: 19px; fill: #50637a; }
+    .layer-name { font-size: 17px; font-weight: 750; letter-spacing: .55px; }
+    .layer-sub { font-size: 15px; fill: #526780; }
+    .name { font-size: 23px; font-weight: 700; letter-spacing: -.16px; }
+    .name.compact { font-size: 20px; }
+    .detail { font-size: 17px; fill: #3c516a; }
+    .detail.emphasis { font-weight: 690; fill: #23578b; }
+    .note { font-size: 16px; fill: #51667e; }
+    .protocol { font-size: 17px; font-weight: 650; fill: #254e77; }
+    .link-label { font-size: 14px; font-weight: 650; fill: #445f7d; }
+    .async-label { fill: #714c92; }
+    .section-name { font-size: 19px; font-weight: 730; }
+    .band { stroke: #dce4ee; stroke-width: 1; }
+    .band.business { fill: #f3f7fc; } .rail.business { fill: #e0ebf8; }
+    .band.application { fill: #f0f8fa; } .rail.application { fill: #dceff2; }
+    .band.middleware { fill: #fff9f1; } .rail.middleware { fill: #faecd9; }
+    .band.data { fill: #f8f5fc; } .rail.data { fill: #ece4f6; }
+    .band.infrastructure { fill: #f2f5f8; } .rail.infrastructure { fill: #e3eaf1; }
+    .card { fill: #fff; stroke: #acbdd1; stroke-width: 1.15; }
+    .card.business { stroke: #a7bdda; } .card.application { stroke: #8fbac2; }
+    .card.middleware { stroke: #ceb69a; } .card.data { stroke: #bcadd1; }
+    .card.infrastructure { stroke: #a7b7c9; }
+    .card.selected { stroke: #5b84b2; stroke-width: 1.55; fill: #f4f8fd; }
+    .cluster { fill: #fffdf9; stroke: #c7a980; stroke-width: 1.15; stroke-dasharray: 5 4; }
+    .icon { fill: none; stroke: #466b98; stroke-width: 1.55; stroke-linecap: round; stroke-linejoin: round; }
+    .icon.application { stroke: #357889; } .icon.middleware { stroke: #957044; }
+    .icon.data { stroke: #796098; } .icon.infrastructure { stroke: #536b88; }
+    .sync, .primary, .async { fill: none; stroke-linejoin: round; stroke-width: 1.7; }
+    .sync { stroke: #526982; marker-end: url(#end); }
+    .primary { stroke: #25609b; stroke-width: 2; marker-end: url(#end-primary); }
+    .async { stroke: #8666a5; stroke-dasharray: 6 5; marker-end: url(#end-async); }
+    .step { fill: #255786; } .step-text { fill: #fff; font-size: 14px; font-weight: 700; }
+  </style>
+</defs>
+<rect width="1600" height="900" fill="#fbfcfe"/>
+<text class="headline" x="37" y="60">MiniMQ System Architecture</text>
+<text class="subtitle" x="40" y="89">Kafka-style message queue   /   Java 17   /   etcd deployment</text>
+<text class="protocol" x="1562" y="48" text-anchor="end">EXAMPLE TOPOLOGY   ·   3 BROKERS   ·   RF = 3</text>
+<path class="sync" d="M1091 78h32"/>
+<text class="note" x="1134" y="83">Sync call / local I/O</text>
+<path class="async" d="M1354 78h32"/>
+<text class="note" x="1397" y="83">Async notifications</text>
+<g id="business" role="group" aria-label="Business">
+<rect class="band business" x="35" y="108" width="1530" height="62" rx="14"/>
+<rect class="rail business" x="35" y="108" width="160" height="62" rx="14"/>
+<text class="layer-name" x="54" y="137">Business</text>
+<text class="layer-sub" x="54" y="159">Entry points</text>
+<rect class="card business" x="218" y="118" width="279" height="42" rx="10"/>
+<use href="#browser" class="icon business" x="231" y="126" width="26" height="26"/>
+<text class="name compact" x="266" y="144">Browser / operator</text>
+<rect class="card business" x="564" y="118" width="279" height="42" rx="10"/>
+<use href="#terminal" class="icon business" x="577" y="126" width="26" height="26"/>
+<text class="name compact" x="612" y="144">Demo CLI</text>
+<rect class="card business" x="910" y="118" width="279" height="42" rx="10"/>
+<use href="#code" class="icon business" x="923" y="126" width="26" height="26"/>
+<text class="name compact" x="958" y="144">Java application</text>
+<text class="note" x="1532" y="144" text-anchor="end">Web and CLI demos · mq-demo</text>
+</g>
+<g id="application" role="group" aria-label="Application">
+<rect class="band application" x="35" y="214" width="1530" height="83" rx="14"/>
+<rect class="rail application" x="35" y="214" width="160" height="83" rx="14"/>
+<text class="layer-name" x="54" y="243">Application</text>
+<text class="layer-sub" x="54" y="265">Clients</text>
+<rect class="card application" x="218" y="226" width="279" height="58" rx="10"/>
+<use href="#browser" class="icon application" x="231" y="237" width="26" height="26"/>
+<text class="name" x="266" y="256">Local Web panel</text>
+<text class="detail" x="266" y="275">MiniMqWebApp · :18082</text>
+<rect class="card application" x="564" y="226" width="969" height="58" rx="10"/>
+<use href="#box" class="icon application" x="577" y="237" width="26" height="26"/>
+<text class="name" x="612" y="256">Java SDK · mq-client</text>
+<text class="detail" x="612" y="275">Producer batching / Murmur2 partitioning  ·  Consumer poll / offsets  ·  NetworkClient</text>
+<text class="link-label" x="1516" y="250" text-anchor="end">DISCOVER_CONTROLLER via any Broker</text>
+</g>
+<g id="middleware" role="group" aria-label="Middleware">
+<rect class="band middleware" x="35" y="354" width="1530" height="224" rx="14"/>
+<rect class="rail middleware" x="35" y="354" width="160" height="224" rx="14"/>
+<text class="layer-name" x="54" y="383">Middleware</text>
+<text class="layer-sub" x="54" y="405">Messaging</text>
+<rect class="cluster" x="207" y="366" width="1337" height="201" rx="12"/>
+<text class="section-name" x="226" y="391">Broker cluster</text>
+<text class="note" x="1516" y="390" text-anchor="end">Netty binary TCP · mq-protocol  |  Shared models / partitioning · mq-common</text>
+<rect class="card middleware" x="218" y="411" width="279" height="128" rx="10"/>
+<use href="#server" class="icon middleware" x="231" y="422" width="26" height="26"/>
+<text class="name" x="266" y="441">Broker 0 · :9092</text>
+<text class="detail emphasis" x="234" y="469">Active Controller · P0 Follower</text>
+<text class="detail" x="234" y="491">Metadata · group coordination</text>
+<text class="detail" x="234" y="513">Membership, assignment, offsets</text>
+<rect class="card middleware selected" x="564" y="411" width="279" height="128" rx="10"/>
+<use href="#server" class="icon middleware" x="577" y="422" width="26" height="26"/>
+<text class="name" x="612" y="441">Broker 1 · :9093</text>
+<text class="detail emphasis" x="580" y="469">P0 Leader · MqRequestHandler</text>
+<text class="detail" x="580" y="491">Epoch check → PartitionManager</text>
+<text class="detail" x="580" y="513">Produce acks · fetch visibility</text>
+<rect class="card middleware" x="910" y="411" width="279" height="128" rx="10"/>
+<use href="#server" class="icon middleware" x="923" y="422" width="26" height="26"/>
+<text class="name" x="958" y="441">Broker 2 · :9094</text>
+<text class="detail" x="926" y="469">P0 Follower · ReplicaFetcher</text>
+<text class="detail" x="926" y="491">Pull from Leader and append</text>
+<text class="detail" x="926" y="513">Report physical / visible progress</text>
+<rect class="card middleware" x="1206" y="411" width="327" height="128" rx="10"/>
+<use href="#network" class="icon middleware" x="1219" y="422" width="26" height="26"/>
+<text class="name" x="1254" y="441">Control plane</text>
+<text class="detail" x="1222" y="469">ControllerRuntime on each Broker</text>
+<text class="detail" x="1222" y="491">Broker leases · ISR failover</text>
+<text class="detail" x="1222" y="513">Fence · truncate · LEADER_READY</text>
+<text class="note" x="386" y="560">TCP · REPLICA_FETCH_V2</text>
+<text class="note" x="871" y="560" text-anchor="middle">Per Broker: auth · metrics · audit</text>
+</g>
+<g id="data" role="group" aria-label="Data">
+<rect class="band data" x="35" y="626" width="1530" height="106" rx="14"/>
+<rect class="rail data" x="35" y="626" width="160" height="106" rx="14"/>
+<text class="layer-name" x="54" y="655">Data</text>
+<text class="layer-sub" x="54" y="677">mq-storage</text>
+<rect class="card data" x="218" y="640" width="279" height="78" rx="10"/>
+<use href="#disk" class="icon data" x="231" y="651" width="26" height="26"/>
+<text class="name" x="266" y="670">P0 replica log</text>
+<text class="detail" x="266" y="691">Broker 0 dataDir</text>
+<text class="detail" x="266" y="710">Segments and replica state</text>
+<rect class="card data selected" x="564" y="640" width="279" height="78" rx="10"/>
+<use href="#disk" class="icon data" x="577" y="651" width="26" height="26"/>
+<text class="name" x="612" y="670">WAL + segment files</text>
+<text class="detail" x="612" y="691">Disk flush per policy</text>
+<text class="detail" x="612" y="710">Checkpoint + WAL replay</text>
+<rect class="card data" x="910" y="640" width="279" height="78" rx="10"/>
+<use href="#disk" class="icon data" x="923" y="651" width="26" height="26"/>
+<text class="name" x="958" y="670">P0 replica log</text>
+<text class="detail" x="958" y="691">Broker 2 dataDir</text>
+<text class="detail" x="958" y="710">Segments and replica state</text>
+</g>
+<g id="infrastructure" role="group" aria-label="Infrastructure">
+<rect class="band infrastructure" x="35" y="777" width="1530" height="85" rx="14"/>
+<rect class="rail infrastructure" x="35" y="777" width="160" height="85" rx="14"/>
+<text class="layer-name" x="54" y="806">Infrastructure</text>
+<text class="layer-sub" x="54" y="828">Runtime</text>
+<rect class="card infrastructure" x="218" y="789" width="475" height="60" rx="10"/>
+<use href="#layers" class="icon infrastructure" x="231" y="800" width="26" height="26"/>
+<text class="name" x="266" y="819">Broker hosts / Java 17</text>
+<text class="detail" x="266" y="840">Independent JVM processes and local data directories</text>
+<rect class="card infrastructure" x="713" y="789" width="476" height="60" rx="10"/>
+<use href="#terminal" class="icon infrastructure" x="726" y="800" width="26" height="26"/>
+<text class="name" x="761" y="819">Local deployment tooling</text>
+<text class="detail" x="761" y="840">PowerShell scripts · Docker Compose for etcd</text>
+<rect class="card infrastructure" x="1206" y="789" width="327" height="60" rx="10"/>
+<use href="#network" class="icon infrastructure" x="1219" y="800" width="26" height="26"/>
+<text class="name" x="1254" y="819">etcd · 3 members</text>
+<text class="detail" x="1254" y="840">Leases · metadata snapshots</text>
+</g>
+<g id="connections" aria-label="Protocol and file I/O connections">
+<path class="primary" d="M358 160V226"/>
+<circle class="step" cx="377" cy="192" r="11"/>
+<text class="step-text" x="377" y="197" text-anchor="middle">1</text>
+<text class="protocol" x="394" y="198">HTTP/JSON · POST /api/run-flow</text>
+<path class="sync" d="M703 160V226"/>
+<text class="link-label" x="719" y="198">Java calls</text>
+<path class="sync" d="M1049 160V226"/>
+<text class="link-label" x="1065" y="198">Java calls</text>
+<path class="primary" d="M497 255H564"/>
+<text class="link-label" x="531" y="246" text-anchor="middle">Java</text>
+<path class="primary" d="M589 284V314H357V411"/>
+<circle class="step" cx="376" cy="336" r="11"/>
+<text class="step-text" x="376" y="341" text-anchor="middle">2</text>
+<text class="protocol" x="394" y="342">TCP · METADATA / group APIs</text>
+<path class="primary" d="M703 284V411"/>
+<circle class="step" cx="725" cy="336" r="11"/>
+<text class="step-text" x="725" y="341" text-anchor="middle">3</text>
+<text class="protocol" x="744" y="342">TCP · PRODUCE</text>
+<text class="note" x="890" y="342">· Same Leader route for PRODUCE_V2 / FETCH_V2</text>
+<path class="sync" d="M497 458H564"/>
+<path class="sync" d="M564 489H497"/>
+<path class="sync" d="M910 458H843"/>
+<path class="sync" d="M843 489H910"/>
+<text class="link-label" x="530" y="450" text-anchor="middle">Pull</text>
+<text class="link-label" x="530" y="481" text-anchor="middle">Reply</text>
+<text class="link-label" x="876" y="450" text-anchor="middle">Pull</text>
+<text class="link-label" x="876" y="481" text-anchor="middle">Reply</text>
+<path class="sync" d="M357 539V640"/>
+<text class="link-label" x="371" y="609">Replica append</text>
+<path class="primary" d="M703 539V640"/>
+<circle class="step" cx="725" cy="600" r="11"/>
+<text class="step-text" x="725" y="605" text-anchor="middle">4</text>
+<text class="protocol" x="744" y="605">LogManager · WAL → log append</text>
+<path class="sync" d="M1049 539V640"/>
+<text class="link-label" x="1063" y="608">Replica append</text>
+<circle class="step" cx="594" cy="688" r="11"/>
+<text class="step-text" x="594" y="693" text-anchor="middle">5</text>
+<path class="sync" d="M1238 539V789"/>
+<path class="async" d="M1502 789V539"/>
+<text class="link-label" x="1255" y="647">gRPC · election / CAS</text>
+<text class="link-label async-label" x="1486" y="703" text-anchor="end">gRPC · metadata Watch</text>
+</g>
+<text class="note" x="218" y="758">acks=LEADER: local append   ·   acks=ALL: wait for ISR high watermark, subject to min.insync.replicas</text>
+<text class="note" x="218" y="885">Controller-scoped requests go to the elected Broker. Message requests go directly to the current partition Leader.</text>
+<text class="note" x="1533" y="885" text-anchor="end">P0 = example partition   ·   RF = replication factor</text>
+</svg>

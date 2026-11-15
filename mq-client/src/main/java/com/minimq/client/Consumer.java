@@ -125,7 +125,15 @@ public class Consumer implements AutoCloseable {
                 members, topicMetadata.partitions().size()));
     }
 
-    // poll 会根据当前分配逐分区拉取，并在本地推进下一次读取 offset。
+    /**
+     * 按当前分配逐分区拉取消息，并在本地将消费位置推进到已返回记录的下一个 offset。
+     * 元数据获取、各分区拉取和路由重试共享同一个截止时间。
+     * 暂无消息时，等待时间由剩余预算和已知的最早可见时间共同限制。
+     *
+     * @param timeout 本次轮询的总时间预算
+     * @return 本次拉取的记录。预算耗尽时可能返回部分结果或空列表
+     * @throws InterruptedException 等待期间线程被中断
+     */
     public List<ConsumerRecord> poll(Duration timeout) throws InterruptedException {
         if (timeout == null) {
             throw new NullPointerException("timeout");
@@ -141,6 +149,7 @@ public class Consumer implements AutoCloseable {
         try {
             metadata = cachedMetadata(topic, deadlineNanos);
         } catch (MiniMqRequestTimeoutException timeoutExpired) {
+            // 本轮获取初始元数据超时时还没有拉取记录，直接返回空结果。
             return result;
         }
         do {
@@ -251,6 +260,7 @@ public class Consumer implements AutoCloseable {
                         deadlineNanos);
             } catch (MiniMqRequestTimeoutException failure) {
                 invalidateBrokerClient(route.leader().brokerId(), deadlineNanos);
+                // 剩余时间不足以再发请求时，结束本轮并保留此前分区的结果。否则将请求超时交给调用方。
                 if (!hasPollTimeRemaining(deadlineNanos)) {
                     return new FetchPartitionResult(metadata, -1L);
                 }

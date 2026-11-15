@@ -89,7 +89,6 @@ public class Producer implements AutoCloseable {
         client.connect();
     }
 
-    // 每次发送前读取最新元数据。若 leader 过期，V1.3 会刷新元数据并重试一次。
     public ProduceResult send(ProducerRecord record) throws InterruptedException {
         return send(record, ProduceAcks.LEADER, ProduceAcks.DEFAULT_TIMEOUT_MS);
     }
@@ -105,6 +104,7 @@ public class Producer implements AutoCloseable {
         synchronized (batchLock) {
             ensureOpen();
         }
+        // 入队时优先使用未过期的元数据缓存确定分区，批次发送时再解析 Leader 路由。
         MetadataResponse metadata = cachedMetadata(record.topic());
         ProduceRoute route = routeWithRefresh(record, metadata, 0);
         CompletableFuture<Long> offsetFuture = new CompletableFuture<>();
@@ -266,6 +266,7 @@ public class Producer implements AutoCloseable {
             MqResponseHeader header = response.header();
             if (isStaleLeaderError(header.errorCode()) && attempt == 0) {
                 invalidateMetadata(topic);
+                // Leader 或其连接地址可能已变更。丢弃旧连接，刷新路由后只重试一次。
                 invalidateBrokerClient(route.leader().brokerId());
                 metadata = refreshMetadata(topic);
                 continue;

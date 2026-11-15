@@ -106,6 +106,10 @@ public final class SegmentedPartitionLog implements PartitionLog, TransferablePa
         return planFetch(fromOffset, maxBytes, leaderHighWatermark);
     }
 
+    /**
+     * 在给定的排他水位以下规划零拷贝文件区间。返回的计划持有读快照，
+     * 调用方必须在传输完成、失败或放弃计划时关闭它，维护操作才能安全地删除或替换相关文件。
+     */
     @Override
     public FetchPlan planFetch(long fromOffset, int maxBytes, long exclusiveHighWatermark) {
         ReadSnapshot snapshot = acquireReadSnapshot();
@@ -329,6 +333,7 @@ public final class SegmentedPartitionLog implements PartitionLog, TransferablePa
                 catalog.activeBaseOffset(),
                 keptDescriptors.get(0).baseOffset(),
                 keptDescriptors);
+        // 先发布新目录再删文件。这样即使删文件前崩溃，重启也会按新目录打开保留的日志段。
         catalogStore.save(nextCatalog);
         List<SegmentFile> deletedSegments = segments.stream()
                 .filter(segment -> deleteSet.contains(segment.baseOffset()))
@@ -404,6 +409,7 @@ public final class SegmentedPartitionLog implements PartitionLog, TransferablePa
                 nextLogStartOffset,
                 compactedDescriptors);
 
+        // 替换文件已写入 .cleaned。先发布新目录，再删除被淘汰的段、替换保留的段。
         catalogStore.save(nextCatalog);
         List<SegmentFile> compactedSegments = new ArrayList<>();
         for (SegmentFile segment : segments) {
@@ -611,6 +617,7 @@ public final class SegmentedPartitionLog implements PartitionLog, TransferablePa
         }
     }
 
+    // 常规维护遇到活跃读快照时跳过本轮。取得维护权限后，新读快照等待维护结束。
     private boolean tryBeginReaderQuiescence() {
         synchronized (readerMonitor) {
             if (activeReaders.get() > 0) {
@@ -748,6 +755,7 @@ public final class SegmentedPartitionLog implements PartitionLog, TransferablePa
     }
 
     private void recoverMaintenanceArtifacts(SegmentCatalog visibleCatalog) throws IOException {
+        // 先补齐目录仍引用的文件，再清理临时文件，否则可能丢掉唯一可恢复的副本。
         for (SegmentDescriptor descriptor : visibleCatalog.segments()) {
             recoverVisibleSegmentFiles(descriptor.baseOffset());
         }

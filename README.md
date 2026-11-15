@@ -86,6 +86,14 @@ $env:MINIMQ_ADMIN_TOKEN = "<secret>"
 | `mq-client` | Producer、Consumer 与网络客户端 |
 | `mq-demo` | CLI、端到端示例与 Web 面板 |
 
+### 系统架构
+
+图中以三 Broker、三成员 etcd 集群和一个三副本分区为例。编号跟踪 Web 面板向真实集群发布消息的路径，从 HTTP 入口、元数据查询和 Leader 路由，直到写入 WAL 和分段日志，并按配置策略刷盘。实线表示同步请求或本地 I/O，虚线表示异步元数据通知。点击图片可查看 SVG 原图。
+
+[![MiniMQ 五层系统架构图，包含客户端入口、Broker 集群、消息发布与副本拉取、本地存储和 etcd 协调](diagram/minimq-architecture/minimq-architecture@2x.png)](diagram/minimq-architecture/minimq-architecture.svg)
+
+发布流程、消费、副本复制和故障转移见[系统架构图解](docs/architecture.md#系统架构图解)。
+
 ## 文档
 
 - [文档索引](docs/README.md)：推荐阅读顺序和项目快照

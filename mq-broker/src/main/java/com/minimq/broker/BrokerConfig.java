@@ -15,7 +15,52 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Broker 启动配置，集中保存 brokerId、监听地址、数据目录和 Controller 模式。
+ * Broker 启动配置，集中保存网络、存储、集群协调及鉴权相关的配置。
+ *
+ * @param brokerId broker 在集群内的唯一编号
+ * @param host broker 服务绑定的监听地址
+ * @param port broker 服务绑定的监听端口
+ * @param dataDir broker 数据、日志和本地元数据的根目录
+ * @param controller 是否启用旧版的内嵌 Controller 模式；生产环境通常通过 etcd 选主
+ * @param controllerHost 旧版 Controller 的主机地址，仅兼容模式使用
+ * @param controllerPort 旧版 Controller 的服务端口，仅兼容模式使用
+ * @param recoverCorruptMetadata 是否允许启动时尝试恢复损坏的本地元数据
+ * @param flushPolicy 追加消息后将 WAL 和分区日志强制刷盘的策略
+ * @param checkpointEveryNAppends 一次追加完成时，成功追加的累计条数为 N 的倍数才触发检查点。
+ *        批量追加按批次结束时的计数判断。{@code 0} 关闭追加触发的检查点，启动恢复、删除主题和关闭时仍会保存
+ * @param segmentMaxBytes 日志段滚动阈值，单位为字节。单条记录超过阈值时仍可写入空段
+ * @param sparseIndexIntervalRecords 稀疏索引每间隔多少条记录写入一个索引项
+ * @param retentionMs 日志段按时间保留的上限，单位为毫秒；{@code 0} 表示不按时间清理
+ * @param retentionBytes 日志段按总容量保留的上限，单位为字节；{@code 0} 表示不按容量清理
+ * @param compactionEnabled 是否启用日志压缩（合并同一键的历史记录）
+ * @param compactionMaxSegments 单次日志压缩最多处理的日志段数量
+ * @param compactionMaxBytes 单次日志压缩最多读取的字节数；{@code 0} 表示不设字节上限
+ * @param maintenanceWindowStartHour 维护窗口起始小时（UTC，0–23）；{@code -1} 表示关闭窗口限制
+ * @param maintenanceWindowEndHour 维护窗口结束小时（UTC，0–23）；{@code -1} 表示关闭窗口限制
+ * @param maintenanceEveryNAppends 追加触发维护的计数间隔。批量追加在整批结束后检查触发条件。
+ *        {@code 0} 关闭追加触发的维护，仍可手动执行已启用的保留或压缩策略
+ * @param fetchTransferMode Fetch 响应传输模式，决定是否可自动使用零拷贝等优化
+ * @param fetchTransferTimeoutMs Fetch 数据传输允许持续的最长时间，单位为毫秒
+ * @param networkTransportMode 网络传输实现，例如 NIO、EPOLL 或按运行环境自动选择
+ * @param maxInFlightRequests 单个 Broker 的所有连接共享的未完成请求数上限，{@code 0} 表示关闭限流
+ * @param brokerHeartbeatIntervalMs broker 向 Controller 续租/发送心跳的间隔，单位为毫秒
+ * @param brokerSelfFenceTimeoutMs Broker 自我隔离的超时，单位为毫秒，从最近一次成功确认的租约请求发起时起算
+ * @param controllerBrokerLeaseTimeoutMs Controller 判定 broker 租约失效的超时时间，单位为毫秒
+ * @param clusterId 集群的逻辑标识，用于隔离 etcd 中的协调和元数据键空间
+ * @param etcdEndpoints etcd 集群的访问端点列表
+ * @param controllerSessionTtlSeconds Controller 在 etcd 中参与选举和保活的会话 TTL，单位为秒
+ * @param controllerFailoverGraceMs Controller 接管后等待 broker 恢复/重新注册的宽限期，单位为毫秒
+ * @param leaderActivationTimeoutMs Controller 等待候选 Leader 完成当前 epoch 的 LEADER_READY 握手的时间，单位为毫秒。超时会冻结分区
+ * @param initializeEmptyCluster 是否允许首次启动时从空的 etcd 元数据初始化集群
+ * @param initializeClusterFromLocal 是否允许用本地 Controller 快照初始化空的 etcd 集群
+ * @param operatorCredentials 运维令牌及其权限范围的列表，用于非管理员运维接口鉴权
+ * @param clusterToken 集群内部请求携带的共享鉴权令牌；未设置时回退为 {@code adminToken}
+ * @param allowLegacyUnauthenticatedCreate 是否允许旧客户端不经鉴权地创建资源，仅兼容迁移使用
+ * @param allowLegacyInternalApi 是否允许调用旧版内部 API，仅兼容迁移使用
+ * @param adminToken 管理员令牌，拥有管理接口的完全访问权限
+ * @param topicDeleteTimeoutMs 删除 Topic 时等待各 broker 完成清理的最长时间，单位为毫秒
+ * @param maxScheduledRecords 单个 Broker 接收新延迟消息时的待投递记录数上限。
+ *        {@code 0} 会拒绝新写入的未来投递记录。恢复或副本复制得到的延迟记录仍会保留
  */
 public record BrokerConfig(
         int brokerId,
@@ -60,6 +105,12 @@ public record BrokerConfig(
         long topicDeleteTimeoutMs,
         int maxScheduledRecords) {
 
+    /**
+     * 运维令牌及其被授予的权限范围。
+     *
+     * @param token 用于鉴权的运维令牌
+     * @param scopes 此令牌允许执行的运维操作集合
+     */
     public record OperatorCredential(String token, Set<OperatorScope> scopes) {
         public OperatorCredential {
             if (token == null || token.isBlank()) {
