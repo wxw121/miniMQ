@@ -19,11 +19,14 @@ import com.minimq.protocol.message.ProtocolMessages.PartitionMetadata;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -51,6 +54,7 @@ public class Producer implements AutoCloseable {
             Collections.synchronizedMap(new BoundedLruCache<>(DEFAULT_RELIABILITY_LINK_CACHE_MAX_ENTRIES));
     private final Object batchLock = new Object();
     private final Map<BatchKey, PendingBatch> pending = new LinkedHashMap<>();
+    private final Set<PendingBatch> inFlight = new LinkedHashSet<>();
     private final ScheduledExecutorService lingerExecutor;
     private boolean closed;
 
@@ -614,7 +618,56 @@ public class Producer implements AutoCloseable {
     }
 
     public void flush() throws InterruptedException {
-        dispatchAll(drainPending(), true);
+        flushPending(false);
+    }
+
+    private void flushPending(boolean closing) throws InterruptedException {
+        List<PendingDispatch> ready;
+        List<PendingBatch> awaiting;
+        synchronized (batchLock) {
+            if (closing) {
+                closed = true;
+            }
+            ready = drainPendingLocked();
+            awaiting = List.copyOf(inFlight);
+        }
+        dispatchAll(ready, false);
+        if (Thread.interrupted()) {
+            throw new InterruptedException("Interrupted while flushing producer");
+        }
+        awaitBatches(awaiting);
+    }
+
+    private void awaitBatches(List<PendingBatch> batches) throws InterruptedException {
+        Throwable failure = null;
+        try {
+            for (PendingBatch batch : batches) {
+                try {
+                    batch.completion.get();
+                } catch (ExecutionException completedWithFailure) {
+                    if (failure == null) {
+                        failure = completedWithFailure.getCause();
+                    }
+                }
+            }
+        } finally {
+            synchronized (batchLock) {
+                for (PendingBatch batch : batches) {
+                    if (batch.completion.isDone()) {
+                        inFlight.remove(batch);
+                    }
+                }
+            }
+        }
+        if (failure instanceof RuntimeException runtime) {
+            throw runtime;
+        }
+        if (failure instanceof Error error) {
+            throw error;
+        }
+        if (failure != null) {
+            throw new MiniMqClientException("Failed to flush producer", failure);
+        }
     }
 
     public void flushQuietly() {
@@ -628,13 +681,8 @@ public class Producer implements AutoCloseable {
 
     @Override
     public void close() throws InterruptedException {
-        List<PendingDispatch> remaining;
-        synchronized (batchLock) {
-            closed = true;
-            remaining = drainPendingLocked();
-        }
         try {
-            dispatchAll(remaining, true);
+            flushPending(true);
         } finally {
             lingerExecutor.shutdownNow();
             client.close();
@@ -655,8 +703,7 @@ public class Producer implements AutoCloseable {
             PendingBatch batch = pending.get(key);
             if (batch != null && (batch.acks != acks || batch.ackTimeoutMs != ackTimeoutMs)) {
                 pending.remove(key);
-                cancelLinger(batch);
-                ready.add(new PendingDispatch(key, batch));
+                ready.add(prepareDispatch(key, batch));
                 batch = null;
             }
             if (batch == null) {
@@ -666,8 +713,7 @@ public class Producer implements AutoCloseable {
             batch.records.add(pendingRecord);
             if (batch.records.size() >= producerConfig.batchSize() || producerConfig.lingerMs() == 0) {
                 pending.remove(key);
-                cancelLinger(batch);
-                ready.add(new PendingDispatch(key, batch));
+                ready.add(prepareDispatch(key, batch));
             } else if (batch.records.size() == 1) {
                 scheduleLinger(key, batch);
             }
@@ -675,20 +721,20 @@ public class Producer implements AutoCloseable {
         return ready;
     }
 
-    private List<PendingDispatch> drainPending() {
-        synchronized (batchLock) {
-            return drainPendingLocked();
-        }
-    }
-
     private List<PendingDispatch> drainPendingLocked() {
         List<PendingDispatch> ready = new ArrayList<>(pending.size());
         for (Map.Entry<BatchKey, PendingBatch> entry : pending.entrySet()) {
-            cancelLinger(entry.getValue());
-            ready.add(new PendingDispatch(entry.getKey(), entry.getValue()));
+            ready.add(prepareDispatch(entry.getKey(), entry.getValue()));
         }
         pending.clear();
         return ready;
+    }
+
+    // 在 batchLock 内登记，保证批次从 pending 移出到开始发送之间也能被 flush/close 等待。
+    private PendingDispatch prepareDispatch(BatchKey key, PendingBatch batch) {
+        cancelLinger(batch);
+        inFlight.add(batch);
+        return new PendingDispatch(key, batch);
     }
 
     private void scheduleLinger(BatchKey key, PendingBatch batch) {
@@ -699,16 +745,18 @@ public class Producer implements AutoCloseable {
     }
 
     private void lingerDispatch(BatchKey key) {
-        PendingBatch batch;
+        PendingDispatch dispatch;
         synchronized (batchLock) {
-            batch = pending.remove(key);
+            PendingBatch batch = pending.remove(key);
             if (batch == null) {
                 return;
             }
             batch.lingerTask = null;
+            batch.background = true;
+            dispatch = prepareDispatch(key, batch);
         }
         try {
-            dispatchAll(List.of(new PendingDispatch(key, batch)), false);
+            dispatchAll(List.of(dispatch), false);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
         }
@@ -760,6 +808,7 @@ public class Producer implements AutoCloseable {
         for (int i = 0; i < batch.records.size(); i++) {
             indexed.add(new IndexedRecord(i, batch.records.get(i).record()));
         }
+        Throwable failure = null;
         try {
             sendPartitionBatch(
                     key.topic(),
@@ -772,12 +821,26 @@ public class Producer implements AutoCloseable {
                 batch.records.get(i).future().complete(results[i].offset());
             }
         } catch (InterruptedException interrupted) {
-            failBatch(batch, new MiniMqClientException(
-                    "Interrupted while sending produce batch", interrupted));
-            throw interrupted;
-        } catch (RuntimeException failure) {
+            failure = new MiniMqClientException("Interrupted while sending produce batch", interrupted);
             failBatch(batch, failure);
-            throw failure;
+            throw interrupted;
+        } catch (RuntimeException | Error sendFailure) {
+            failure = sendFailure;
+            failBatch(batch, sendFailure);
+            throw sendFailure;
+        } finally {
+            synchronized (batchLock) {
+                if (failure == null) {
+                    inFlight.remove(batch);
+                    batch.completion.complete(null);
+                } else {
+                    // 后台失败保留到下一次 flush/close 观察，避免发送错误被静默吞掉。
+                    if (!batch.background) {
+                        inFlight.remove(batch);
+                    }
+                    batch.completion.completeExceptionally(failure);
+                }
+            }
         }
     }
 
@@ -803,7 +866,9 @@ public class Producer implements AutoCloseable {
         private final ProduceAcks acks;
         private final int ackTimeoutMs;
         private final List<PendingRecord> records = new ArrayList<>();
+        private final CompletableFuture<Void> completion = new CompletableFuture<>();
         private ScheduledFuture<?> lingerTask;
+        private boolean background;
 
         private PendingBatch(ProduceAcks acks, int ackTimeoutMs) {
             this.acks = acks;

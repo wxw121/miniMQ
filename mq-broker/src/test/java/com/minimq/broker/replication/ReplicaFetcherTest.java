@@ -90,21 +90,35 @@ class ReplicaFetcherTest {
     }
 
     @Test
-    void newReplicaStartsFetchAtLeaderEpochStartOffset() throws Exception {
+    void newReplicaCopiesRecordsBeforeLeaderEpochStartOffset() throws Exception {
+        assertReplicaCatchesUpFromLocalOffset(0L);
+    }
+
+    @Test
+    void laggingReplicaCopiesMissingPrefixAfterLeaderEpochChanges() throws Exception {
+        assertReplicaCatchesUpFromLocalOffset(5L);
+    }
+
+    private void assertReplicaCatchesUpFromLocalOffset(long localOffset) throws Exception {
         AtomicReference<ReplicaFetchV2Request> captured = new AtomicReference<>();
-        try (CountingReplicaLeader leader = CountingReplicaLeader.start(captured)) {
+        try (CountingReplicaLeader leader = CountingReplicaLeader.start(captured, 11L)) {
             ClusterController controller =
                     new ClusterController(new MetadataStore(tempDir.resolve("epoch-start-controller")));
             controller.registerBroker(new RegisterBrokerRequest(0, "127.0.0.1", leader.port()));
             controller.registerBroker(new RegisterBrokerRequest(1, "127.0.0.1", 19093));
             assertEquals(ErrorCode.NONE, controller.createTopic(new CreateTopicRequest("orders", 1, 2)));
             controller.updateMetadata(metadata -> {
+                metadata.topics.get("orders").partitions.get(0).leaderEpoch = 1L;
                 metadata.topics.get("orders").partitions.get(0).leaderEpochStartOffset = 10L;
                 return null;
             });
 
             PartitionManager partitionManager =
                     new PartitionManager(new LogManager(tempDir.resolve("epoch-start-follower")));
+            for (long offset = 0; offset < localOffset; offset++) {
+                partitionManager.replicateAt("orders", 0, offset,
+                        ("k" + offset).getBytes(), ("v" + offset).getBytes());
+            }
             ReplicaFetcher fetcher = new ReplicaFetcher(
                     new BrokerConfig(1, "127.0.0.1", 19093, tempDir.resolve("epoch-start-broker"),
                             true, "127.0.0.1", 9092, false, BrokerTestHarness.ADMIN_TOKEN),
@@ -112,8 +126,11 @@ class ReplicaFetcherTest {
                     partitionManager);
             try {
                 fetcher.start();
-                waitForCapturedFetchOffset(captured, 10L);
-                assertEquals(10L, captured.get().fetchOffset());
+                waitForHighWatermark(partitionManager, "orders", 0, 11L);
+                assertEquals(localOffset, captured.get().fetchOffset());
+                assertEquals(java.util.stream.LongStream.range(0, 11).boxed().toList(),
+                        partitionManager.getOrCreate("orders", 0).read(0, 1024).stream()
+                                .map(com.minimq.common.model.Record::offset).toList());
             } finally {
                 fetcher.close();
                 partitionManager.close();
@@ -354,6 +371,11 @@ class ReplicaFetcherTest {
 
         static CountingReplicaLeader start(AtomicReference<ReplicaFetchV2Request> captured)
                 throws InterruptedException {
+            return start(captured, 1L);
+        }
+
+        static CountingReplicaLeader start(AtomicReference<ReplicaFetchV2Request> captured, long recordCount)
+                throws InterruptedException {
             EventLoopGroup boss = new NioEventLoopGroup(1);
             EventLoopGroup worker = new NioEventLoopGroup(1);
             AtomicInteger acceptedConnections = new AtomicInteger();
@@ -369,21 +391,22 @@ class ReplicaFetcherTest {
                                 protected void channelRead0(ChannelHandlerContext ctx, ByteBuf msg) {
                                     MqDecoder.DecodedRequest decoded = MqDecoder.decodeRequest(msg);
                                     ReplicaFetchV2Request request = (ReplicaFetchV2Request) decoded.body();
-                                    captured.set(request);
-                                    List<ScheduledReplicaRecord> records = request.fetchOffset() == 0L
-                                            ? List.of(new ScheduledReplicaRecord(
-                                                    0L, "k".getBytes(), "v".getBytes(), 0L))
-                                            : List.of();
+                                    captured.compareAndSet(null, request);
+                                    List<ScheduledReplicaRecord> records = java.util.stream.LongStream
+                                            .range(request.fetchOffset(), recordCount)
+                                            .mapToObj(offset -> new ScheduledReplicaRecord(
+                                                    offset, ("k" + offset).getBytes(), ("v" + offset).getBytes(), 0L))
+                                            .toList();
                                     ctx.writeAndFlush(ProtocolSerdes.encodeResponse(
                                             new MqResponseHeader(decoded.header().correlationId(), ErrorCode.NONE),
                                             new ReplicaFetchV2Response(
                                                     request.topicName(),
                                                     request.partitionId(),
-                                                    1L,
-                                                    1L,
+                                                    recordCount,
+                                                    recordCount,
                                                     -1L,
                                                     request.leaderEpoch(),
-                                                    1L,
+                                                    recordCount,
                                                     new V4BoundedList<>(records.size(), false, records))));
                                 }
                             }, new MqEncoder());

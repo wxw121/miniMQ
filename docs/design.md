@@ -255,6 +255,10 @@ The default is `EVERY_N_APPENDS` with `N=100`. Broker close and explicit checkpo
 
 默认策略为 `EVERY_N_APPENDS`（`N=100`）。Broker 关闭与显式 checkpoint 仍会完整刷盘。对持久性更敏感的部署可设置 `--flush-policy always`。
 
+Batch append checks every successful record against the flush, checkpoint, and maintenance cadences. Crossing a boundary schedules the corresponding action once at batch completion, even when the final count is not a multiple of the configured interval.
+
+批量追加会逐条检查成功计数是否命中刷盘、检查点和维护阈值。只要批次跨过阈值，批次完成时就执行一次对应操作，不要求最终累计条数恰好是配置间隔的整数倍。
+
 Broker CLI flags expose the V2.0 policy:
 
 Broker CLI 参数暴露 V2.0 策略：
@@ -455,6 +459,14 @@ Each member carries its own `sessionTimeoutMs` from `JOIN_GROUP` (default 10,000
 
 `send(record)` 按分区入队并立即返回。连续发送且不读 `offset()` 时，同一分区共享一次 Produce（`ProducerConfig` 默认 `batchSize=50`、`lingerMs=5`），直到 `offset()`、`flush()`、linger 到期或 `close()`。`send().offset()` 仍是单条往返。`sendDelayed`、retry 与 DLQ helper 仍立即发出。`send(List)` 会先刷出这些分区上的 pending。默认 acks 为 `LEADER`；`ALL` 在 Broker 上等待当前 ISR。
 
+`flush()` waits for the queued and already-dispatched batches captured when it starts. `close()` stops accepting new queued records, waits for those batches, and then releases the executor and connections. Background batch failures remain observable through `flush()`, `close()`, and the affected result's `offset()`.
+
+`flush()` 会等待调用开始时已有的排队批次和正在发送的批次。`close()` 先停止接受新的排队消息，等待这些批次结束，再释放线程与连接。后台批次失败会通过 `flush()`、`close()` 或对应结果的 `offset()` 抛出。
+
+Consumer advances local offsets only for records returned by a successful `poll()`. If a later partition fails and the call throws, earlier fetched records do not advance local positions. A poll that successfully returns partial results at its deadline advances only those returned records; committing group offsets remains explicit.
+
+Consumer 只为 `poll()` 成功返回的消息推进本地 offset。如果后续分区失败导致整轮抛出异常，之前已拉取但未交付的消息不会推进本地位置。到达截止时间后成功返回部分结果时，只推进这部分消息的位置；消费组 offset 仍需显式提交。
+
 V1.3 adds the client-resilience boundary for stale metadata. `NetworkClient` supports configurable synchronous request timeout and converts common failures into typed client exceptions. `Producer` and `Consumer` cache metadata per topic, invalidate the cache when a data-plane request receives `NOT_LEADER` or `BROKER_FENCED`, or cached metadata can no longer route the topic/partition, refresh metadata once, and retry once. The retry budget is fixed at initial request plus one refresh retry. If the second attempt still fails, the surfaced `MiniMqServerException` includes operation context such as API, topic, partition, routed Broker, and attempt count.
 
 V1.3 补齐了过期元数据相关的客户端韧性边界。`NetworkClient` 支持同步请求超时配置，并把常见失败转换为类型化客户端异常。`Producer` 和 `Consumer` 按 Topic 缓存元数据；当数据面请求遇到 `NOT_LEADER` 或 `BROKER_FENCED`，或缓存元数据已经无法路由 topic/partition 时，会失效缓存、刷新元数据并重试一次。重试预算固定为初始请求 + 一次刷新重试；如果第二次仍失败，抛出的 `MiniMqServerException` 会包含 API、topic、partition、attempt 等用户可见上下文。
@@ -597,6 +609,10 @@ Partition metadata now includes `leaderEpoch`, `leaderEpochStartOffset`, and `le
 
 分区元数据新增 `leaderEpoch`、`leaderEpochStartOffset` 和 `leaderReady`；三个数据 API 都要求精确 epoch。提升后的 Leader 先持久化 epoch 证明、崩溃安全截断到恢复点，再发送 `LEADER_READY`，最后开放数据面。WAL 重放识别已提交截断，分叉尾部不会在重启后复活。unclean election 仍明确不支持。
 
+On a new Leader epoch, a follower truncates a divergent tail beyond `leaderEpochStartOffset`. A new or lagging follower whose local LEO is below that offset continues fetching from its own LEO to fill the missing prefix; the epoch start is not a lower bound for fetch requests.
+
+进入新 Leader epoch 时，Follower 会截断超过 `leaderEpochStartOffset` 的分叉尾部。新副本或落后副本的本地 LEO 若小于该位置，仍从自己的 LEO 拉取并补齐缺失前缀；epoch 起点不是副本拉取请求的下界。
+
 The current source and tests are authoritative for this behavior.
 
 当前行为以源码和测试为准。
@@ -648,9 +664,9 @@ Retry and dead-letter targets are explicit operator-selected active Topic names.
 
 Retry 与 dead-letter 目标是运维人员显式选择的 active Topic 名称。配置会拒绝自关联、不存在/已删除目标，以及跨两种关联形成的环；删除 Topic 时原子清理入边和出边。Producer helper 只按这些显式 link 路由。Link metadata 最多缓存 30 秒；遇到路由错误后先失效并重新解析一次，再执行有界重试。
 
-Delayed records are required V4 behavior. WAL type 8 stores the ordinary key/value record plus `deliverAtEpochMs`. A Broker-wide `--max-scheduled-records` limit defaults to 100000; zero rejects new future records but never discards recovery or replication state. Fetch exposes only the contiguous visible prefix. Consumer sleeps for at most the smaller of time-until-due and remaining poll deadline, then checks the deadline immediately after waking. Future records protect only their containing segments from retention and compaction; after due time they follow ordinary maintenance policy.
+Delayed records are required V4 behavior. WAL type 8 stores the ordinary key/value record plus `deliverAtEpochMs`. A Broker-wide `--max-scheduled-records` limit defaults to 100000; zero rejects new future records but never discards recovery or replication state. Fetch exposes only the contiguous visible prefix. Consumer sleeps for at most 50 ms, further bounded by time-until-due and the remaining poll deadline, then checks the deadline immediately after waking. Without a delivery hint it still polls for ordinary new arrivals within the same deadline. Future records protect only their containing segments from retention and compaction; after due time they follow ordinary maintenance policy.
 
-延迟消息是 V4 必需行为。WAL type 8 保存普通 key/value 记录及 `deliverAtEpochMs`。Broker-wide `--max-scheduled-records` 默认 100000；设为 0 会拒绝新的 future record，但不会丢弃恢复或复制状态。FETCH 只暴露连续可见前缀。Consumer sleep 不超过“距离到期时间”和“poll 剩余 deadline”中的较小值，唤醒后立即再次检查 deadline。Future record 只保护其所在 segment 不被 retention/compaction；到期后恢复普通维护策略。
+延迟消息是 V4 必需行为。WAL type 8 保存普通 key/value 记录及 `deliverAtEpochMs`。Broker-wide `--max-scheduled-records` 默认 100000；设为 0 会拒绝新的 future record，但不会丢弃恢复或复制状态。FETCH 只暴露连续可见前缀。Consumer 每次 sleep 最多 50 毫秒，同时受“距离到期时间”和“poll 剩余 deadline”约束，唤醒后立即再次检查 deadline。没有延迟投递提示时，也会在同一 deadline 内继续检查普通新消息。Future record 只保护其所在 segment 不被 retention/compaction；到期后恢复普通维护策略。
 
 The local scripts own one run directory through `.minimq-run-directory`, record PID plus process start time, bound readiness and shutdown waits, and preserve unowned or surviving processes. Recursive cleanup is refused without the valid ownership marker. The failover demo waits until all three replicas are in ISR before stopping the initial Leader, then captures status/audit evidence and always performs owned-process cleanup.
 

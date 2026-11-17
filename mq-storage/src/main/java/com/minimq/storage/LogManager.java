@@ -187,8 +187,10 @@ public class LogManager implements AutoCloseable {
         try {
             PartitionLog log = getOrCreate(topic, partitionId);
             long baseOffset;
-            boolean walFlushNeeded;
-            long appends;
+            boolean walFlushNeeded = false;
+            boolean checkpointNeeded = false;
+            boolean maintenanceNeeded = false;
+            boolean maintenanceWindowSkipped = false;
             synchronized (log) {
                 ensureActivePartition(topic, partitionId, log);
                 baseOffset = log.highWatermark();
@@ -210,15 +212,28 @@ public class LogManager implements AutoCloseable {
                     if (persistedDeliverAtEpochMs > 0) {
                         remainingReservation--;
                     }
-                    successfulAppends.incrementAndGet();
+                    long appends = successfulAppends.incrementAndGet();
+                    walFlushNeeded |= config.flushPolicy().shouldFlush(
+                            appends, clock.millis(), lastFlushEpochMs);
+                    checkpointNeeded |= config.shouldCheckpointAfterAppend(appends);
+                    maintenanceNeeded |= config.maintenanceConfig().shouldRunAfterAppend(appends, clock);
+                    maintenanceWindowSkipped |= config.maintenanceConfig()
+                            .shouldSkipAfterAppendForWindow(appends, clock);
                 }
-                // 批次内逐条累计成功追加数，整批完成后才按累计值检查检查点和维护条件。
-                appends = successfulAppends.get();
-                walFlushNeeded = flushPartitionIfNeeded(log, appends);
+                // 记录批次内经过的每个阈值，整批完成后只执行一次对应的 I/O。
+                if (walFlushNeeded) {
+                    log.flush();
+                }
             }
             flushWalIfNeeded(walFlushNeeded);
-            checkpointAfterAppendIfNeeded(appends);
-            maintenanceAfterAppendIfNeeded(appends);
+            if (checkpointNeeded) {
+                checkpoint();
+            }
+            if (maintenanceNeeded) {
+                maintain();
+            } else if (maintenanceWindowSkipped) {
+                recordWindowSkip();
+            }
             return baseOffset;
         } catch (RuntimeException | Error failure) {
             if (remainingReservation > 0) {

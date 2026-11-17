@@ -31,6 +31,7 @@ import java.util.function.Function;
 public class Consumer implements AutoCloseable {
     public static final long DEFAULT_METADATA_CACHE_MAX_AGE_MS = 30_000L;
     private static final long MIN_POLL_RPC_NANOS = TimeUnit.MILLISECONDS.toNanos(1L);
+    private static final long MAX_POLL_WAIT_MS = 50L;
     private final ControllerAwareNetworkClient controllerClient;
     private final Function<String, NetworkClient> brokerClientFactory;
     private final String groupId;
@@ -144,6 +145,16 @@ public class Consumer implements AutoCloseable {
         long timeoutNanos = Math.max(0L, NetworkClient.durationToNanos(timeout));
         long deadlineNanos = NetworkClient.deadlineNanos(currentTimeNanos(),
                 Duration.ofNanos(timeoutNanos));
+        List<ConsumerRecord> result = pollUntil(timeoutNanos, deadlineNanos);
+        // 只有实际交给调用方的记录才能推进位置；后续分区失败时保留整轮的原始位置。
+        for (ConsumerRecord record : result) {
+            offsets.put(record.partition(), record.offset() + 1);
+        }
+        return result;
+    }
+
+    private List<ConsumerRecord> pollUntil(long timeoutNanos, long deadlineNanos)
+            throws InterruptedException {
         List<ConsumerRecord> result = new ArrayList<>();
         MetadataResponse metadata;
         try {
@@ -177,9 +188,9 @@ public class Consumer implements AutoCloseable {
             }
             long remainingMs = Math.max(
                     1L, TimeUnit.NANOSECONDS.toMillis(remainingNanos));
-            long sleepMs = remainingMs;
+            long sleepMs = Math.min(remainingMs, MAX_POLL_WAIT_MS);
             if (nextVisibleAtEpochMs >= 0L) {
-                sleepMs = Math.min(remainingMs, Math.max(1L, nextVisibleAtEpochMs - now));
+                sleepMs = Math.min(sleepMs, Math.max(1L, nextVisibleAtEpochMs - now));
             }
             sleepForPoll(sleepMs);
             if (deadlineNanos - currentTimeNanos() <= 0L) {
@@ -290,7 +301,6 @@ public class Consumer implements AutoCloseable {
             FetchV2Response fetch = (FetchV2Response) fetchResponse.body();
             for (FetchedRecord record : fetch.records().items()) {
                 result.add(new ConsumerRecord(topic, partition, record.offset(), record.key(), record.value()));
-                offsets.put(partition, record.offset() + 1);
             }
             return new FetchPartitionResult(metadata, fetch.nextVisibleAtEpochMs());
         }

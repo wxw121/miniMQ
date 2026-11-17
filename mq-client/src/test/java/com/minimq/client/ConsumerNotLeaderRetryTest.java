@@ -39,6 +39,56 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ConsumerNotLeaderRetryTest {
 
     @Test
+    void failedMultiPartitionPollDoesNotAdvanceUndeliveredOffsets() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("consumer-partial-failure");
+        try (BrokerTestHarness controller = BrokerTestHarness.startController(dataDir);
+             NetworkClient admin = new NetworkClient("admin");
+             TestableConsumer consumer = new TestableConsumer(
+                     controller.bootstrapServers(), "partial-group", "partial-consumer")) {
+            admin.connect("127.0.0.1", controller.port());
+            admin.ensureSuccess(admin.send(ApiKeys.CREATE_TOPIC_ADMIN,
+                    new CreateTopicAdminRequest(BrokerTestHarness.ADMIN_TOKEN, "orders", 2, 1)));
+            consumer.enqueueMetadata(metadataWithLeaders(0, 0));
+            consumer.subscribe("orders");
+            consumer.enqueueFetchResponse(successResponse(0));
+            consumer.enqueueFetchResponse(new MqDecoder.DecodedResponse(
+                    new MqResponseHeader(1, ErrorCode.REQUEST_TIMED_OUT), null));
+
+            assertThrows(MiniMqServerException.class, () -> consumer.poll(Duration.ofMillis(100)));
+
+            consumer.enqueueFetchResponse(successResponse(0));
+            consumer.enqueueFetchResponse(successResponse(0));
+            assertEquals(2, consumer.poll(Duration.ofMillis(100)).size());
+            assertEquals(List.of(0L, 0L, 0L, 0L), consumer.fetchOffsets());
+
+            consumer.enqueueFetchResponse(successResponse(1));
+            consumer.enqueueFetchResponse(successResponse(1));
+            assertEquals(2, consumer.poll(Duration.ofMillis(100)).size());
+            assertEquals(List.of(0L, 0L, 0L, 0L, 1L, 1L), consumer.fetchOffsets());
+        }
+    }
+
+    @Test
+    void pollChecksForNewArrivalsBeforeDeadlineWithoutVisibilityHint() throws Exception {
+        Path dataDir = BrokerTestHarness.newDataDir("consumer-new-arrival");
+        try (BrokerTestHarness controller = BrokerTestHarness.startController(dataDir);
+             NetworkClient admin = new NetworkClient("admin");
+             TestableConsumer consumer = new TestableConsumer(
+                     controller.bootstrapServers(), "arrival-group", "arrival-consumer")) {
+            admin.connect("127.0.0.1", controller.port());
+            admin.ensureSuccess(admin.send(ApiKeys.CREATE_TOPIC_ADMIN,
+                    new CreateTopicAdminRequest(BrokerTestHarness.ADMIN_TOKEN, "orders", 1, 1)));
+            consumer.subscribe("orders");
+            consumer.enqueueFetchResponse(emptyFetchResponse(-1L));
+            consumer.enqueueFetchResponse(successResponse(0));
+
+            assertEquals(1, consumer.poll(Duration.ofMillis(200)).size());
+            assertEquals(List.of(0L, 0L), consumer.fetchOffsets());
+            assertTrue(consumer.pollSleeps().stream().mapToLong(Long::longValue).sum() < 200L);
+        }
+    }
+
+    @Test
     void pollRejectsNegativeTimeout() throws Exception {
         Path dataDir = BrokerTestHarness.newDataDir("consumer-negative-timeout");
         try (BrokerTestHarness controller = BrokerTestHarness.startController(dataDir);

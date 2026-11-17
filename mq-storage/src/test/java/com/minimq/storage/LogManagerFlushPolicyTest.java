@@ -4,7 +4,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
@@ -18,6 +23,54 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class LogManagerFlushPolicyTest {
+
+    @Test
+    void batchFlushesWhenItCrossesTheConfiguredAppendCount(@TempDir Path dir) throws Exception {
+        MutableClock clock = new MutableClock();
+        try (LogManager manager = new LogManager(
+                dir, new LogManagerConfig(FlushPolicy.everyNAppends(100), 0), clock)) {
+            manager.append("orders", 0, null, new byte[]{1});
+            clock.now = 2_000L;
+            manager.appendBatch("orders", 0, batch(50));
+            manager.appendBatch("orders", 0, batch(50));
+
+            var lastFlush = LogManager.class.getDeclaredField("lastFlushEpochMs");
+            lastFlush.setAccessible(true);
+            assertEquals(2_000L, lastFlush.getLong(manager));
+            assertEquals(101L, manager.getOrCreate("orders", 0).highWatermark());
+        }
+    }
+
+    @Test
+    void batchCrossingCadencesRunsCheckpointAndMaintenance(@TempDir Path dir) {
+        LogMaintenanceConfig maintenance = LogMaintenanceConfig.of(
+                RetentionPolicy.of(1_000, 10_000), CompactionPolicy.disabled(), 100);
+        try (LogManager manager = new LogManager(dir, new LogManagerConfig(
+                FlushPolicy.manualOnClose(), 100, SegmentedLogConfig.defaults(), maintenance))) {
+            manager.append("orders", 0, null, new byte[]{1});
+            manager.appendBatch("orders", 0, batch(50));
+            assertFalse(new CheckpointStore(dir).load().orElseThrow()
+                    .partitionHighWatermarks.containsKey("orders-0"));
+            manager.appendBatch("orders", 0, batch(50));
+
+            assertEquals(101L, new CheckpointStore(dir).load().orElseThrow()
+                    .partitionHighWatermarks.get("orders-0"));
+            assertEquals(1L, manager.maintenanceMetrics().runs());
+        }
+    }
+
+    private static List<LogManager.AppendRecord> batch(int size) {
+        return Collections.nCopies(size, new LogManager.AppendRecord(null, new byte[]{1}, 0L));
+    }
+
+    private static final class MutableClock extends Clock {
+        private long now = 1_000L;
+
+        @Override public ZoneId getZone() { return ZoneOffset.UTC; }
+        @Override public Clock withZone(ZoneId zone) { return this; }
+        @Override public Instant instant() { return Instant.ofEpochMilli(now); }
+        @Override public long millis() { return now; }
+    }
 
     @Test
     void checkpointsAfterConfiguredAppendCount(@TempDir Path dir) {

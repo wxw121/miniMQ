@@ -129,7 +129,7 @@ sequenceDiagram
     L-->>P: 生产响应（ProduceResponse(topic, partition, baseOffset)）
 ```
 
-生产者首先向控制器拉取主题元数据。消息指定 `partitionId` 时直接使用该分区。未指定时，有消息键就用 Kafka 风格的 Murmur2 哈希计算分区，无键则使用分区 0。`send(record)` 按分区入队并立即返回。同一分区的消息按 `batchSize=50` 和 `lingerMs=5` 形成批次，也可由调用方读取 `offset()` 或调用 `flush()`、`close()` 触发发送。生产者将批次通过 `PRODUCE` 发往对应分区的主节点。立即调用 `send().offset()` 仍是单条请求往返。使用 `acks=ALL` 时，分区主节点在 ISR 复制水位覆盖本批消息后才响应。
+生产者首先向控制器拉取主题元数据。消息指定 `partitionId` 时直接使用该分区。未指定时，有消息键就用 Kafka 风格的 Murmur2 哈希计算分区，无键则使用分区 0。`send(record)` 按分区入队并立即返回。同一分区的消息按 `batchSize=50` 和 `lingerMs=5` 形成批次，也可由调用方读取 `offset()` 或调用 `flush()`、`close()` 触发发送。`flush()` 与 `close()` 同时等待已经出队、正在发送的批次，并传播后台发送失败；正常关闭会在这些批次结束后释放连接。生产者将批次通过 `PRODUCE` 发往对应分区的主节点。立即调用 `send().offset()` 仍是单条请求往返。使用 `acks=ALL` 时，分区主节点在 ISR 复制水位覆盖本批消息后才响应。
 
 ### 4.2 拉取流程
 
@@ -153,6 +153,8 @@ sequenceDiagram
 ```
 
 消费者订阅主题时会加入消费组。组内主成员按成员列表和主题分区数计算范围分配结果，再通过 `SYNC_GROUP` 提交给控制器。每个成员通过 `SYNC_GROUP` 获取自己的分区列表，消费后通过 `OFFSET_COMMIT` 提交进度。每个成员按 `JOIN_GROUP` 中的 `sessionTimeoutMs` 设置会话超时，默认 10 秒。超时未发送心跳的成员会被移除，分区重新分配并进入新一代。`Consumer.close()` 会发送 `LEAVE_GROUP`。`HEARTBEAT` 与 `OFFSET_COMMIT` 编码均带 `generationId`，`OFFSET_COMMIT` 还带 `memberId`。解码仍接受省略这些字段的旧请求体。旧客户端入组后，协调器会拒绝代数为 0 的请求。
+
+`poll()` 只在成功返回消息后推进本地 offset；若后续分区失败导致本轮抛出异常，未交付消息的位置保持不变。空拉取后的等待每次最多 50 毫秒，并受延迟投递时间和本轮截止时间约束，等待期间也会检查普通新消息。
 
 ## 5. 数据面与控制面
 
